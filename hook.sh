@@ -1,33 +1,32 @@
 #!/usr/bin/dash
-# hook.sh - Netstring protocol emitter
+# hook.sh - Called by shell preexec hooks to record a command to history
+
 SOCK_FILE="${XDG_RUNTIME_DIR:-/tmp}/history.sock"
 
-# Parameters passed from shell hooks
+# Args: cmd, cwd, exit_code, duration_ms
+# Defaults handle missing args (e.g. preexec fires before postexec for first run)
 CMD="$1"
 CWD="$2"
-EXIT_CODE="$3"
-DURATION="$4"
+EXIT_CODE="${3:-0}"
+DURATION="${4:-0}"
 
+# Skip empty commands (defensive — shouldn't happen but harmless)
 [ -z "$CMD" ] && exit 0
 
-# Write netstring: length:payload,
-write_ns() {
-    printf '%s' "$1" | {
-        len=$(LC_ALL=C wc -c | tr -d ' ')
-        printf '%s:%s,' "$len" "$1"
-    }
-}
+# Build netstring message in a single printf call.
+# Format: "W,cmd,cwd,exit_code,duration" as concatenated netstrings.
+# Example: 1:W,17:ls -la /home/user,10:/home/user,1:0,3:100,
+# %d = byte length, %s = payload — printf does the length calculation.
+# One subshell total (was 5 before optimization).
+MSG=$(printf '1:W,%d:%s,%d:%s,%d:%s,%d:%s,' \
+    "${#CMD}" "$CMD" \
+    "${#CWD}" "$CWD" \
+    "${#EXIT_CODE}" "$EXIT_CODE" \
+    "${#DURATION}" "$DURATION")
 
-# Encode fields
-NS_CMD=$(write_ns "$CMD")
-NS_CWD=$(write_ns "$CWD")
-NS_EXIT=$(write_ns "${EXIT_CODE:-0}")
-NS_DUR=$(write_ns "${DURATION:-0}")
-
-# Build message: W, cmd, cwd, exit_code, duration
-MSG="1:W,${NS_CMD}${NS_CWD}${NS_EXIT}${NS_DUR}"
-
-# Asynchronous non-blocking push to Unix domain socket
+# Fire-and-forget delivery: backgrounded, errors suppressed.
+# The trailing & detaches the process so the shell isn't blocked.
+# >/dev/null 2>&1: silent on success and failure.
 if command -v socat >/dev/null 2>&1; then
     printf '%s' "$MSG" | socat - UNIX-CONNECT:"$SOCK_FILE" >/dev/null 2>&1 &
 elif command -v nc >/dev/null 2>&1; then
