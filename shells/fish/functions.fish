@@ -14,28 +14,24 @@ function _write_ns
     printf '%s:%s,' "$len" "$argv[1]"
 end
 
-# _read_ns - decode a stream of netstrings into one field per line
-# awk handles the parsing (see processor.sh for detailed comments)
-function _read_ns
-    LC_ALL=C awk '
-    BEGIN { RS = "\0" }
-    {
-        data = $0; pos = 1; len = length(data)
-        while (pos <= len) {
-            colon = index(substr(data, pos), ":")
-            if (colon == 0) break
-            colon += pos - 1
-            lenstr = substr(data, pos, colon - pos)
-            if (lenstr !~ /^(0|[1-9][0-9]*)$/) break
-            n = lenstr + 0
-            value = substr(data, colon + 1, n)
-            if (length(value) != n) break
-            term = colon + 1 + n
-            if (substr(data, term, 1) != ",") break
-            print value
-            pos = term + 1
-        }
-    }'
+# _read_b64 - decode the server's query-response stream into one field per line.
+# Wire format (see processor.sh): one base64-encoded row per line, EOF-terminated.
+# Base64 is used (not raw netstrings, and not plain text) because a history
+# entry may itself contain embedded newlines — a plain-text or netstring
+# decode piped through fish's line-based `read` would otherwise mis-split a
+# single multi-line command into multiple bogus entries at this stage too.
+# (This replaces the old _read_ns, which decoded the *request-side*
+# netstring format and was never actually called anywhere — the server's
+# query responses were never netstring-framed to begin with, so it decoded
+# nothing even when wired up.)
+function _read_b64
+    while begin
+            read -l b64line
+            or test -n "$b64line"
+        end
+        printf '%s' "$b64line" | base64 -d 2>/dev/null
+        echo
+    end
 end
 
 # _hist_query - send a query to the server and return raw response
@@ -69,11 +65,11 @@ end
 function _hist_fetch
     set -l offset $argv[1]
     set -l count $argv[2]
-    set -l result (_hist_query "up" "$offset" "$count")
+    # Decode via _read_b64 — previously the raw (still base64/netstring-wire)
+    # response was captured straight into the resultset, undecoded.
+    set -l result (_hist_query "up" "$offset" "$count" | _read_b64)
     if test -n "$result"
-        # set -a appends each element of the input list to the array
-        # Faster than a while-read loop
-        set -a __hist_resultset (printf '%s\n' $result)
+        set -a __hist_resultset $result
     end
 end
 
@@ -81,7 +77,7 @@ end
 # Queries server for all commands (capped at 10k), pipes through fzf,
 # replaces the current line with the selected command
 function _hist_search
-    set -l selected (_hist_query "search" "" | fzf --height 15 --no-sort --query (commandline -b))
+    set -l selected (_hist_query "search" "" | _read_b64 | fzf --height 15 --no-sort --query (commandline -b))
     if test -n "$selected"
         commandline -r "$selected"
     end
@@ -125,7 +121,7 @@ function _hist_stepper
             commandline -f repaint
 
         case down
-            if test $rsi_len -gt 0 -a $__hist_rsi -gt 1
+            if test $rsi_len -gt 0; and test $__hist_rsi -gt 1
                 # Step back within the resultset
                 set -g __hist_rsi (math $__hist_rsi - 1)
                 set -g __hist_offset (math $__hist_offset - 1)

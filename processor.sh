@@ -1,15 +1,29 @@
 #!/usr/bin/dash
 # processor.sh - Netstring protocol handler
-# Protocol (netstrings, one field per netstring):
-#   Write:  W, cmd, cwd, exit_code, duration
-#   Query:  Q, action [arg] [count]
-db_file="$1"
+source ./includes.sh
 
-# Read all stdin, parse netstrings via awk
-INPUT=$(cat)
+#
+# Wire protocol:
+#   Client -> Server: concatenated netstrings ("len:payload,")
+#       Write:  W, cmd, cwd, exit_code, duration
+#       Query:  Q, action [arg] [count]
+#   Server -> Client (Q only): one base64-encoded row per line (EOF-terminated).
+#       Base64 is used instead of raw text because history entries (e.g.
+#       multi-line commands) may contain embedded newlines, which would
+#       otherwise corrupt line-based framing.
+db_file="${HIST_DB:-$1}" # env var (see server.sh) with $1 fallback for manual invocation
+
+# Bound total bytes read to defend against unbounded-buffering DoS from a
+# client that never sends a valid netstring (no colon => awk parser would
+# otherwise still have consumed all of `cat`'s output before rejecting it).
+INPUT=$(head -c 2097152)
 [ -z "$INPUT" ] && exit 0
 
-# Netstring parser: decodes "length:payload," streams into one field per line.
+# Netstring parser: decodes "length:payload," into fields.
+# Each field is emitted base64-encoded, one per output line. Base64 output
+# is guaranteed newline-free (with -w0) and NUL-free, so it survives a
+# shell command-substitution round trip intact regardless of what bytes
+# (including raw newlines) the original payload contained.
 # Max payload size: 1MB (prevents OOM from malicious clients).
 FIELDS=$(printf '%s' "$INPUT" | LC_ALL=C awk '
 BEGIN { RS = "\0" }  # treat entire input as one record
@@ -33,46 +47,92 @@ BEGIN { RS = "\0" }  # treat entire input as one record
 
         # verify trailing comma delimiter
         term = colon + 1 + payload_len
-        if (substr(data, term, 1) != ",") break  # missing comma
+        if (substr(data, term, 1) != ",") break    # missing comma
 
-        print value                               # emit one field per line
-        pos = term + 1                            # advance past this netstring
+        # emit field as base64 on its own line (newline-safe framing)
+        b64cmd = "base64 -w0"
+        printf "%s", value | b64cmd
+        close(b64cmd)
+        print ""
+
+        pos = term + 1                             # advance past this netstring
     }
 }')
 [ -z "$FIELDS" ] && exit 0
 
-# Convert newline-separated fields to shell positional parameters.
-# Naive "while read; do set -- \"$@\" \"$_field\"; done" is O(n²) — each set rebuilds the array.
-# This approach: quote each line, join with spaces, eval once → O(n).
-# Example: "W\nls -la\n/home" → set -- "W" "ls -la" "/home"
-# Safe even with spaces in values because we add the quotes ourselves.
-eval "set -- $(printf '%s\n' "$FIELDS" | sed 's/^/"/;s/$/"/' | paste -sd' ' -)"
+# Reconstruct positional parameters WITHOUT eval (avoids RCE: the old
+# `eval "set -- $(...)"` let command substitution / expansion inside the
+# quoted-but-unescaped payload execute arbitrary code). Each line is
+# base64, decoded back to its exact original bytes.
+set --
+while IFS= read -r b64field || [ -n "$b64field" ]; do
+    field=$(printf '%s' "$b64field" | base64 -d 2> /dev/null)
+    set -- "$@" "$field"
+done << EOF
+$FIELDS
+EOF
 
-TYPE="$1"; shift
+[ "$#" -eq 0 ] && exit 0
+
+TYPE="$1"
+shift
 
 case "$TYPE" in
     W)
         # Write: W cmd cwd exit_code duration
-        cmd="$1"; cwd="$2"; exit_code="$3"; duration="$4"
+        cmd="$1"
+        cwd="$2"
+        exit_code="$3"
+        duration="$4"
+
+        # Validate numeric fields BEFORE interpolating into SQL.
+        # These were previously unquoted+unvalidated: an attacker-controlled
+        # exit_code/duration field could inject arbitrary SQL.
+        case "$exit_code" in '' | *[!0-9]*) exit_code=0 ;; esac
+        case "$duration" in '' | *[!0-9]*) duration=0 ;; esac
+
         safe_cmd=$(printf '%s' "$cmd" | sed "s/'/''/g")
         safe_cwd=$(printf '%s' "$cwd" | sed "s/'/''/g")
-        now=$(date +%s%3N 2>/dev/null || echo "$(date +%s)000")
-        sqlite3 "$db_file" "INSERT INTO history (command, cwd, exit_code, duration_ms, timestamp) VALUES ('$safe_cmd', '$safe_cwd', ${exit_code:-0}, ${duration:-0}, $now);"
+        now=$(date +%s%3N 2> /dev/null || echo "$(date +%s)000")
+        sqlite3 "$db_file" "INSERT INTO history (command, cwd, exit_code, duration_ms, timestamp) VALUES ('$safe_cmd', '$safe_cwd', $exit_code, $duration, $now);"
         ;;
     Q)
         # Query: Q action [arg] [count]
-        action="$1"; arg="$2"; count="$3"
+        action="$1"
+        arg="$2"
+        count="$3"
         # Validate numeric inputs (prevents SQL injection in LIMIT/OFFSET)
-        case "$arg" in ''|*[!0-9]*) arg=0 ;; esac
-        case "$count" in ''|*[!0-9]*) count=1 ;; esac
+        case "$arg" in '' | *[!0-9]*) arg=0 ;; esac
+        case "$count" in '' | *[!0-9]*) count=1 ;; esac
         case "$action" in
             up)
-                sqlite3 "$db_file" "SELECT command FROM history ORDER BY timestamp DESC LIMIT $count OFFSET $arg;"
+                sql="SELECT command FROM history ORDER BY timestamp DESC LIMIT $count OFFSET $arg;"
                 ;;
             search)
                 # Cap at 10000 results to avoid OOM on large histories
-                sqlite3 "$db_file" "SELECT command FROM history ORDER BY timestamp DESC LIMIT 10000;"
+                sql="SELECT command FROM history ORDER BY timestamp DESC LIMIT 10000;"
+                ;;
+            *)
+                sql=""
                 ;;
         esac
+        [ -z "$sql" ] && exit 0
+
+        # Use -ascii mode (0x1E row separator, 0x1F column separator)
+        # instead of sqlite3's default newline-separated list output.
+        # A history entry containing an embedded literal newline would
+        # otherwise be mis-split into multiple bogus "rows" by any
+        # newline-based consumer downstream.
+        sqlite3 -ascii "$db_file" "$sql" | LC_ALL=C awk '
+        BEGIN { RS = "\036" }
+        {
+            row = $0
+            sub(/\n$/, "", row)   # strip sqlite3 trailing newline artifact, if any
+            if (row == "") next   # sqlite3 -ascii trailing-separator artifact; real rows are never empty
+            b64cmd = "base64 -w0"
+            printf "%s", row | b64cmd
+            close(b64cmd)
+            print ""
+        }'
         ;;
 esac
