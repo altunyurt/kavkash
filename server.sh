@@ -1,10 +1,9 @@
 #!/usr/bin/dash
 # server.sh - Daemon: accepts shell history events over Unix socket, stores in SQLite
 
-source ./includes.sh
+. ./includes.sh
 
-# Resolve script dir: try $0 first, fall back to PATH lookup
-# Handles: ./server.sh, /full/path/server.sh, symlinks, PATH invocation
+# Path to processor.sh (resolved from _SCRIPT_DIR in includes.sh)
 PROC_SCRIPT="${_SCRIPT_DIR}/processor.sh"
 
 # Initialize SQLite schema (idempotent — uses IF NOT EXISTS)

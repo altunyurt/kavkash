@@ -1,5 +1,14 @@
 # Configuration: socket path and batch size for history navigation
-source ./includes.sh
+
+if [[ -z "${bash_preexec_imported:-}" ]]; then
+    printf "Bash-preexec is NOT loaded. If you don't have bash-preexec installed yet, visit"
+    printf "\n    https://github.com/rcaloras/bash-preexec\n"
+    printf "for installation instructions"
+    exit 1
+fi
+
+SCRIPT_DIR=$(dirname -- "$(realpath -- "$0")")
+source $SCRIPT_DIR/includes.sh
 
 # _write_ns - encode a string as a netstring: "length:payload,"
 # Uses a subshell to get byte count via wc -c (avoids bash-specific ${#var} for binary safety)
@@ -20,7 +29,7 @@ _write_ns() {
 _read_b64() {
     local b64line
     while IFS= read -r b64line || [[ -n "$b64line" ]]; do
-        printf '%s' "$b64line" | base64 -d 2>/dev/null
+        printf '%s' "$b64line" | base64 -d 2> /dev/null
         printf '\n'
     done
 }
@@ -43,10 +52,10 @@ _hist_query() {
         payload="${payload}${ns_count}"
     fi
 
-    if command -v socat >/dev/null 2>&1; then
-        printf '%s' "$payload" | socat - UNIX-CONNECT:"$_HIST_SOCK" 2>/dev/null
-    elif command -v nc >/dev/null 2>&1; then
-        printf '%s' "$payload" | nc -U "$_HIST_SOCK" 2>/dev/null
+    if command -v socat > /dev/null 2>&1; then
+        printf '%s' "$payload" | socat - UNIX-CONNECT:"$SOCK_FILE" 2> /dev/null
+    elif command -v nc > /dev/null 2>&1; then
+        printf '%s' "$payload" | nc -U "$SOCK_FILE" 2> /dev/null
     fi
 }
 
@@ -102,7 +111,7 @@ _hist_prefetch_collect() {
 # _hist_prefetch_cancel - abandon any in-flight prefetch (call from _hist_reset/_hist_cancel)
 _hist_prefetch_cancel() {
     if [[ -n "${__hist_prefetch_pid:-}" ]]; then
-        kill "$__hist_prefetch_pid" 2>/dev/null
+        kill "$__hist_prefetch_pid" 2> /dev/null
     fi
     if [[ -n "${__hist_prefetch_fd:-}" ]]; then
         exec {__hist_prefetch_fd}<&-
@@ -143,40 +152,36 @@ _hist_stepper() {
     fi
 
     local rsi_len=${#__hist_resultset[@]}
-    # hide cursor to prevent flicker
-    printf '\e[?25l'
     if [[ "$direction" == "up" ]]; then
         # Fetch more if we've consumed everything in the current batch
-        if (( __hist_rsi >= rsi_len )); then
-    local prev_len=$rsi_len
-    if [[ -n "${__hist_prefetch_pid:-}" && "${__hist_prefetch_offset:-}" == "$__hist_offset" ]]; then
-        _hist_prefetch_collect          # usually instant — already fetched in background
-    else
-        _hist_fetch "$__hist_offset" "$_HIST_BATCH"   # fallback: cold start / prefetch missed
-    fi
-    rsi_len=${#__hist_resultset[@]}
-    if (( rsi_len == prev_len )); then
-        return
-    fi
-fi
+        if ((__hist_rsi >= rsi_len)); then
+            local prev_len=$rsi_len
+            if [[ -n "${__hist_prefetch_pid:-}" && "${__hist_prefetch_offset:-}" == "$__hist_offset" ]]; then
+                _hist_prefetch_collect # usually instant — already fetched in background
+            else
+                _hist_fetch "$__hist_offset" "$_HIST_BATCH" # fallback: cold start / prefetch missed
+            fi
+            rsi_len=${#__hist_resultset[@]}
+            if ((rsi_len == prev_len)); then
+                return
+            fi
+        fi
 
-READLINE_LINE="${__hist_resultset[$__hist_rsi]}"
-READLINE_POINT=${#READLINE_LINE}
-__hist_rsi=$(( __hist_rsi + 1 ))
-__hist_offset=$(( __hist_offset + 1 ))
+        READLINE_LINE="${__hist_resultset[$__hist_rsi]}"
+        READLINE_POINT=${#READLINE_LINE}
+        __hist_rsi=$((__hist_rsi + 1))
+        __hist_offset=$((__hist_offset + 1))
 
-# stay ahead: once close to the end of what's loaded, start fetching the next batch now
-if (( rsi_len - __hist_rsi <= _HIST_PREFETCH_THRESHOLD && -z "${__hist_prefetch_pid:-}" )); then
-    _hist_prefetch_start "$__hist_offset"
-fi
-
-
+        # stay ahead: once close to the end of what's loaded, start fetching the next batch
+        if ((rsi_len - __hist_rsi <= _HIST_PREFETCH_THRESHOLD)) && [[ -z "${__hist_prefetch_pid:-}" ]]; then
+            _hist_prefetch_start "$__hist_offset"
+        fi
 
     elif [[ "$direction" == "down" ]]; then
-        if (( rsi_len > 0 && __hist_rsi > 0 )); then
+        if ((rsi_len > 0 && __hist_rsi > 0)); then
             # Step back within the resultset
-            __hist_rsi=$(( __hist_rsi - 1 ))
-            __hist_offset=$(( __hist_offset - 1 ))
+            __hist_rsi=$((__hist_rsi - 1))
+            __hist_offset=$((__hist_offset - 1))
             READLINE_LINE="${__hist_resultset[$__hist_rsi]}"
             READLINE_POINT=${#READLINE_LINE}
         else
@@ -186,8 +191,6 @@ fi
             unset __hist_resultset __hist_rsi __hist_offset
         fi
     fi
-    # show cursor back again
-    printf '\e[?25h'
 }
 
 # bind -x doesn't pass arguments directly, so wrap with direction argument
@@ -197,11 +200,13 @@ _hist_stepper_down() { _hist_stepper "down"; }
 # _hist_reset - clear navigation state (called by preexec hook, NOT bound to Enter)
 # Binding to Enter would intercept the normal command execution
 _hist_reset() {
+    _hist_prefetch_cancel
     unset __hist_resultset __hist_rsi __hist_offset
 }
 
 # _hist_cancel - Ctrl+C: clear state, cancel the current line
 _hist_cancel() {
+    _hist_prefetch_cancel
     unset __hist_resultset __hist_rsi __hist_offset
 }
 
@@ -209,7 +214,7 @@ _hist_cancel() {
 # bind -x runs the function directly (not just inserts text)
 # \e[A = Up arrow, \e[B = Down arrow, \C-r = Ctrl+R, \C-c = Ctrl+C
 # Enter is NOT bound — normal readline Enter executes the command.
-# State is cleared by the DEBUG trap below before each command.
+# State is cleared by precmd_hist_reset (bash-preexec).
 _hist_bind_keys() {
     bind -x '"\C-r": _hist_search'
     bind -x '"\e[A": _hist_stepper_up'
@@ -220,9 +225,12 @@ _hist_bind_keys() {
 
 _hist_bind_keys
 
-# Clear navigation state after each command completes
-# PROMPT_COMMAND runs before displaying a new prompt (after a command finishes)
-# DEBUG trap is NOT used — it fires too aggressively (before every simple command,
-# including those inside bind -x functions like _hist_stepper).
-__hist_old_prompt_cmd=${PROMPT_COMMAND:-}
-PROMPT_COMMAND='_hist_reset 2>/dev/null; '"$__hist_old_prompt_cmd"
+preexec_hook() {
+    $SCRIPT_DIR/hook.sh "$1" "$PWD" "" ""
+}
+preexec_functions+=(preexec_hook)
+
+precmd_hist_reset() {
+    _hist_reset 2> /dev/null
+}
+precmd_functions+=(precmd_hist_reset)

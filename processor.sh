@@ -1,6 +1,6 @@
 #!/usr/bin/dash
 # processor.sh - Netstring protocol handler
-source ./includes.sh
+. ./includes.sh
 
 #
 # Wire protocol:
@@ -60,10 +60,7 @@ BEGIN { RS = "\0" }  # treat entire input as one record
 }')
 [ -z "$FIELDS" ] && exit 0
 
-# Reconstruct positional parameters WITHOUT eval (avoids RCE: the old
-# `eval "set -- $(...)"` let command substitution / expansion inside the
-# quoted-but-unescaped payload execute arbitrary code). Each line is
-# base64, decoded back to its exact original bytes.
+# Reconstruct positional parameters from base64-decoded fields (avoids eval/RCE).
 set --
 while IFS= read -r b64field || [ -n "$b64field" ]; do
     field=$(printf '%s' "$b64field" | base64 -d 2> /dev/null)
@@ -85,9 +82,7 @@ case "$TYPE" in
         exit_code="$3"
         duration="$4"
 
-        # Validate numeric fields BEFORE interpolating into SQL.
-        # These were previously unquoted+unvalidated: an attacker-controlled
-        # exit_code/duration field could inject arbitrary SQL.
+        # Validate numeric fields to prevent SQL injection.
         case "$exit_code" in '' | *[!0-9]*) exit_code=0 ;; esac
         case "$duration" in '' | *[!0-9]*) duration=0 ;; esac
 

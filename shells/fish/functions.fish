@@ -16,14 +16,11 @@ end
 
 # _read_b64 - decode the server's query-response stream into one field per line.
 # Wire format (see processor.sh): one base64-encoded row per line, EOF-terminated.
-# Base64 is used (not raw netstrings, and not plain text) because a history
-# entry may itself contain embedded newlines — a plain-text or netstring
-# decode piped through fish's line-based `read` would otherwise mis-split a
-# single multi-line command into multiple bogus entries at this stage too.
-# (This replaces the old _read_ns, which decoded the *request-side*
-# netstring format and was never actually called anywhere — the server's
-# query responses were never netstring-framed to begin with, so it decoded
-# nothing even when wired up.)
+# Base64 is used (not raw text, not the request-side netstring format) because
+# a history entry may itself contain embedded newlines — a plain-text or
+# newline-scanning decode would mis-split a single multi-line command into
+# multiple bogus entries. Base64 has no newlines in its alphabet, so it's
+# safe to frame with '\n' regardless of what the decoded payload contains.
 function _read_b64
     while begin
             read -l b64line
@@ -65,8 +62,6 @@ end
 function _hist_fetch
     set -l offset $argv[1]
     set -l count $argv[2]
-    # Decode via _read_b64 — previously the raw (still base64/netstring-wire)
-    # response was captured straight into the resultset, undecoded.
     set -l result (_hist_query "up" "$offset" "$count" | _read_b64)
     if test -n "$result"
         set -a __hist_resultset $result

@@ -1,10 +1,9 @@
 #!/usr/bin/dash
 # hook.sh - Called by shell preexec hooks to record a command to history
 
-source ./includes.sh
+. ./includes.sh
 
-# Args: cmd, cwd, exit_code, duration_ms
-# Defaults handle missing args (e.g. preexec fires before postexec for first run)
+# Args: cmd, cwd, exit_code, duration_ms — defaults handle missing args.
 CMD="$1"
 CWD="$2"
 EXIT_CODE="${3:-0}"

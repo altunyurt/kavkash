@@ -2,7 +2,7 @@
 
 __RUNTIME_DIR=${XDG_RUNTIME_DIR:-/tmp}/kavkash
 __DATA_HOME=${XDG_DATA_HOME:-$HOME/.local/share}/kavkash
-_SCRIPT_DIR=$(dirname "$(realpath "$0")")
+_SCRIPT_DIR=$(dirname -- "$(realpath -- "$0")")
 
 mkdir -p $__RUNTIME_DIR $__DATA_HOME
 
