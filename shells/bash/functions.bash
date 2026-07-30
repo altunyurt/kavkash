@@ -182,8 +182,18 @@ _hist_stepper() {
             # Step back within the resultset
             __hist_rsi=$((__hist_rsi - 1))
             __hist_offset=$((__hist_offset - 1))
-            READLINE_LINE="${__hist_resultset[$__hist_rsi]}"
-            READLINE_POINT=${#READLINE_LINE}
+            if ((__hist_rsi > 0)); then
+                # Show index rsi-1 (one step before the new rsi), since the last up
+                # displayed resultset[old_rsi] then incremented rsi to old_rsi+1.
+                # After decrement, rsi = old_rsi, and we want to show old_rsi-1.
+                READLINE_LINE="${__hist_resultset[$((__hist_rsi - 1))]}"
+                READLINE_POINT=${#READLINE_LINE}
+            else
+                # At the first history entry — clear line and reset
+                READLINE_LINE=""
+                READLINE_POINT=0
+                unset __hist_resultset __hist_rsi __hist_offset
+            fi
         else
             # Past the start — clear line and reset state
             READLINE_LINE=""

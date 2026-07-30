@@ -120,7 +120,14 @@ function _hist_stepper
                 # Step back within the resultset
                 set -g __hist_rsi (math $__hist_rsi - 1)
                 set -g __hist_offset (math $__hist_offset - 1)
-                commandline -r "$__hist_resultset[$__hist_rsi]"
+                if test $__hist_rsi -gt 1
+                    # Show index rsi-1 (one step before the new rsi). fish is 1-indexed.
+                    commandline -r "$__hist_resultset[(math $__hist_rsi - 1)]"
+                else
+                    # At the first history entry — clear line and reset
+                    commandline -r ""
+                    set -e __hist_resultset __hist_rsi __hist_offset
+                end
                 commandline -f repaint
             else
                 # Past the start — clear line and reset state
