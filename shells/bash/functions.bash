@@ -244,3 +244,6 @@ precmd_hist_reset() {
     _hist_reset 2> /dev/null
 }
 precmd_functions+=(precmd_hist_reset)
+
+# Preload the first batch so the first Up press doesn't block on IPC
+_hist_prefetch_start 0

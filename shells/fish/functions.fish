@@ -1,9 +1,9 @@
 # Configuration: socket path and batch size for history navigation
-# Fish doesn't support ${VAR:-default} syntax, use conditional
+# Must match includes.sh: ${XDG_RUNTIME_DIR}/kavkash/history.sock
 if set -q XDG_RUNTIME_DIR
-    set -g _HIST_SOCK "$XDG_RUNTIME_DIR/history.sock"
+    set -g _HIST_SOCK "$XDG_RUNTIME_DIR/kavkash/history.sock"
 else
-    set -g _HIST_SOCK "/tmp/history.sock"
+    set -g _HIST_SOCK "/tmp/kavkash/history.sock"
 end
 set -g _HIST_BATCH 100
 
@@ -23,7 +23,7 @@ end
 # safe to frame with '\n' regardless of what the decoded payload contains.
 function _read_b64
     while begin
-            read -l b64line
+            read b64line
             or test -n "$b64line"
         end
         printf '%s' "$b64line" | base64 -d 2>/dev/null
@@ -122,7 +122,9 @@ function _hist_stepper
                 set -g __hist_offset (math $__hist_offset - 1)
                 if test $__hist_rsi -gt 1
                     # Show index rsi-1 (one step before the new rsi). fish is 1-indexed.
-                    commandline -r "$__hist_resultset[(math $__hist_rsi - 1)]"
+                    # (fish can't expand a command-substitution index inside quotes)
+                    set -l idx (math $__hist_rsi - 1)
+                    commandline -r "$__hist_resultset[$idx]"
                 else
                     # At the first history entry — clear line and reset
                     commandline -r ""
@@ -172,3 +174,12 @@ end
 function _hist_postexec --on-event fish_postexec
     _hist_reset 2>/dev/null
 end
+
+# Preload the first batch so the first Up press doesn't block on IPC.
+# Must pre-init state: _hist_stepper skips lazy init when __hist_resultset exists,
+# which would leave __hist_rsi/__hist_offset unset. Synchronous (blocks once at
+# startup, avoids a fetch race on first keypress).
+set -g __hist_resultset
+set -g __hist_rsi 1
+set -g __hist_offset 0
+_hist_fetch 0 $_HIST_BATCH
