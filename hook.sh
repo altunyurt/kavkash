@@ -1,7 +1,9 @@
 #!/usr/bin/dash
 # hook.sh - Called by shell preexec hooks to record a command to history
 
-. ./includes.sh
+# Source includes.sh relative to THIS script, not CWD: hook.sh is launched
+# from interactive shells whose CWD is arbitrary.
+. "$(dirname -- "$(realpath -- "$0")")/includes.sh"
 
 # Args: cmd, cwd, exit_code, duration_ms — defaults handle missing args.
 CMD="$1"

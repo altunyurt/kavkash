@@ -6,6 +6,10 @@ else
     set -g _HIST_SOCK "/tmp/kavkash/history.sock"
 end
 set -g _HIST_BATCH 100
+# Directory containing this file (shells/fish/); hook.sh lives one level up.
+# Resolved to a REAL path: fish refuses to exec command paths containing "..".
+set -g _HIST_SCRIPT_DIR (dirname (status filename))
+set -g _HIST_HOOK (realpath "$_HIST_SCRIPT_DIR/../../hook.sh")
 
 # _write_ns - encode a string as a netstring: "length:payload,"
 # Uses wc -c for byte count (works for any byte sequence, not just text)
@@ -140,10 +144,21 @@ function _hist_stepper
     end
 end
 
-# _hist_reset - clear navigation state (called by preexec event, NOT bound to Enter)
+# _hist_reset - clear navigation state (called by postexec event, NOT bound to Enter)
 # Binding to Enter would intercept the normal command execution
 function _hist_reset
     set -e __hist_resultset __hist_rsi __hist_offset
+end
+
+# Record executed commands: fire-and-forget write to the daemon (like bash/zsh).
+# fish_preexec fires for the whole command line once, just before it runs.
+# Skip empty lines and commands spawned from command substitutions (e.g. fzf
+# inside _hist_search) so we only store what the user actually typed.
+function _hist_preexec --on-event fish_preexec
+    status is-command-substitution; and return 0
+    [ -n "$argv[1]" ]; or return 0
+
+    "$_HIST_HOOK" "$argv[1]" "$PWD" "" "" &
 end
 
 # _hist_cancel - Ctrl+C: clear state, cancel the current line
@@ -169,8 +184,7 @@ function fish_user_key_bindings
 end
 
 # Clear navigation state after each command completes
-# fish_postexec fires after a command from the command line finishes
-# (does NOT fire for commands inside functions like _hist_stepper)
+# fish_postexec fires after a command line finishes
 function _hist_postexec --on-event fish_postexec
     _hist_reset 2>/dev/null
 end

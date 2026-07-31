@@ -1,6 +1,7 @@
 #!/usr/bin/dash
 # processor.sh - Netstring protocol handler
-. ./includes.sh
+# Source includes.sh relative to THIS script (socat EXEC may have any CWD).
+. "$(dirname -- "$(realpath -- "$0")")/includes.sh"
 
 #
 # Wire protocol:

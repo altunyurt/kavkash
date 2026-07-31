@@ -1,7 +1,8 @@
 #!/usr/bin/dash
 # server.sh - Daemon: accepts shell history events over Unix socket, stores in SQLite
 
-. ./includes.sh
+# Source includes.sh relative to THIS script (server may be started from any CWD).
+. "$(dirname -- "$(realpath -- "$0")")/includes.sh"
 
 # Path to processor.sh (resolved from _SCRIPT_DIR in includes.sh)
 PROC_SCRIPT="${_SCRIPT_DIR}/processor.sh"
