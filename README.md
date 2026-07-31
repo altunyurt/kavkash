@@ -7,7 +7,7 @@ Minimal shell history daemon. Captures commands via preexec hook, stores in SQLi
 ```
 shell preexec → hook.sh → Unix socket → server.sh → processor.sh → SQLite
                                                                   ↓
-shell up/down/fzf ← shells/{bash,fish}/functions.{bash,fish} ←────┘
+shell up/down/fzf ← shells/{bash,fish,zsh}/functions.{bash,fish,zsh} ←┘
 ```
 
 ## Components
@@ -17,6 +17,7 @@ shell up/down/fzf ← shells/{bash,fish}/functions.{bash,fish} ←────�
 - **hook.sh** — sends commands as netstrings from shell preexec hooks
 - **shells/bash/functions.bash** — bash integration (↑↓ history, Ctrl+R fzf)
 - **shells/fish/functions.fish** — fish integration (same)
+- **shells/zsh/functions.zsh** — zsh integration (same)
 
 ## Protocol
 
@@ -30,10 +31,11 @@ Example write message: `1:W,17:ls -la /home/user,10:/home/user,1:0,3:100,`
 
 ## Installation
 
-1. Copy `server.sh`, `processor.sh`, `hook.sh` to `~/.local/share/kavkash/`
+1. Copy `includes.sh`, `server.sh`, `processor.sh`, `hook.sh` to `~/.local/share/kavkash/`
 2. Source the appropriate shell file in your rc:
    - Bash: `source ~/.local/share/kavkash/shells/bash/functions.bash`
    - Fish: `source ~/.local/share/kavkash/shells/fish/functions.fish`
+   - Zsh: `source ~/.local/share/kavkash/shells/zsh/functions.zsh`
 3. Add preexec hook (bash example):
    ```bash
    __kavkash_preexec() { __kavkash_cmd="$BASH_COMMAND"; __kavkash_start=$(date +%s%3N); }
