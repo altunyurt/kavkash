@@ -147,6 +147,14 @@ function _hist_stepper_up
     echo "kavkash debug: up->redraw "(math $t1 - $t0)" ms" >&2
 end
 
+# _hist_stepper_down - Down arrow wrapper: same timing instrumentation.
+function _hist_stepper_down
+    set -l t0 (date +%s%3N)
+    _hist_stepper down
+    set -l t1 (date +%s%3N)
+    echo "kavkash debug: down->redraw "(math $t1 - $t0)" ms" >&2
+end
+
 # _hist_reset - clear navigation state (called via fish_postexec below)
 function _hist_reset
     set -e __hist_resultset __hist_rsi __hist_offset
