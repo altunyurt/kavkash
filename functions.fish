@@ -138,21 +138,14 @@ function _hist_stepper
     end
 end
 
-# _hist_stepper_up - Up arrow wrapper: times press->redraw (repaint happens
-# when _hist_stepper returns). Prints to stderr.
+# _hist_stepper_up - Up arrow wrapper.
 function _hist_stepper_up
-    set -l t0 (date +%s%3N)
     _hist_stepper up
-    set -l t1 (date +%s%3N)
-    echo "kavkash debug: up->redraw "(math $t1 - $t0)" ms" >&2
 end
 
-# _hist_stepper_down - Down arrow wrapper: same timing instrumentation.
+# _hist_stepper_down - Down arrow wrapper.
 function _hist_stepper_down
-    set -l t0 (date +%s%3N)
     _hist_stepper down
-    set -l t1 (date +%s%3N)
-    echo "kavkash debug: down->redraw "(math $t1 - $t0)" ms" >&2
 end
 
 # _hist_reset - clear navigation state (called via fish_postexec below)
