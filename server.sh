@@ -10,7 +10,7 @@ _SCRIPT_DIR="$(dirname -- "$(realpath -- "$0")")"
     && exit 1
 
 # Path to processor.sh (resolved from _SCRIPT_DIR in includes.sh)
-PROC_SCRIPT="${_SCRIPT_DIR}/processor.sh"
+KAV_PROC_SCRIPT="${_SCRIPT_DIR}/processor.sh"
 
 # Initialize SQLite schema (idempotent — uses IF NOT EXISTS)
 sqlite3 "$KAV_DB_FILE" << 'EOF'
@@ -33,18 +33,27 @@ rm -f "$KAV_SOCK_FILE"
 # Write PID file for external ops (status check, graceful kill)
 echo $$ > "$KAV_PID_FILE"
 
-# exec replaces this shell with socat (saves a process)
+# Cleanup on exit: a stale socket file would block the next bind, and a
+# stale pid file would trip the startup guard — both must go when the
+# daemon stops. socat runs as a background child so the shell stays in
+# control of its lifetime: signals (SIGTERM from the pid file, etc.)
+# kill socat first, then the EXIT trap removes the socket and pid files.
+cleanup() {
+    rm -f "$KAV_SOCK_FILE" "$KAV_PID_FILE"
+}
+trap cleanup EXIT
+trap 'kill -TERM "$SOCAT_PID" 2> /dev/null' TERM INT HUP
+
 # - fork: one child process per connection (isolates each request)
 # - mode=0600: socket accessible only to owner
 # - Bidirectional (no -u): required for query responses to reach the client
-#
-# NOTE: socat's EXEC: address parses its argument as a shell-like command
-# line, so embedding "$PROC_SCRIPT $KAV_DB_FILE" directly would silently
-# word-split KAV_DB_FILE on any spaces (e.g. an XDG_DATA_HOME with a space in
-# it). Pass KAV_DB_FILE via environment instead, so it's never re-tokenized.
+# - EXEC:"$KAV_PROC_SCRIPT": processor.sh sources includes.sh itself, so it
+#   knows the DB path (KAV_DB_FILE) with no argv/env handoff.
 #
 # stderr -> server.log: clients disconnecting mid-response is normal
 # (prefetch cancel, fzf exit) and would otherwise spam broken-pipe noise
 # on the daemon's terminal. Real errors (bind failures, sqlite problems)
 # are still recorded in the log.
-exec env HIST_DB="$KAV_DB_FILE" socat UNIX-LISTEN:"$KAV_SOCK_FILE",fork,mode=0600 EXEC:"$PROC_SCRIPT" 2>> "$KAV_RUNTIME_DIR/server.log"
+socat UNIX-LISTEN:"$KAV_SOCK_FILE",fork,mode=0600 EXEC:"$KAV_PROC_SCRIPT" 2>> "$KAV_RUNTIME_DIR/server.log" &
+KAV_SOCAT_PID=$!
+wait "$KAV_SOCAT_PID"
