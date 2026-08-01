@@ -36,7 +36,7 @@ MSG=$(printf '1:W,%s:%s,%s:%s,%s:%s,%s:%s,' \
 # The trailing & detaches the process so the shell isn't blocked.
 # >/dev/null 2>&1: silent on success and failure.
 if command -v socat > /dev/null 2>&1; then
-    printf '%s' "$MSG" | socat - UNIX-CONNECT:"$SOCK_FILE" > /dev/null 2>&1 &
+    printf '%s' "$MSG" | socat - UNIX-CONNECT:"$KAV_SOCK_FILE" > /dev/null 2>&1 &
 elif command -v nc > /dev/null 2>&1; then
-    printf '%s' "$MSG" | nc -U "$SOCK_FILE" > /dev/null 2>&1 &
+    printf '%s' "$MSG" | nc -U "$KAV_SOCK_FILE" > /dev/null 2>&1 &
 fi

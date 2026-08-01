@@ -15,7 +15,7 @@
 #   KAVKASH_NO_SYSTEMD=1      skip systemd --user unit creation/activation entirely
 #
 # Revision tracking:
-#   On success this script writes ${DATA_HOME}/INSTALLED_REVISION containing
+#   On success this script writes ${KAV_DATA_HOME}/INSTALLED_REVISION containing
 #   the repo, the resolved tag, the resolved commit SHA (immutable), the
 #   sha256 of the downloaded tarball, whether that checksum was verified
 #   against a value published by upstream, and the install timestamp. Read
@@ -223,23 +223,23 @@ unpack() {
 }
 
 install_files() {
-    install -d "$DATA_HOME"
+    install -d "$KAV_DATA_HOME"
 
     for f in includes.sh hook.sh server.sh processor.sh; do
-        install -m 755 "$src/$f" "$DATA_HOME/$f"
+        install -m 755 "$src/$f" "$KAV_DATA_HOME/$f"
     done
 
     # Copy-then-swap instead of rm-then-copy, so a failed/partial copy never
     # leaves an empty or half-populated shells/ directory in place of a good one.
     if [ -d "$src/shells" ]; then
-        rm -rf "$DATA_HOME/shells.new"
-        cp -R "$src/shells" "$DATA_HOME/shells.new"
-        rm -rf "$DATA_HOME/shells"
-        mv "$DATA_HOME/shells.new" "$DATA_HOME/shells"
+        rm -rf "$KAV_DATA_HOME/shells.new"
+        cp -R "$src/shells" "$KAV_DATA_HOME/shells.new"
+        rm -rf "$KAV_DATA_HOME/shells"
+        mv "$KAV_DATA_HOME/shells.new" "$KAV_DATA_HOME/shells"
     fi
 
-    [ -f "$src/LICENSE" ] && install -m 644 "$src/LICENSE" "$DATA_HOME/LICENSE"
-    [ -f "$src/README.md" ] && install -m 644 "$src/README.md" "$DATA_HOME/README.md"
+    [ -f "$src/LICENSE" ] && install -m 644 "$src/LICENSE" "$KAV_DATA_HOME/LICENSE"
+    [ -f "$src/README.md" ] && install -m 644 "$src/README.md" "$KAV_DATA_HOME/README.md"
 }
 
 # --- systemd --user integration --------------------------------------------
@@ -269,7 +269,7 @@ After=default.target
 
 [Service]
 Type=simple
-ExecStart=$DATA_HOME/server.sh
+ExecStart=$KAV_DATA_HOME/server.sh
 Restart=on-failure
 RestartSec=2
 
@@ -315,7 +315,7 @@ setup_systemd() {
 }
 
 record_revision() {
-    cat > "$DATA_HOME/INSTALLED_REVISION" << EOF
+    cat > "$KAV_DATA_HOME/INSTALLED_REVISION" << EOF
 repo=$KAVKASH_REPO
 ref=$tag
 commit_sha=$resolved_sha
@@ -329,8 +329,8 @@ EOF
 
 print_summary() {
     say ""
-    say "installed to: $DATA_HOME"
-    say "revision:     $DATA_HOME/INSTALLED_REVISION"
+    say "installed to: $KAV_DATA_HOME"
+    say "revision:     $KAV_DATA_HOME/INSTALLED_REVISION"
     if [ "$verified" != "yes" ]; then
         say "              (checksum NOT verified against an upstream-published value —"
         say "               see INSTALLED_REVISION for the tarball_sha256 that was installed)"
@@ -347,17 +347,17 @@ print_summary() {
         say "  1. daemon: unit installed but not enabled — start it with:"
         say "       systemctl --user enable --now kavkash.service"
         say "     or run it directly, without systemd:"
-        say "       $DATA_HOME/server.sh &"
+        say "       $KAV_DATA_HOME/server.sh &"
     else
         say "  1. start the daemon (keep it running across reboots):"
-        say "       $DATA_HOME/server.sh &"
+        say "       $KAV_DATA_HOME/server.sh &"
         say "     (systemd --user isn't available on this system, so this is manual)"
     fi
 
     say "  2. hook your shell in its rc file:"
-    say "       bash:  source $DATA_HOME/shells/bash/functions.bash"
-    say "       zsh:   source $DATA_HOME/shells/zsh/functions.zsh"
-    say "       fish:  source $DATA_HOME/shells/fish/functions.fish"
+    say "       bash:  source $KAV_DATA_HOME/shells/bash/functions.bash"
+    say "       zsh:   source $KAV_DATA_HOME/shells/zsh/functions.zsh"
+    say "       fish:  source $KAV_DATA_HOME/shells/fish/functions.fish"
     say "  3. bash integration additionally requires bash-preexec:"
     say "       https://github.com/rcaloras/bash-preexec"
 
@@ -375,7 +375,7 @@ main() {
     KAVKASH_BRANCH="${KAVKASH_BRANCH:-main}"
     KAVKASH_SKIP_VERIFY="${KAVKASH_SKIP_VERIFY:-0}"
     KAVKASH_NO_SYSTEMD="${KAVKASH_NO_SYSTEMD:-0}"
-    DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/kavkash"
+    KAV_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/kavkash"
     SYSTEMD_USER_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 
     have curl || have wget || die "need curl or wget to download kavkash"
