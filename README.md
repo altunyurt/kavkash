@@ -7,7 +7,7 @@ Minimal shell history daemon. Captures commands via preexec hook, stores in SQLi
 ```
 shell preexec → hook.sh → Unix socket → server.sh → processor.sh → SQLite
                                                                   ↓
-shell up/down/fzf ← shells/{bash,fish,zsh}/functions.{bash,fish,zsh} ←┘
+shell up/down/fzf ← functions.{bash,fish,zsh} ←┘
 ```
 
 ## Components
@@ -17,9 +17,9 @@ shell up/down/fzf ← shells/{bash,fish,zsh}/functions.{bash,fish,zsh} ←┘
 - **server.sh** — socat daemon, listens on Unix socket
 - **processor.sh** — parses netstring messages, routes writes/queries
 - **hook.sh** — sends commands as netstrings from shell preexec hooks
-- **shells/bash/functions.bash** — bash integration (↑↓ history, Ctrl+R fzf)
-- **shells/fish/functions.fish** — fish integration (same)
-- **shells/zsh/functions.zsh** — zsh integration (same)
+- **functions.bash** — bash integration (↑↓ history, Ctrl+R fzf)
+- **functions.fish** — fish integration (same)
+- **functions.zsh** — zsh integration (same)
 
 ## Protocol
 
@@ -27,7 +27,7 @@ Netstrings, one field per netstring. Concatenated in a single stream.
 
 - **Write:** `W,cmd,cwd,exit_code,duration`
 - **Query up:** `Q,up,offset,count` → returns `count` commands starting at `offset`
-- **Query search:** `Q,search,arg,count` → returns matching commands
+- **Query search:** `Q,search,arg,count` → returns all commands (capped at 10k); fzf filters client-side
 
 Example write message: `1:W,17:ls -la /home/user,10:/home/user,1:0,3:100,`
 
@@ -51,10 +51,10 @@ Then:
    ~/.local/share/kavkash/server.sh &
    ```
 2. Hook your shell in its rc file:
-   - Bash: `source ~/.local/share/kavkash/shells/bash/functions.bash`
+   - Bash: `source ~/.local/share/kavkash/functions.bash`
      (requires [bash-preexec](https://github.com/rcaloras/bash-preexec))
-   - Fish: `source ~/.local/share/kavkash/shells/fish/functions.fish`
-   - Zsh: `source ~/.local/share/kavkash/shells/zsh/functions.zsh`
+   - Fish: `source ~/.local/share/kavkash/functions.fish`
+   - Zsh: `source ~/.local/share/kavkash/functions.zsh`
 
 ## Dependencies
 

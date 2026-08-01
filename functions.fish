@@ -1,15 +1,16 @@
 # Configuration: socket path and batch size for history navigation
-# Must match includes.sh: ${XDG_RUNTIME_DIR}/kavkash/history.sock
+# Must match includes.sh: ${XDG_RUNTIME_DIR}/kavkash/history.sock. fish cannot
+# source includes.sh (POSIX sh syntax), so these stay duplicated — keep in sync.
 if set -q XDG_RUNTIME_DIR
     set -g _HIST_SOCK "$XDG_RUNTIME_DIR/kavkash/history.sock"
 else
     set -g _HIST_SOCK "/tmp/kavkash/history.sock"
 end
 set -g _HIST_BATCH 100
-# Directory containing this file (shells/fish/); hook.sh lives one level up.
+# Directory containing this file (project root); hook.sh lives beside it.
 # Resolved to a REAL path: fish refuses to exec command paths containing "..".
 set -g _HIST_SCRIPT_DIR (dirname (status filename))
-set -g _HIST_HOOK (realpath "$_HIST_SCRIPT_DIR/../../hook.sh")
+set -g _HIST_HOOK (realpath "$_HIST_SCRIPT_DIR/hook.sh")
 
 # _write_ns - encode a string as a netstring: "length:payload,"
 # Uses wc -c for byte count (works for any byte sequence, not just text)
@@ -18,13 +19,8 @@ function _write_ns
     printf '%s:%s,' "$len" "$argv[1]"
 end
 
-# _read_b64 - decode the server's query-response stream into one field per line.
-# Wire format (see processor.sh): one base64-encoded row per line, EOF-terminated.
-# Base64 is used (not raw text, not the request-side netstring format) because
-# a history entry may itself contain embedded newlines — a plain-text or
-# newline-scanning decode would mis-split a single multi-line command into
-# multiple bogus entries. Base64 has no newlines in its alphabet, so it's
-# safe to frame with '\n' regardless of what the decoded payload contains.
+# _read_b64 - decode server's response: one base64 row per line (EOF-terminated).
+# Base64 framing survives embedded newlines in multi-line commands.
 function _read_b64
     while begin
             read b64line
@@ -59,10 +55,8 @@ function _hist_query
     end
 end
 
-# _hist_fetch - fetch a batch of commands and APPEND to __hist_resultset
-# Args: offset count
-# Appends (not replaces) so navigation through previously fetched items works
-# when more history needs to be loaded from further back
+# _hist_fetch - fetch batch at offset and APPEND to __hist_resultset
+# (older batches pile up so navigation can keep going back).
 function _hist_fetch
     set -l offset $argv[1]
     set -l count $argv[2]
@@ -144,8 +138,16 @@ function _hist_stepper
     end
 end
 
-# _hist_reset - clear navigation state (called by postexec event, NOT bound to Enter)
-# Binding to Enter would intercept the normal command execution
+# _hist_stepper_up - Up arrow wrapper: times press->redraw (repaint happens
+# when _hist_stepper returns). Prints to stderr.
+function _hist_stepper_up
+    set -l t0 (date +%s%3N)
+    _hist_stepper up
+    set -l t1 (date +%s%3N)
+    echo "kavkash debug: up->redraw "(math $t1 - $t0)" ms" >&2
+end
+
+# _hist_reset - clear navigation state (called via fish_postexec below)
 function _hist_reset
     set -e __hist_resultset __hist_rsi __hist_offset
 end
@@ -167,17 +169,15 @@ function _hist_cancel
     commandline -f cancel-commandline
 end
 
-# fish_user_key_bindings - register all key bindings
-# \e[A = Up arrow, \e[B = Down arrow, \C-r = Ctrl+R, \C-c = Ctrl+C
+# fish_user_key_bindings - register all key bindings.
 # Enter is NOT bound — fish's normal Enter executes the command.
-# State is cleared by the preexec event below.
 function fish_user_key_bindings
     bind --user --erase up 2>/dev/null
     bind --user --erase down 2>/dev/null
     bind --user --erase \cr 2>/dev/null
 
-    bind --user up "_hist_stepper up"
-    bind --user down "_hist_stepper down"
+    bind --user up _hist_stepper_up
+    bind --user down _hist_stepper_down
     bind --user \cr _hist_search
     bind --user -M insert \cr _hist_search
     bind --user \cc _hist_cancel
@@ -190,9 +190,8 @@ function _hist_postexec --on-event fish_postexec
 end
 
 # Preload the first batch so the first Up press doesn't block on IPC.
-# Must pre-init state: _hist_stepper skips lazy init when __hist_resultset exists,
-# which would leave __hist_rsi/__hist_offset unset. Synchronous (blocks once at
-# startup, avoids a fetch race on first keypress).
+# Pre-init state explicitly (stepper skips lazy init when the resultset
+# exists) and fetch synchronously to avoid a race on the first keypress.
 set -g __hist_resultset
 set -g __hist_rsi 1
 set -g __hist_offset 0

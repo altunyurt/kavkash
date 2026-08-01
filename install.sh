@@ -29,7 +29,7 @@
 #   daemon manually. Where systemd isn't usable — no systemd PID 1, no
 #   `systemctl`, or no active --user session/bus (e.g. a container without
 #   lingering enabled) — it falls back to printing manual start
-#   instructions, exactly as before. Local customizations belong in a
+#   instructions. Local customizations belong in a
 #   drop-in (`systemctl --user edit kavkash.service`), since this script
 #   regenerates the base unit file on every run.
 #
@@ -153,9 +153,8 @@ resolve_source() {
         say "kavkash: fetching branch '$KAVKASH_BRANCH'"
     fi
 
-    # Best-effort: look for a published checksum asset on the release and
-    # use it to verify the tarball. GitHub does not generate these itself;
-    # they only exist if the project publishes one. Try a few common names.
+    # Best-effort: look for a published checksum asset on the release (GitHub
+    # doesn't generate these itself; they exist only if upstream publishes one).
     if [ -n "${api_tag_json:-}" ]; then
         for name in SHA256SUMS SHA256SUMS.txt checksums.txt sha256sums.txt; do
             asset_url=$(printf '%s' "$api_tag_json" \
@@ -225,18 +224,9 @@ unpack() {
 install_files() {
     install -d "$KAV_DATA_HOME"
 
-    for f in includes.sh hook.sh server.sh processor.sh; do
+    for f in includes.sh hook.sh server.sh processor.sh functions.bash functions.fish functions.zsh; do
         install -m 755 "$src/$f" "$KAV_DATA_HOME/$f"
     done
-
-    # Copy-then-swap instead of rm-then-copy, so a failed/partial copy never
-    # leaves an empty or half-populated shells/ directory in place of a good one.
-    if [ -d "$src/shells" ]; then
-        rm -rf "$KAV_DATA_HOME/shells.new"
-        cp -R "$src/shells" "$KAV_DATA_HOME/shells.new"
-        rm -rf "$KAV_DATA_HOME/shells"
-        mv "$KAV_DATA_HOME/shells.new" "$KAV_DATA_HOME/shells"
-    fi
 
     [ -f "$src/LICENSE" ] && install -m 644 "$src/LICENSE" "$KAV_DATA_HOME/LICENSE"
     [ -f "$src/README.md" ] && install -m 644 "$src/README.md" "$KAV_DATA_HOME/README.md"
@@ -355,9 +345,9 @@ print_summary() {
     fi
 
     say "  2. hook your shell in its rc file:"
-    say "       bash:  source $KAV_DATA_HOME/shells/bash/functions.bash"
-    say "       zsh:   source $KAV_DATA_HOME/shells/zsh/functions.zsh"
-    say "       fish:  source $KAV_DATA_HOME/shells/fish/functions.fish"
+    say "       bash:  source $KAV_DATA_HOME/functions.bash"
+    say "       zsh:   source $KAV_DATA_HOME/functions.zsh"
+    say "       fish:  source $KAV_DATA_HOME/functions.fish"
     say "  3. bash integration additionally requires bash-preexec:"
     say "       https://github.com/rcaloras/bash-preexec"
 

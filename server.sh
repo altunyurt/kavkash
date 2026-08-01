@@ -9,7 +9,7 @@ _SCRIPT_DIR="$(dirname -- "$(realpath -- "$0")")"
     && printf "error: %s\n" "A pid file already exists at $KAV_PID_FILE" \
     && exit 1
 
-# Path to processor.sh (resolved from _SCRIPT_DIR in includes.sh)
+# Path to processor.sh (sibling of this script)
 KAV_PROC_SCRIPT="${_SCRIPT_DIR}/processor.sh"
 
 # Initialize SQLite schema (idempotent — uses IF NOT EXISTS)

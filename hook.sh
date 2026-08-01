@@ -14,27 +14,24 @@ DURATION="${4:-0}"
 # Skip empty commands (defensive — shouldn't happen but harmless)
 [ -z "$CMD" ] && exit 0
 
-# Netstrings are length-PREFIXED IN BYTES, not characters. `${#var}` counts
-# characters (locale-dependent), which under a UTF-8 locale diverges from
-# byte length for any multi-byte command/path — producing a length prefix
-# that doesn't match what the byte-accurate (LC_ALL=C) awk parser on the
-# server expects, silently dropping the write. Use wc -c under LC_ALL=C,
-# same method _write_ns uses client-side, so both ends agree.
+# _ns_len - netstring length prefix is IN BYTES. ${#var} counts chars
+# (locale-dependent), so UTF-8 multi-byte commands would produce a length
+# prefix that mismatches the byte-accurate (LC_ALL=C) awk parser server-side,
+# silently dropping the write. Use wc -c under LC_ALL=C, same as client-side.
 _ns_len() {
     printf '%s' "$1" | LC_ALL=C wc -c | tr -d ' '
 }
 
-# Build netstring message: "W,cmd,cwd,exit_code,duration" as concatenated netstrings.
-# Example: 1:W,17:ls -la /home/user,10:/home/user,1:0,3:100,
+# Build write message: "W,cmd,cwd,exit_code,duration" as concatenated
+# netstrings. Example: 1:W,17:ls -la /home/user,10:/home/user,1:0,3:100,
 MSG=$(printf '1:W,%s:%s,%s:%s,%s:%s,%s:%s,' \
     "$(_ns_len "$CMD")" "$CMD" \
     "$(_ns_len "$CWD")" "$CWD" \
     "$(_ns_len "$EXIT_CODE")" "$EXIT_CODE" \
     "$(_ns_len "$DURATION")" "$DURATION")
 
-# Fire-and-forget delivery: backgrounded, errors suppressed.
-# The trailing & detaches the process so the shell isn't blocked.
-# >/dev/null 2>&1: silent on success and failure.
+# Fire-and-forget: backgrounded, silent — the shell isn't blocked and
+# write failures (daemon down) produce no noise.
 if command -v socat > /dev/null 2>&1; then
     printf '%s' "$MSG" | socat - UNIX-CONNECT:"$KAV_SOCK_FILE" > /dev/null 2>&1 &
 elif command -v nc > /dev/null 2>&1; then

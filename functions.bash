@@ -1,7 +1,5 @@
-# Configuration: socket path and batch size for history navigation
-# The socket lives under XDG_RUNTIME_DIR (matches includes.sh on the daemon
-# side). The shell does NOT source config — no kavkash config variables
-# enter the interactive session.
+# kavkash bash integration — source from .bashrc.
+# Requires bash-preexec.
 
 if [[ -z "${bash_preexec_imported:-}" ]]; then
     printf "Bash-preexec is NOT loaded. If you don't have bash-preexec installed yet, visit"
@@ -10,14 +8,12 @@ if [[ -z "${bash_preexec_imported:-}" ]]; then
     exit 1
 fi
 
-_HIST_BATCH=100
-_HIST_SOCK="${XDG_RUNTIME_DIR:-/tmp}/kavkash/history.sock"
-# BASH_SOURCE (not $0, which is the shell name when sourced): repo layout
-# puts this file at shells/bash/, so two levels up is the kavkash root.
-_SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
+# Shared paths/batch size from includes.sh (same dir as this file).
+_SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+. "$_SCRIPT_DIR/includes.sh"
 
-# _write_ns - encode a string as a netstring: "length:payload,"
-# Uses a subshell to get byte count via wc -c (avoids bash-specific ${#var} for binary safety)
+# _write_ns - netstring: "length:payload,". Byte count via wc -c
+# (${#var} counts chars, not bytes — wrong under UTF-8).
 _write_ns() {
     printf '%s' "$1" | {
         len=$(LC_ALL=C wc -c | tr -d ' ')
@@ -25,13 +21,8 @@ _write_ns() {
     }
 }
 
-# _read_b64 - decode the server's query-response stream into one field per line.
-# Wire format (see processor.sh): one base64-encoded row per line, EOF-terminated.
-# Base64 is used (not raw text, not the request-side netstring format) because
-# a history entry may itself contain embedded newlines — a plain-text or
-# newline-scanning decode would mis-split a single multi-line command into
-# multiple bogus entries. Base64 has no newlines in its alphabet, so it's
-# safe to frame with '\n' regardless of what the decoded payload contains.
+# _read_b64 - decode server's response: one base64 row per line (EOF-terminated).
+# Base64 framing survives embedded newlines in multi-line commands.
 _read_b64() {
     local b64line
     while IFS= read -r b64line || [[ -n "$b64line" ]]; do
@@ -59,24 +50,21 @@ _hist_query() {
     fi
 
     if command -v socat > /dev/null 2>&1; then
-        printf '%s' "$payload" | socat - UNIX-CONNECT:"$_HIST_SOCK" 2> /dev/null
+        printf '%s' "$payload" | socat - UNIX-CONNECT:"$KAV_SOCK_FILE" 2> /dev/null
     elif command -v nc > /dev/null 2>&1; then
-        printf '%s' "$payload" | nc -U "$_HIST_SOCK" 2> /dev/null
+        printf '%s' "$payload" | nc -U "$KAV_SOCK_FILE" 2> /dev/null
     fi
 }
 
-# _hist_fetch - fetch a batch of commands and APPEND to __hist_resultset
-# Args: offset count
-# Appends (not replaces) so navigation through previously fetched items works
-# when more history needs to be loaded from further back
+# _hist_fetch - fetch batch at offset and APPEND to __hist_resultset
+# (older batches pile up so navigation can keep going back).
 _hist_fetch() {
     local offset="$1"
     local count="$2"
     local result
     result=$(_hist_query "up" "$offset" "$count" | _read_b64)
     if [[ -n "$result" ]]; then
-        # Append each line to the resultset. `|| [[ -n "$line" ]]` picks up
-        # a final entry even if it lacks a trailing newline.
+        # `|| [[ -n "$line" ]]` catches a final entry without trailing newline.
         while IFS= read -r line || [[ -n "$line" ]]; do
             __hist_resultset+=("$line")
         done <<< "$result"
@@ -86,24 +74,20 @@ _hist_fetch() {
 # Prefetch config — start fetching the next batch once this many entries remain
 _HIST_PREFETCH_THRESHOLD=20
 
-# _hist_prefetch_start - kick off the next batch fetch in the background.
-# Uses `exec {fd}< <(...)` (backgrounded process substitution) instead of a
-# temp file or FIFO: the pipeline starts running immediately, we get back a
-# live fd to read from whenever we're ready, and $! gives its PID. All state
-# lives in session variables — nothing touches disk.
+# _hist_prefetch_start - background-fetch the next batch via process
+# substitution; skip if one is already in flight.
 _hist_prefetch_start() {
     local offset="$1"
     # don't stack a second prefetch on top of one already in flight
     [[ -n "${__hist_prefetch_pid:-}" ]] && return
 
-    exec {__hist_prefetch_fd}< <(_hist_query "up" "$offset" "$_HIST_BATCH" | _read_b64)
+    exec {__hist_prefetch_fd}< <(_hist_query "up" "$offset" "$KAV_HIST_BATCH" | _read_b64)
     __hist_prefetch_pid=$!
     __hist_prefetch_offset="$offset"
 }
 
-# _hist_prefetch_collect - drain a completed (or still-running) prefetch into
-# __hist_resultset. Blocks only if the background fetch hasn't finished yet —
-# same worst case as the old synchronous _hist_fetch, but usually it's already done.
+# _hist_prefetch_collect - drain a prefetch into __hist_resultset. Blocks
+# only if the background fetch is still running.
 _hist_prefetch_collect() {
     [[ -z "${__hist_prefetch_fd:-}" ]] && return 1
     local line
@@ -114,7 +98,7 @@ _hist_prefetch_collect() {
     unset __hist_prefetch_fd __hist_prefetch_pid __hist_prefetch_offset
 }
 
-# _hist_prefetch_cancel - abandon any in-flight prefetch (call from _hist_reset/_hist_cancel)
+# _hist_prefetch_cancel - abandon an in-flight prefetch (from reset/cancel)
 _hist_prefetch_cancel() {
     if [[ -n "${__hist_prefetch_pid:-}" ]]; then
         kill "$__hist_prefetch_pid" 2> /dev/null
@@ -149,6 +133,12 @@ _hist_search() {
 # Down: step back through resultset. If at start, clear line and reset.
 _hist_stepper() {
     local direction="$1"
+    # Hide cursor while the line is swapped: readline's full-line redraw
+    # makes a visible cursor flicker mid-swap. RETURN trap restores it on
+    # every exit path (incl. the early `return` when nothing was fetched),
+    # and bash only fires it when THIS function returns — not nested calls.
+    printf '\e[?25l'
+    trap 'printf "\e[?25h"' RETURN
 
     # Initialize state on first invocation
     if [[ -z "${__hist_resultset+x}" ]]; then
@@ -165,7 +155,7 @@ _hist_stepper() {
             if [[ -n "${__hist_prefetch_pid:-}" && "${__hist_prefetch_offset:-}" == "$__hist_offset" ]]; then
                 _hist_prefetch_collect # usually instant — already fetched in background
             else
-                _hist_fetch "$__hist_offset" "$_HIST_BATCH" # fallback: cold start / prefetch missed
+                _hist_fetch "$__hist_offset" "$KAV_HIST_BATCH" # fallback: cold start / prefetch missed
             fi
             rsi_len=${#__hist_resultset[@]}
             if ((rsi_len == prev_len)); then
@@ -189,9 +179,8 @@ _hist_stepper() {
             __hist_rsi=$((__hist_rsi - 1))
             __hist_offset=$((__hist_offset - 1))
             if ((__hist_rsi > 0)); then
-                # Show index rsi-1 (one step before the new rsi), since the last up
-                # displayed resultset[old_rsi] then incremented rsi to old_rsi+1.
-                # After decrement, rsi = old_rsi, and we want to show old_rsi-1.
+                # Step back: show the entry before the new rsi (last up
+                # displayed resultset[old_rsi] then incremented rsi).
                 READLINE_LINE="${__hist_resultset[$((__hist_rsi - 1))]}"
                 READLINE_POINT=${#READLINE_LINE}
             else
@@ -210,11 +199,21 @@ _hist_stepper() {
 }
 
 # bind -x doesn't pass arguments directly, so wrap with direction argument
-_hist_stepper_up() { _hist_stepper "up"; }
+# Up wrapper times press->redraw: readline repaints right after this returns,
+# so elapsed ≈ redraw latency. Prints to stderr (keeps stdout clean for IPC).
+_hist_stepper_up() {
+    local _t0=$EPOCHREALTIME
+    _hist_stepper "up"
+    local _t1=$EPOCHREALTIME
+
+    if [[ $KAV_DEBUG -eq 1 ]]; then
+        printf 'kavkash debug: up->redraw %.1f ms\n' "$(awk -v a="$_t0" -v b="$_t1" 'BEGIN{printf "%.1f", (b-a)*1000}')" >&2
+    fi
+}
 _hist_stepper_down() { _hist_stepper "down"; }
 
-# _hist_reset - clear navigation state (called by preexec hook, NOT bound to Enter)
-# Binding to Enter would intercept the normal command execution
+# _hist_reset - clear navigation state. Hooked to bash-preexec's precmd;
+# Enter itself is left unbound so it executes the command normally.
 _hist_reset() {
     _hist_prefetch_cancel
     unset __hist_resultset __hist_rsi __hist_offset
@@ -226,11 +225,9 @@ _hist_cancel() {
     unset __hist_resultset __hist_rsi __hist_offset
 }
 
-# _hist_bind_keys - register all key bindings
-# bind -x runs the function directly (not just inserts text)
-# \e[A = Up arrow, \e[B = Down arrow, \C-r = Ctrl+R, \C-c = Ctrl+C
-# Enter is NOT bound — normal readline Enter executes the command.
-# State is cleared by precmd_hist_reset (bash-preexec).
+# _hist_bind_keys - register all key bindings. bind -x runs the function
+# directly (not just inserts text). Enter is NOT bound — normal readline
+# Enter executes the command; state is cleared by precmd_hist_reset.
 _hist_bind_keys() {
     bind -x '"\C-r": _hist_search'
     bind -x '"\e[A": _hist_stepper_up'
