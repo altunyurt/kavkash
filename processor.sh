@@ -12,7 +12,7 @@
 #       Base64 is used instead of raw text because history entries (e.g.
 #       multi-line commands) may contain embedded newlines, which would
 #       otherwise corrupt line-based framing.
-db_file="${HIST_DB:-$1}" # env var (see server.sh) with $1 fallback for manual invocation
+db_file="${KAV_DB_FILE:-$1}" # computed by includes.sh (sourced above); $1 fallback for manual invocation
 
 # Bound total bytes read to defend against unbounded-buffering DoS from a
 # client that never sends a valid netstring (no colon => awk parser would

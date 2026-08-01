@@ -176,12 +176,29 @@ function fish_user_key_bindings
     bind --user --erase down 2>/dev/null
     bind --user --erase \cr 2>/dev/null
 
+    # Bind by keyname AND by raw escape sequence: fish resolves incoming
+    # bytes against raw-sequence bindings first, so a keyname-only binding
+    # can lose to the preset up-line/down-line (fish's own history).
     bind --user up _hist_stepper_up
     bind --user down _hist_stepper_down
+    bind --user -M insert up _hist_stepper_up
+    bind --user -M insert down _hist_stepper_down
+    bind --user \e\[A _hist_stepper_up
+    bind --user \e\[B _hist_stepper_down
+    bind --user -M insert \e\[A _hist_stepper_up
+    bind --user -M insert \e\[B _hist_stepper_down
+    bind --user \eOA _hist_stepper_up
+    bind --user \eOB _hist_stepper_down
+    bind --user -M insert \eOA _hist_stepper_up
+    bind --user -M insert \eOB _hist_stepper_down
     bind --user \cr _hist_search
     bind --user -M insert \cr _hist_search
     bind --user \cc _hist_cancel
 end
+
+# Apply bindings now: fish only auto-calls fish_user_key_bindings at startup,
+# so a mid-session `source functions.fish` would otherwise never bind.
+fish_user_key_bindings
 
 # Clear navigation state after each command completes
 # fish_postexec fires after a command line finishes
