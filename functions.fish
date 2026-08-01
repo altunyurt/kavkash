@@ -74,7 +74,7 @@ function _hist_search
     if test -n "$selected"
         commandline -r "$selected"
     end
-    commandline -f repaint
+    commandline -f end-of-line
 end
 
 # _hist_stepper - handle Up/Down arrow history navigation
@@ -111,7 +111,12 @@ function _hist_stepper
             commandline -r "$__hist_resultset[$__hist_rsi]"
             set -g __hist_rsi (math $__hist_rsi + 1)
             set -g __hist_offset (math $__hist_offset + 1)
-            commandline -f repaint
+            # end-of-line: redraws the line and parks the caret at the end.
+            # Plain `repaint`/`repaint-mode` re-run fish_prompt (slow prompts
+            # like git status stall every arrow) and can leave the caret over
+            # the text when the previous line was wrapped or the caret wasn't
+            # at the end.
+            commandline -f end-of-line
 
         case down
             if test $rsi_len -gt 0; and test $__hist_rsi -gt 1
@@ -128,12 +133,12 @@ function _hist_stepper
                     commandline -r ""
                     set -e __hist_resultset __hist_rsi __hist_offset
                 end
-                commandline -f repaint
+                commandline -f end-of-line
             else
                 # Past the start — clear line and reset state
                 commandline -r ""
                 set -e __hist_resultset __hist_rsi __hist_offset
-                commandline -f repaint
+                commandline -f end-of-line
             end
     end
 end
