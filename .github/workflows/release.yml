@@ -1,0 +1,31 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bundle
+        run: |
+          mkdir -p release/kavkash-${{ github.ref_name }}
+          cp includes.sh hook.sh server.sh processor.sh import.sh install.sh \
+             functions.bash functions.fish functions.zsh VERSION LICENSE README.md \
+             release/kavkash-${{ github.ref_name }}/
+          tar -czf kavkash-${{ github.ref_name }}.tar.gz -C release kavkash-${{ github.ref_name }}
+          sha256sum kavkash-${{ github.ref_name }}.tar.gz > SHA256SUMS
+
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            kavkash-${{ github.ref_name }}.tar.gz
+            SHA256SUMS

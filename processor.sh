@@ -12,16 +12,20 @@
 #       Base64 is used instead of raw text because history entries (e.g.
 #       multi-line commands) may contain embedded newlines, which would
 #       otherwise corrupt line-based framing.
-db_file="${KAV_DB_FILE:-$1}" # from includes.sh; $1 = manual invocation fallback
+db_file="${HIST_DB:-$1}" # env var (see server.sh) with $1 fallback for manual invocation
 
-# Bound input to 2MB: a client that never sends a valid netstring would
-# otherwise be buffered (and parsed) forever.
+# Bound total bytes read to defend against unbounded-buffering DoS from a
+# client that never sends a valid netstring (no colon => awk parser would
+# otherwise still have consumed all of `cat`'s output before rejecting it).
 INPUT=$(head -c 2097152)
 [ -z "$INPUT" ] && exit 0
 
-# Netstring parser: emits each payload field base64-encoded, one per line
-# (newline-free, NUL-free — survives command-substitution round trips and
-# embedded newlines). Max payload 1MB.
+# Netstring parser: decodes "length:payload," into fields.
+# Each field is emitted base64-encoded, one per output line. Base64 output
+# is guaranteed newline-free (with -w0) and NUL-free, so it survives a
+# shell command-substitution round trip intact regardless of what bytes
+# (including raw newlines) the original payload contained.
+# Max payload size: 1MB (prevents OOM from malicious clients).
 FIELDS=$(printf '%s' "$INPUT" | LC_ALL=C awk '
 BEGIN { RS = "\0" }  # treat entire input as one record
 {
@@ -57,7 +61,7 @@ BEGIN { RS = "\0" }  # treat entire input as one record
 }')
 [ -z "$FIELDS" ] && exit 0
 
-# Rebuild positional parameters from the decoded fields (no eval).
+# Reconstruct positional parameters from base64-decoded fields (avoids eval/RCE).
 set --
 while IFS= read -r b64field || [ -n "$b64field" ]; do
     field=$(printf '%s' "$b64field" | base64 -d 2> /dev/null)
@@ -110,9 +114,11 @@ case "$TYPE" in
         esac
         [ -z "$sql" ] && exit 0
 
-        # -ascii mode (0x1E row sep, 0x1F col sep) instead of newline-separated
-        # output: an entry containing an embedded newline would otherwise be
-        # mis-split into bogus rows by newline-based consumers.
+        # Use -ascii mode (0x1E row separator, 0x1F column separator)
+        # instead of sqlite3's default newline-separated list output.
+        # A history entry containing an embedded literal newline would
+        # otherwise be mis-split into multiple bogus "rows" by any
+        # newline-based consumer downstream.
         sqlite3 -ascii "$db_file" "$sql" | LC_ALL=C awk '
         BEGIN { RS = "\036" }
         {

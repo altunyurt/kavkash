@@ -16,6 +16,7 @@ shell up/down/fzf ← functions.{bash,fish,zsh} ←┘
 - **install.sh** — curl-pipe installer (fetches latest stable release from GitHub)
 - **server.sh** — socat daemon, listens on Unix socket
 - **processor.sh** — parses netstring messages, routes writes/queries
+- **import.sh** — imports existing history (bash/zsh/fish, atuin) into the DB
 - **hook.sh** — sends commands as netstrings from shell preexec hooks
 - **functions.bash** — bash integration (↑↓ history, Ctrl+R fzf)
 - **functions.fish** — fish integration (same)
@@ -42,6 +43,11 @@ from GitHub and installs it to `${XDG_DATA_HOME:-~/.local/share}/kavkash`.
 There is no config file: the data location follows the XDG spec, and the
 socket path follows `XDG_RUNTIME_DIR` — identical for the daemon and the
 shell integrations everywhere.
+
+On install it offers to import your existing history — bash/zsh/fish history
+files and the atuin database. Skip or force with `KAVKASH_IMPORT=0|1`; the
+import is idempotent (commands already in the DB are skipped). You can also
+run `~/.local/share/kavkash/import.sh` manually any time.
 
 Then:
 

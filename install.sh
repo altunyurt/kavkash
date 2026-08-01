@@ -13,6 +13,8 @@
 #                             whenever KAVKASH_TARBALL_URL is set — see note below)
 #   KAVKASH_SKIP_VERIFY=1     proceed even if no checksum could be verified
 #   KAVKASH_NO_SYSTEMD=1      skip systemd --user unit creation/activation entirely
+#   KAVKASH_IMPORT=1|0        import existing shell/atuin history: 1 = yes,
+#                             0 = no (default: prompt interactively)
 #
 # Revision tracking:
 #   On success this script writes ${KAV_DATA_HOME}/INSTALLED_REVISION containing
@@ -131,16 +133,29 @@ resolve_source() {
         fi
     fi
 
-    if [ -n "$tag" ] && [ -n "$resolved_sha" ]; then
-        url="https://github.com/$KAVKASH_REPO/archive/$resolved_sha.tar.gz"
-        say "kavkash: fetching release '$tag' (commit $resolved_sha)"
-    elif [ -n "$tag" ]; then
-        # got a tag name but couldn't resolve a SHA for it — fall back to
-        # the tag ref directly; less verifiable but still a named release
-        url="https://github.com/$KAVKASH_REPO/archive/refs/tags/$tag.tar.gz"
-        resolved_sha="(unresolved — GitHub API did not return a commit SHA for this tag)"
-        warn "could not resolve tag '$tag' to a commit SHA; installing by tag name only"
-        say "kavkash: fetching release '$tag'"
+    if [ -n "$tag" ]; then
+        # Prefer the published release asset (kavkash-<tag>.tar.gz) — it can
+        # be verified against the SHA256SUMS published alongside. Fall back
+        # to GitHub's auto-generated archive when the release has no asset.
+        asset_url=$(printf '%s' "$api_tag_json" \
+            | tr ',' '\n' \
+            | grep '"browser_download_url"' \
+            | grep 'kavkash-.*\.tar\.gz' \
+            | json_field browser_download_url)
+        if [ -n "$asset_url" ]; then
+            url="$asset_url"
+            say "kavkash: fetching release asset '$tag'"
+        elif [ -n "$resolved_sha" ]; then
+            url="https://github.com/$KAVKASH_REPO/archive/$resolved_sha.tar.gz"
+            say "kavkash: fetching release '$tag' (commit $resolved_sha)"
+        else
+            # got a tag name but couldn't resolve a SHA for it — fall back to
+            # the tag ref directly; less verifiable but still a named release
+            url="https://github.com/$KAVKASH_REPO/archive/refs/tags/$tag.tar.gz"
+            resolved_sha="(unresolved — GitHub API did not return a commit SHA for this tag)"
+            warn "could not resolve tag '$tag' to a commit SHA; installing by tag name only"
+            say "kavkash: fetching release '$tag'"
+        fi
     else
         # no stable release resolvable at all — fall back to branch HEAD
         url="https://github.com/$KAVKASH_REPO/archive/refs/heads/$KAVKASH_BRANCH.tar.gz"
@@ -224,12 +239,13 @@ unpack() {
 install_files() {
     install -d "$KAV_DATA_HOME"
 
-    for f in includes.sh hook.sh server.sh processor.sh functions.bash functions.fish functions.zsh; do
+    for f in includes.sh hook.sh server.sh processor.sh import.sh functions.bash functions.fish functions.zsh; do
         install -m 755 "$src/$f" "$KAV_DATA_HOME/$f"
     done
 
     [ -f "$src/LICENSE" ] && install -m 644 "$src/LICENSE" "$KAV_DATA_HOME/LICENSE"
     [ -f "$src/README.md" ] && install -m 644 "$src/README.md" "$KAV_DATA_HOME/README.md"
+    [ -f "$src/VERSION" ] && install -m 644 "$src/VERSION" "$KAV_DATA_HOME/VERSION"
 }
 
 # --- systemd --user integration --------------------------------------------
@@ -304,9 +320,38 @@ setup_systemd() {
     enable_systemd_service
 }
 
+import_history() {
+    # Opt in via KAVKASH_IMPORT=1/0; otherwise prompt. Under curl|sh stdin
+    # is the script pipe, not a terminal — read the answer from /dev/tty.
+    # Import writes straight to the DB and needs no running daemon.
+    if [ "${KAVKASH_IMPORT:-}" = "1" ]; then
+        answer="y"
+    elif [ "${KAVKASH_IMPORT:-}" = "0" ]; then
+        answer="n"
+    elif { printf "import existing shell/atuin history into kavkash? [y/N] " > /dev/tty \
+        && read answer < /dev/tty; } 2> /dev/null; then
+        { printf '\r' > /dev/tty; } 2> /dev/null || true
+    elif [ -t 0 ]; then
+        printf "import existing shell/atuin history into kavkash? [y/N] "
+        read answer || answer="n"
+    else
+        answer="n"
+    fi
+    case "$answer" in
+        y | Y) answer="y" ;;
+        *) answer="n" ;;
+    esac
+
+    if [ "$answer" = "y" ]; then
+        say "kavkash: importing history..."
+        "$KAV_DATA_HOME/import.sh" || warn "history import failed (see error above)"
+    fi
+}
+
 record_revision() {
     cat > "$KAV_DATA_HOME/INSTALLED_REVISION" << EOF
 repo=$KAVKASH_REPO
+version=$(cat "$src/VERSION" 2> /dev/null || echo unknown)
 ref=$tag
 commit_sha=$resolved_sha
 tarball_url=$url
@@ -320,6 +365,7 @@ EOF
 print_summary() {
     say ""
     say "installed to: $KAV_DATA_HOME"
+    say "version:      $(cat "$KAV_DATA_HOME/VERSION" 2> /dev/null || echo unknown)"
     say "revision:     $KAV_DATA_HOME/INSTALLED_REVISION"
     if [ "$verified" != "yes" ]; then
         say "              (checksum NOT verified against an upstream-published value —"
@@ -328,28 +374,52 @@ print_summary() {
     say ""
     say "next steps:"
 
+    say "  1. start the daemon:"
     if [ "$systemd_enabled" = "yes" ]; then
-        say "  1. daemon: running under systemd --user (kavkash.service)"
+        say "       running under systemd --user (kavkash.service)"
         say "       status:  systemctl --user status kavkash.service"
         say "       logs:    journalctl --user -u kavkash.service -f"
         say "       restart: systemctl --user restart kavkash.service"
     elif [ "$systemd_enabled" = "no" ]; then
-        say "  1. daemon: unit installed but not enabled — start it with:"
+        say "       unit installed but not enabled — start it with:"
         say "       systemctl --user enable --now kavkash.service"
-        say "     or run it directly, without systemd:"
+        say "       or run it directly, without systemd:"
         say "       $KAV_DATA_HOME/server.sh &"
     else
-        say "  1. start the daemon (keep it running across reboots):"
         say "       $KAV_DATA_HOME/server.sh &"
-        say "     (systemd --user isn't available on this system, so this is manual)"
+        say "       (systemd --user isn't available on this system, so this is manual)"
     fi
 
-    say "  2. hook your shell in its rc file:"
+    say "  2. hook your shell — add ONE line to your rc file, then start a new shell:"
     say "       bash:  source $KAV_DATA_HOME/functions.bash"
+    say "              (requires bash-preexec: https://github.com/rcaloras/bash-preexec)"
     say "       zsh:   source $KAV_DATA_HOME/functions.zsh"
     say "       fish:  source $KAV_DATA_HOME/functions.fish"
-    say "  3. bash integration additionally requires bash-preexec:"
-    say "       https://github.com/rcaloras/bash-preexec"
+
+    detected=$(basename "${SHELL:-}")
+    case "$detected" in
+        bash)
+            say "       your shell is bash — add it now:"
+            say "       echo 'source $KAV_DATA_HOME/functions.bash' >> ~/.bashrc"
+            ;;
+        zsh)
+            say "       your shell is zsh — add it now:"
+            say "       echo 'source $KAV_DATA_HOME/functions.zsh' >> ~/.zshrc"
+            ;;
+        fish)
+            say "       your shell is fish — add it now:"
+            say "       echo 'source $KAV_DATA_HOME/functions.fish' >> ~/.config/fish/config.fish"
+            ;;
+    esac
+
+    say "  3. existing history (bash/zsh/fish files, atuin DB):"
+    say "       import now, or any time later:"
+    say "       $KAV_DATA_HOME/import.sh   (idempotent — safe to re-run)"
+    say "       re-running this installer also offers the import again"
+
+    say "  4. start from scratch (clear all stored history):"
+    say "       rm -f $KAV_DATA_HOME/history.db"
+    say "       (the daemon recreates the database on its next start)"
 
     if [ "$systemd_enabled" != "yes" ]; then
         pidfile="${XDG_RUNTIME_DIR:-/tmp}/kavkash/server.pid"
@@ -375,6 +445,7 @@ main() {
     fetch_and_verify
     unpack
     install_files
+    import_history
     setup_systemd
     record_revision
     print_summary
