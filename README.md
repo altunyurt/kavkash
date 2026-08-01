@@ -12,6 +12,8 @@ shell up/down/fzf ← shells/{bash,fish,zsh}/functions.{bash,fish,zsh} ←┘
 
 ## Components
 
+- **includes.sh** — shared defaults (data location, socket/pid paths)
+- **install.sh** — curl-pipe installer (fetches latest stable release from GitHub)
 - **server.sh** — socat daemon, listens on Unix socket
 - **processor.sh** — parses netstring messages, routes writes/queries
 - **hook.sh** — sends commands as netstrings from shell preexec hooks
@@ -31,22 +33,28 @@ Example write message: `1:W,17:ls -la /home/user,10:/home/user,1:0,3:100,`
 
 ## Installation
 
-1. Copy `includes.sh`, `server.sh`, `processor.sh`, `hook.sh` to `~/.local/share/kavkash/`
-2. Source the appropriate shell file in your rc:
+```sh
+curl -fsSL https://raw.githubusercontent.com/altunyurt/kavkash/main/install.sh | dash
+```
+
+(Piping to `bash` works too.) The installer fetches the latest stable release
+from GitHub and installs it to `${XDG_DATA_HOME:-~/.local/share}/kavkash`.
+There is no config file: the data location follows the XDG spec, and the
+socket path follows `XDG_RUNTIME_DIR` — identical for the daemon and the
+shell integrations everywhere.
+
+Then:
+
+1. Start the daemon and keep it running across reboots (login shell, service
+   manager, …):
+   ```sh
+   ~/.local/share/kavkash/server.sh &
+   ```
+2. Hook your shell in its rc file:
    - Bash: `source ~/.local/share/kavkash/shells/bash/functions.bash`
+     (requires [bash-preexec](https://github.com/rcaloras/bash-preexec))
    - Fish: `source ~/.local/share/kavkash/shells/fish/functions.fish`
    - Zsh: `source ~/.local/share/kavkash/shells/zsh/functions.zsh`
-3. Add preexec hook (bash example):
-   ```bash
-   __kavkash_preexec() { __kavkash_cmd="$BASH_COMMAND"; __kavkash_start=$(date +%s%3N); }
-   trap '__kavkash_preexec' DEBUG
-   __kavkash_postexec() {
-       local d=$(( $(date +%s%3N) - ${__kavkash_start:-0} ))
-       ~/.local/share/kavkash/hook.sh "$__kavkash_cmd" "$PWD" "$?" "$d" &
-   }
-   trap '__kavkash_postexec' EXIT
-   ```
-4. Start server: `dash ~/.local/share/kavkash/server.sh &`
 
 ## Dependencies
 

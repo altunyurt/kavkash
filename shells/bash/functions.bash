@@ -1,4 +1,7 @@
 # Configuration: socket path and batch size for history navigation
+# The socket lives under XDG_RUNTIME_DIR (matches includes.sh on the daemon
+# side). The shell does NOT source config — no kavkash config variables
+# enter the interactive session.
 
 if [[ -z "${bash_preexec_imported:-}" ]]; then
     printf "Bash-preexec is NOT loaded. If you don't have bash-preexec installed yet, visit"
@@ -7,8 +10,11 @@ if [[ -z "${bash_preexec_imported:-}" ]]; then
     exit 1
 fi
 
-SCRIPT_DIR=$(dirname -- "$(realpath -- "$0")")
-source $SCRIPT_DIR/includes.sh
+_HIST_BATCH=100
+_HIST_SOCK="${XDG_RUNTIME_DIR:-/tmp}/kavkash/history.sock"
+# BASH_SOURCE (not $0, which is the shell name when sourced): repo layout
+# puts this file at shells/bash/, so two levels up is the kavkash root.
+_SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 
 # _write_ns - encode a string as a netstring: "length:payload,"
 # Uses a subshell to get byte count via wc -c (avoids bash-specific ${#var} for binary safety)
@@ -53,9 +59,9 @@ _hist_query() {
     fi
 
     if command -v socat > /dev/null 2>&1; then
-        printf '%s' "$payload" | socat - UNIX-CONNECT:"$SOCK_FILE" 2> /dev/null
+        printf '%s' "$payload" | socat - UNIX-CONNECT:"$_HIST_SOCK" 2> /dev/null
     elif command -v nc > /dev/null 2>&1; then
-        printf '%s' "$payload" | nc -U "$SOCK_FILE" 2> /dev/null
+        printf '%s' "$payload" | nc -U "$_HIST_SOCK" 2> /dev/null
     fi
 }
 
@@ -236,7 +242,7 @@ _hist_bind_keys() {
 _hist_bind_keys
 
 preexec_hook() {
-    $SCRIPT_DIR/hook.sh "$1" "$PWD" "" ""
+    "$_SCRIPT_DIR/hook.sh" "$1" "$PWD" "" ""
 }
 preexec_functions+=(preexec_hook)
 

@@ -1,13 +1,14 @@
 #! /usr/bin/dash
 
-__RUNTIME_DIR=${XDG_RUNTIME_DIR:-/tmp}/kavkash
-__DATA_HOME=${XDG_DATA_HOME:-$HOME/.local/share}/kavkash
-_SCRIPT_DIR=$(dirname -- "$(realpath -- "$0")")
+# Data location follows the XDG spec. The socket and pid file always live
+# under XDG_RUNTIME_DIR and are NOT configurable, so the daemon and the
+# shell integrations — which compute the socket path themselves — can never
+# disagree on where to talk.
+DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/kavkash"
 
-mkdir -p $__RUNTIME_DIR $__DATA_HOME
+__RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp}/kavkash"
+mkdir -p "$__RUNTIME_DIR" "$DATA_HOME"
 
 SOCK_FILE="$__RUNTIME_DIR/history.sock"
 PID_FILE="$__RUNTIME_DIR/server.pid"
-DB_FILE="$__DATA_HOME/history.db"
-
-_HIST_BATCH=100
+DB_FILE="$DATA_HOME/history.db"

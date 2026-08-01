@@ -1,8 +1,10 @@
 # Configuration: socket path and batch size for history navigation
-# SCRIPT_DIR = kavkash root (two levels up from shells/zsh/ in the repo
-# layout) — where includes.sh and hook.sh live.
-SCRIPT_DIR=${0:A:h:h}
-source "$SCRIPT_DIR/includes.sh"
+# The socket lives under XDG_RUNTIME_DIR (matches includes.sh on the daemon
+# side). The shell does NOT source config — no kavkash config variables
+# enter the interactive session.
+_SCRIPT_DIR=${0:A:h:h}   # kavkash root, where hook.sh lives
+_HIST_SOCK="${XDG_RUNTIME_DIR:-/tmp}/kavkash/history.sock"
+_HIST_BATCH=100
 
 # _write_ns - encode a string as a netstring: "length:payload,"
 # Byte count via wc -c (locale-independent; ${#var} counts chars, not bytes)
@@ -39,9 +41,9 @@ _hist_query() {
         payload="${payload}${ns_count}"
     fi
     if command -v socat > /dev/null 2>&1; then
-        printf '%s' "$payload" | socat - UNIX-CONNECT:"$SOCK_FILE" 2> /dev/null
+        printf '%s' "$payload" | socat - UNIX-CONNECT:"$_HIST_SOCK" 2> /dev/null
     elif command -v nc > /dev/null 2>&1; then
-        printf '%s' "$payload" | nc -U "$SOCK_FILE" 2> /dev/null
+        printf '%s' "$payload" | nc -U "$_HIST_SOCK" 2> /dev/null
     fi
 }
 
@@ -216,7 +218,7 @@ bindkey '^C' kavkash-cancel
 autoload -Uz add-zsh-hook
 
 _hist_preexec() {
-    $SCRIPT_DIR/hook.sh "${2:-$1}" "$PWD" "" "" &
+    "$_SCRIPT_DIR/hook.sh" "${2:-$1}" "$PWD" "" "" &
 }
 
 _hist_precmd() {

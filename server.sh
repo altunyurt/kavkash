@@ -2,7 +2,12 @@
 # server.sh - Daemon: accepts shell history events over Unix socket, stores in SQLite
 
 # Source includes.sh relative to THIS script (server may be started from any CWD).
-. "$(dirname -- "$(realpath -- "$0")")/includes.sh"
+_SCRIPT_DIR="$(dirname -- "$(realpath -- "$0")")"
+. "$_SCRIPT_DIR/includes.sh"
+
+[ -f $PID_FILE ] \
+    && printf "error: %s\n" "A pid file already exists at $PID_FILE" \
+    && exit 1
 
 # Path to processor.sh (resolved from _SCRIPT_DIR in includes.sh)
 PROC_SCRIPT="${_SCRIPT_DIR}/processor.sh"
@@ -37,4 +42,9 @@ echo $$ > "$PID_FILE"
 # line, so embedding "$PROC_SCRIPT $DB_FILE" directly would silently
 # word-split DB_FILE on any spaces (e.g. an XDG_DATA_HOME with a space in
 # it). Pass DB_FILE via environment instead, so it's never re-tokenized.
-exec env HIST_DB="$DB_FILE" socat UNIX-LISTEN:"$SOCK_FILE",fork,mode=0600 EXEC:"$PROC_SCRIPT"
+#
+# stderr -> server.log: clients disconnecting mid-response is normal
+# (prefetch cancel, fzf exit) and would otherwise spam broken-pipe noise
+# on the daemon's terminal. Real errors (bind failures, sqlite problems)
+# are still recorded in the log.
+exec env HIST_DB="$DB_FILE" socat UNIX-LISTEN:"$SOCK_FILE",fork,mode=0600 EXEC:"$PROC_SCRIPT" 2>> "$__RUNTIME_DIR/server.log"
