@@ -9,7 +9,7 @@ end
 set -g _HIST_BATCH 100
 # Debug prints (timing on Up/Down navigation). Must match includes.sh
 # (KAV_DEBUG=${KAV_DEBUG:-1}): respect a pre-set value so users can disable.
-set -q KAV_DEBUG; or set -g KAV_DEBUG 1
+set -q KAV_DEBUG; or set -g KAV_DEBUG 0
 # Directory containing this file (project root); hook.sh lives beside it.
 # Resolved to a REAL path: fish refuses to exec command paths containing "..".
 set -g _HIST_SCRIPT_DIR (dirname (status filename))
