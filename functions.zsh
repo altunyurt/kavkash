@@ -177,7 +177,9 @@ _hist_stepper_up() {
     local _t0=$EPOCHREALTIME
     _hist_stepper "up"
     local _t1=$EPOCHREALTIME
-    printf 'kavkash debug: up->redraw %.1f ms\n' "$(awk -v a="$_t0" -v b="$_t1" 'BEGIN{printf "%.1f", (b-a)*1000}')" >&2
+    if [[ $KAV_DEBUG -eq 1 ]]; then
+        printf 'kavkash debug: up->redraw %.1f ms\n' "$(awk -v a="$_t0" -v b="$_t1" 'BEGIN{printf "%.1f", (b-a)*1000}')" >&2
+    fi
 }
 _hist_stepper_down() { _hist_stepper "down" }
 

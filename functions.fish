@@ -7,6 +7,9 @@ else
     set -g _HIST_SOCK "/tmp/kavkash/history.sock"
 end
 set -g _HIST_BATCH 100
+# Debug prints (timing on Up/Down navigation). Must match includes.sh
+# (KAV_DEBUG=${KAV_DEBUG:-1}): respect a pre-set value so users can disable.
+set -q KAV_DEBUG; or set -g KAV_DEBUG 1
 # Directory containing this file (project root); hook.sh lives beside it.
 # Resolved to a REAL path: fish refuses to exec command paths containing "..".
 set -g _HIST_SCRIPT_DIR (dirname (status filename))
@@ -143,14 +146,25 @@ function _hist_stepper
     end
 end
 
-# _hist_stepper_up - Up arrow wrapper.
+# _hist_stepper_up - Up arrow wrapper. With KAV_DEBUG=1, times press->redraw
+# (repaint happens when _hist_stepper returns) to stderr — keeps stdout clean.
 function _hist_stepper_up
+    set -l t0 (date +%s%3N)
     _hist_stepper up
+    if test "$KAV_DEBUG" = "1"
+        set -l t1 (date +%s%3N)
+        echo "kavkash debug: up->redraw "(math $t1 - $t0)" ms" >&2
+    end
 end
 
-# _hist_stepper_down - Down arrow wrapper.
+# _hist_stepper_down - Down arrow wrapper, same KAV_DEBUG-gated timing.
 function _hist_stepper_down
+    set -l t0 (date +%s%3N)
     _hist_stepper down
+    if test "$KAV_DEBUG" = "1"
+        set -l t1 (date +%s%3N)
+        echo "kavkash debug: down->redraw "(math $t1 - $t0)" ms" >&2
+    end
 end
 
 # _hist_reset - clear navigation state (called via fish_postexec below)

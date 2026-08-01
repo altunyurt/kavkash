@@ -16,7 +16,7 @@ KAV_DB_FILE="$KAV_DATA_HOME/history.db"
 # this file; functions.fish can't — fish syntax — so keep its copy in sync).
 KAV_HIST_BATCH=100
 
-KAV_DEBUG=1
+KAV_DEBUG=${KAV_DEBUG:-1}
 
 # Small shared helpers. kav_ prefix: this file is also sourced into
 # interactive shells (functions.bash/.zsh), where plain names like `die`
