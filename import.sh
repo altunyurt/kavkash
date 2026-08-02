@@ -9,7 +9,9 @@
 #                                    when HISTTIMEFORMAT was set
 #   zsh   ${HISTFILE:-~/.zsh_history} plain lines, or extended ": <epoch>:<dur>;<cmd>"
 #   fish  ${XDG_DATA_HOME}/fish/fish_history   YAML: "- cmd:", "  when:", "  paths:"
-#   atuin ${XDG_DATA_HOME}/atuin/history.db    SQLite (history / history_v2)
+#   atuin (v17-): records.db absent, plaintext SQLite (history / history_v2)
+#   atuin (v18+): records.db — history is PASETO-encrypted, so it is read via
+#                 the atuin CLI ("history list -f ... --print0") which decrypts
 
 set -eu
 
@@ -41,17 +43,22 @@ trap 'rm -f "$ENTRIES" "$SQLOUT"' EXIT
 now=$(date +%s%3N 2> /dev/null || echo "$(date +%s)000")
 counter=0
 
-# emit <epoch_ms> <base64(cmd)> [base64(cwd)]
-# Commands without a real timestamp get sequential values just below `now`,
-# so un-timestamped files keep their original order (newest last = first Up).
+# emit <epoch_ms> <base64(cmd)> [base64(cwd) [dur_ms exit src]]
+# src=A marks atuin-sourced rows: their cwd/duration enrich existing rows
+# (see INSERT loop). Commands without a real timestamp get sequential values
+# just below `now`, so un-timestamped files keep their original order
+# (newest last = first Up).
 emit() {
     counter=$((counter + 1))
     ts=$1
     b64=$2
     cwd=${3:-}
+    dur=${4:-}
+    exit=${5:-}
+    src=${6:-}
     [ -n "$b64" ] || return 0
     case "$ts" in '' | *[!0-9]*) ts=$((now - counter)) ;; esac
-    printf '%s %s %s\n' "$ts" "$b64" "$cwd" >> "$ENTRIES"
+    printf '%s %s %s %s %s %s\n' "$ts" "$b64" "$cwd" "$dur" "$exit" "$src" >> "$ENTRIES"
 }
 
 b64() { printf '%s' "$1" | base64 -w0; }
@@ -122,9 +129,72 @@ import_fish() {
 }
 
 import_atuin() {
-    f="${XDG_DATA_HOME:-$HOME/.local/share}/atuin/history.db"
+    # atuin's own CLI is the most robust reader: it honours a custom db_path in
+    # config.toml, any schema version, and decrypts PASETO-encrypted stores
+    # (v18+). Fall back to direct plaintext SQLite reads only when the CLI is
+    # unavailable. Template fields: time|directory|duration|exit|command.
+    # Command is LAST so embedded tabs/newlines can't shift earlier fields;
+    # --print0 keeps multiline commands intact (tr maps NUL back to newline
+    # for the shell reader; continuation lines are re-attached below).
+    if kav_have atuin; then
+        ATUINOUT=$(mktemp "$tmpdir/kavkash-atuin.XXXXXX")
+        if atuin history list -r false -f '{time}|{directory}|{duration}|{exit}|{command}' --print0 > "$ATUINOUT" 2> /dev/null && [ -s "$ATUINOUT" ]; then
+            tr '\0' '\n' < "$ATUINOUT" \
+                | {
+                    pending=""
+                    while IFS= read -r line || [ -n "$line" ]; do
+                        case "$line" in
+                            [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*)
+                                # start of a new record: flush the previous one
+                                if [ -n "$pending" ]; then
+                                    emit "$p_ts" "$(b64 "$pending")" "$(b64 "$p_dir")" "$p_dur" "$p_exit" A
+                                fi
+                                t=${line%%|*};   rest=${line#*|}
+                                p_dir=${rest%%|*}; rest=${rest#*|}
+                                dur=${rest%%|*};  rest=${rest#*|}
+                                p_exit=${rest%%|*}; pending=${rest#*|}
+                                # "2026-08-02 05:09:14" -> epoch ms (GNU date)
+                                p_ts=$(date -d "$t" +%s%3N 2> /dev/null || true)
+                                case "$dur" in
+                                    *ms) p_dur=${dur%ms} ;;
+                                    *s)  p_dur=$(( ${dur%s} * 1000 )) ;;
+                                    *m)  p_dur=$(( ${dur%m} * 60000 )) ;;
+                                    *h)  p_dur=$(( ${dur%h} * 3600000 )) ;;
+                                    *)   p_dur=0 ;;
+                                esac
+                                ;;
+                            *)
+                                # continuation line of a multiline command
+                                [ -n "$pending" ] && pending="$pending
+$line"
+                                ;;
+                        esac
+                    done
+                    [ -n "$pending" ] && emit "$p_ts" "$(b64 "$pending")" "$(b64 "$p_dir")" "$p_dur" "$p_exit" A
+                }
+            rm -f "$ATUINOUT"
+            return 0
+        fi
+        rm -f "$ATUINOUT"
+    fi
+    # No CLI (or it had nothing): read plaintext SQLite directly. Resolve the
+    # DB location the same way atuin does: config.toml db_path, else the
+    # default under $XDG_DATA_HOME/atuin. Keep the IFS='|' read with the
+    # command as the LAST variable: commands may contain '|', and read assigns
+    # the remainder to the final variable, so adding fields after it would break.
+    data_dir="${XDG_DATA_HOME:-$HOME/.local/share}/atuin"
+    cfg="${XDG_CONFIG_HOME:-$HOME/.config}/atuin/config.toml"
+    f="$data_dir/history.db"
+    if [ -f "$cfg" ]; then
+        db=$(sed -n 's/^[[:space:]]*db_path[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$cfg" | head -1)
+        [ -n "$db" ] && f=$db
+    fi
+    case "$f" in
+        "~/"*) f="$HOME/${f#~/}" ;;
+    esac
+    f=$(printf '%s' "$f" | sed "s/\$USER/$USER/g")
     [ -f "$f" ] || return 0
-    # newer atuin uses history_v2, older uses history; both have timestamp/command/cwd.
+    # schema variants: history_v2 (atuin v14-17) / history (v18+ and v1)
     table=""
     for t in history_v2 history; do
         if sqlite3 "$f" "SELECT 1 FROM sqlite_master WHERE type='table' AND name='$t';" | grep -q 1; then
@@ -133,8 +203,12 @@ import_atuin() {
         fi
     done
     [ -n "$table" ] || return 0
-    # atuin timestamps are epoch ms; cwd may be NULL.
-    sqlite3 -noheader "$f" "SELECT timestamp, COALESCE(cwd,''), command FROM $table;" \
+    # atuin v18+ stores ns timestamps; older versions use ms. Detect from data.
+    ns=$(sqlite3 "$f" "SELECT max(timestamp) FROM $table;")
+    div=1
+    [ "${#ns}" -gt 16 ] && div=1000000
+    # cwd may be NULL in some versions.
+    sqlite3 -noheader "$f" "SELECT CAST(timestamp/$div AS INTEGER), COALESCE(cwd,''), command FROM $table;" \
         | while IFS='|' read -r ts cwd cmd || [ -n "$cmd" ]; do
             [ -z "$cmd" ] && continue
             emit "$ts" "$(b64 "$cmd")" "$(b64 "$cwd")"
@@ -149,17 +223,25 @@ import_atuin
 [ -s "$ENTRIES" ] || { echo "nothing to import (no history found)"; exit 0; }
 
 # Bulk insert in a single sqlite3 session; NOT EXISTS skips duplicates.
-while IFS=' ' read -r ts b64cmd b64cwd || [ -n "$b64cmd" ]; do
+# atuin rows (src=A) first enrich any existing cwd-less row (a bash/zsh/fish
+# import may already hold the same command without a path), then insert if
+# the command is still unknown.
+while IFS=' ' read -r ts b64cmd b64cwd dur exit src || [ -n "$b64cmd" ]; do
     cmd=$(printf '%s' "$b64cmd" | base64 -d 2> /dev/null || true)
     [ -z "$cmd" ] && continue
     safe=$(printf '%s' "$cmd" | sed "s/'/''/g")
     if [ -n "$b64cwd" ]; then
         cwd=$(printf '%s' "$b64cwd" | base64 -d 2> /dev/null || true)
-        safe_cwd=$(printf '%s' "$cwd" | sed "s/'/''/g")
-        printf "INSERT INTO history (command, cwd, exit_code, duration_ms, timestamp) SELECT '%s', '%s', 0, 0, %s WHERE NOT EXISTS (SELECT 1 FROM history WHERE command = '%s');\n" "$safe" "$safe_cwd" "$ts" "$safe" >> "$SQLOUT"
     else
-        printf "INSERT INTO history (command, cwd, exit_code, duration_ms, timestamp) SELECT '%s', '', 0, 0, %s WHERE NOT EXISTS (SELECT 1 FROM history WHERE command = '%s');\n" "$safe" "$ts" "$safe" >> "$SQLOUT"
+        cwd=""
     fi
+    safe_cwd=$(printf '%s' "$cwd" | sed "s/'/''/g")
+    [ -n "$dur" ] || dur=0
+    [ -n "$exit" ] || exit=0
+    if [ "$src" = A ]; then
+        printf "UPDATE history SET cwd='%s', duration_ms=%s, exit_code=%s, timestamp=%s WHERE command='%s' AND cwd='';\n" "$safe_cwd" "$dur" "$exit" "$ts" "$safe" >> "$SQLOUT"
+    fi
+    printf "INSERT INTO history (command, cwd, exit_code, duration_ms, timestamp) SELECT '%s', '%s', %s, %s, %s WHERE NOT EXISTS (SELECT 1 FROM history WHERE command = '%s');\n" "$safe" "$safe_cwd" "$exit" "$dur" "$ts" "$safe" >> "$SQLOUT"
 done < "$ENTRIES"
 
 n_before=$(sqlite3 "$DB" "SELECT count(*) FROM history;")
