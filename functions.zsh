@@ -216,7 +216,9 @@ bindkey '^C' kavkash-cancel
 autoload -Uz add-zsh-hook
 
 _hist_preexec() {
-    "$_SCRIPT_DIR/hook.sh" "${2:-$1}" "$PWD" "" "" &
+    # &! = background + disown: without it, interactive zsh prints job-control
+    # notices ([1] PID, "[1] + done ...hook.sh...") before/after EVERY command.
+    "$_SCRIPT_DIR/hook.sh" "${2:-$1}" "$PWD" "" "" &!
 }
 
 _hist_precmd() {
