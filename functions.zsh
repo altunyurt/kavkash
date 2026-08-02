@@ -211,18 +211,30 @@ bindkey '^[[A' kavkash-stepper-up
 bindkey '^[[B' kavkash-stepper-down
 bindkey '^C' kavkash-cancel
 
-# Record executed commands and clear navigation state after each one
-# (preexec -> hook.sh, precmd -> _hist_reset).
+# Record executed commands and clear navigation state after each one.
+# preexec stores the line (with a per-shell correlation key); precmd sends
+# the real exit code for that key (see processor.sh U). $? is captured FIRST
+# in precmd before anything else can clobber it.
 autoload -Uz add-zsh-hook
 
+typeset -g _hist_corr=""
+typeset -g _hist_corr_n=0
+
 _hist_preexec() {
+    _hist_corr_n=$((_hist_corr_n + 1))
+    _hist_corr="$$-$_hist_corr_n"
     # &! = background + disown: without it, interactive zsh prints job-control
     # notices ([1] PID, "[1] + done ...hook.sh...") before/after EVERY command.
-    "$_SCRIPT_DIR/hook.sh" "${2:-$1}" "$PWD" "" "" &!
+    "$_SCRIPT_DIR/hook.sh" W "${2:-$1}" "$PWD" "$_hist_corr" &!
 }
 
 _hist_precmd() {
+    local _hist_exit=$?
     _hist_reset 2> /dev/null
+    if [ -n "$_hist_corr" ]; then
+        "$_SCRIPT_DIR/hook.sh" U "$_hist_corr" "$_hist_exit" &!
+        _hist_corr=""
+    fi
 }
 
 add-zsh-hook preexec _hist_preexec

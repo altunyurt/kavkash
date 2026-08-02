@@ -6,7 +6,9 @@
 #
 # Wire protocol:
 #   Client -> Server: concatenated netstrings ("len:payload,")
-#       Write:  W, cmd, cwd, exit_code, duration
+#       Write:  W, cmd, cwd, corr        (preexec; exit/duration unknown yet)
+#       Update: U, corr, exit_code       (precmd; duration = now - row.timestamp;
+#                                        corr cleared so PIDs can be reused)
 #       Query:  Q, action [arg] [count]
 #   Server -> Client (Q only): one base64-encoded row per line (EOF-terminated).
 #       Base64 is used instead of raw text because history entries (e.g.
@@ -77,20 +79,39 @@ shift
 
 case "$TYPE" in
     W)
-        # Write: W cmd cwd exit_code duration
+        # Write: W cmd cwd corr — preexec hook. Exit/duration are unknown
+        # until the command completes; the precmd hook sends a U for corr.
         cmd="$1"
         cwd="$2"
-        exit_code="$3"
-        duration="$4"
-
-        # Validate numeric fields to prevent SQL injection.
-        case "$exit_code" in '' | *[!0-9]*) exit_code=0 ;; esac
-        case "$duration" in '' | *[!0-9]*) duration=0 ;; esac
+        corr="$3"
 
         safe_cmd=$(printf '%s' "$cmd" | sed "s/'/''/g")
         safe_cwd=$(printf '%s' "$cwd" | sed "s/'/''/g")
+        safe_corr=$(printf '%s' "$corr" | sed "s/'/''/g")
         now=$(date +%s%3N 2> /dev/null || echo "$(date +%s)000")
-        sqlite3 "$db_file" "INSERT INTO history (command, cwd, exit_code, duration_ms, timestamp) VALUES ('$safe_cmd', '$safe_cwd', $exit_code, $duration, $now);"
+        if [ -n "$corr" ]; then
+            # OR REPLACE: a corr key is only unique while its command is
+            # pending, so the only possible conflict is a stale row from a
+            # shell that died mid-command AND had its PID+counter reused.
+            # Recycle it instead of silently dropping the new command.
+            sqlite3 "$db_file" "INSERT OR REPLACE INTO history (command, cwd, exit_code, duration_ms, timestamp, corr) VALUES ('$safe_cmd', '$safe_cwd', 0, 0, $now, '$safe_corr');"
+        else
+            sqlite3 "$db_file" "INSERT INTO history (command, cwd, exit_code, duration_ms, timestamp) VALUES ('$safe_cmd', '$safe_cwd', 0, 0, $now);"
+        fi
+        ;;
+    U)
+        # Update: U corr exit_code — precmd hook fires after the command
+        # line finished; $? is the line's exit. Duration is computed from the
+        # row's preexec timestamp (same server clock). corr is cleared in the
+        # same statement (WHERE matches before SET), freeing the key for PID
+        # reuse — it is only meaningful while the command is pending.
+        corr="$1"
+        exit_code="$2"
+        [ -n "$corr" ] || exit 0
+        case "$exit_code" in '' | *[!0-9]*) exit_code=0 ;; esac
+        safe_corr=$(printf '%s' "$corr" | sed "s/'/''/g")
+        now=$(date +%s%3N 2> /dev/null || echo "$(date +%s)000")
+        sqlite3 "$db_file" "UPDATE history SET exit_code=$exit_code, duration_ms=CASE WHEN $now > timestamp THEN $now - timestamp ELSE 0 END, corr=NULL WHERE corr='$safe_corr';"
         ;;
     Q)
         # Query: Q action [arg] [count]

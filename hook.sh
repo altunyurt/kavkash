@@ -1,18 +1,14 @@
 #!/usr/bin/dash
-# hook.sh - Called by shell preexec hooks to record a command to history
+# hook.sh - Called by shell hooks to record commands to history.
+# Two modes:
+#   hook.sh W CMD CWD CORR   preexec: store the command line (exit unknown yet)
+#   hook.sh U CORR EXIT      precmd:  store the real exit code for corr
+# CORR is a per-command-line key (shell pid + per-shell counter) that pairs
+# the precmd update with the preexec row — see processor.sh U case.
 
 # Source includes.sh relative to THIS script, not CWD: hook.sh is launched
 # from interactive shells whose CWD is arbitrary.
 . "$(dirname -- "$(realpath -- "$0")")/includes.sh"
-
-# Args: cmd, cwd, exit_code, duration_ms — defaults handle missing args.
-CMD="$1"
-CWD="$2"
-EXIT_CODE="${3:-0}"
-DURATION="${4:-0}"
-
-# Skip empty commands (defensive — shouldn't happen but harmless)
-[ -z "$CMD" ] && exit 0
 
 # Netstrings are length-PREFIXED IN BYTES, not characters. `${#var}` counts
 # characters (locale-dependent), which under a UTF-8 locale diverges from
@@ -24,13 +20,32 @@ _ns_len() {
     printf '%s' "$1" | LC_ALL=C wc -c | tr -d ' '
 }
 
-# Build netstring message: "W,cmd,cwd,exit_code,duration" as concatenated netstrings.
-# Example: 1:W,17:ls -la /home/user,10:/home/user,1:0,3:100,
-MSG=$(printf '1:W,%s:%s,%s:%s,%s:%s,%s:%s,' \
-    "$(_ns_len "$CMD")" "$CMD" \
-    "$(_ns_len "$CWD")" "$CWD" \
-    "$(_ns_len "$EXIT_CODE")" "$EXIT_CODE" \
-    "$(_ns_len "$DURATION")" "$DURATION")
+MODE="$1"
+case "$MODE" in
+    W)
+        CMD="$2"
+        CWD="$3"
+        CORR="$4"
+        # Skip empty commands (defensive — shouldn't happen but harmless)
+        [ -z "$CMD" ] && exit 0
+        MSG=$(printf '1:W,%s:%s,%s:%s,%s:%s,' \
+            "$(_ns_len "$CMD")" "$CMD" \
+            "$(_ns_len "$CWD")" "$CWD" \
+            "$(_ns_len "$CORR")" "$CORR")
+        ;;
+    U)
+        CORR="$2"
+        EXIT="$3"
+        [ -n "$CORR" ] || exit 0
+        [ -n "$EXIT" ] || EXIT=0
+        MSG=$(printf '1:U,%s:%s,%s:%s,' \
+            "$(_ns_len "$CORR")" "$CORR" \
+            "$(_ns_len "$EXIT")" "$EXIT")
+        ;;
+    *)
+        exit 1
+        ;;
+esac
 
 # Fire-and-forget delivery: backgrounded, errors suppressed.
 # The trailing & detaches the process so the shell isn't blocked.

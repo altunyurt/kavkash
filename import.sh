@@ -24,6 +24,7 @@ kav_have sqlite3 || kav_die "sqlite3 required for history import"
 kav_have base64 || kav_die "base64 required for history import"
 
 # Ensure schema exists (same as server.sh) so import works before first run.
+# corr stays NULL for imported rows — precmd updates only target live rows.
 sqlite3 "$DB" << 'EOF'
 CREATE TABLE IF NOT EXISTS history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -31,9 +32,11 @@ CREATE TABLE IF NOT EXISTS history (
     cwd TEXT NOT NULL,
     exit_code INTEGER NOT NULL,
     duration_ms INTEGER NOT NULL,
-    timestamp INTEGER NOT NULL
+    timestamp INTEGER NOT NULL,
+    corr TEXT
 );
 EOF
+sqlite3 "$DB" "ALTER TABLE history ADD COLUMN corr TEXT;" 2> /dev/null || true
 
 tmpdir=${TMPDIR:-/tmp}
 ENTRIES=$(mktemp "$tmpdir/kavkash-import.XXXXXX")

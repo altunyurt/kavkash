@@ -12,7 +12,12 @@ _SCRIPT_DIR="$(dirname -- "$(realpath -- "$0")")"
 # Path to processor.sh (resolved from _SCRIPT_DIR in includes.sh)
 KAV_PROC_SCRIPT="${_SCRIPT_DIR}/processor.sh"
 
-# Initialize SQLite schema (idempotent — uses IF NOT EXISTS)
+# Initialize SQLite schema (idempotent — uses IF NOT EXISTS).
+# corr: per-command-line correlation key set by the shell at preexec (shell
+# pid + per-shell counter); the precmd hook updates the row by corr with the
+# real exit code and clears corr in the same UPDATE — the key only lives
+# while a command is pending, so shell PIDs can be reused safely. NULL for
+# imported rows (never updated).
 sqlite3 "$KAV_DB_FILE" << 'EOF'
 PRAGMA journal_mode=WAL;
 CREATE TABLE IF NOT EXISTS history (
@@ -21,11 +26,17 @@ CREATE TABLE IF NOT EXISTS history (
     cwd TEXT NOT NULL,
     exit_code INTEGER NOT NULL,
     duration_ms INTEGER NOT NULL,
-    timestamp INTEGER NOT NULL
+    timestamp INTEGER NOT NULL,
+    corr TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_history_timestamp ON history(timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_history_command ON history(command, timestamp DESC);
 EOF
+
+# Migration for DBs created before the corr column existed (ignore
+# "duplicate column" on fresh DBs).
+sqlite3 "$KAV_DB_FILE" "ALTER TABLE history ADD COLUMN corr TEXT;" 2> /dev/null || true
+sqlite3 "$KAV_DB_FILE" "CREATE UNIQUE INDEX IF NOT EXISTS idx_history_corr ON history(corr) WHERE corr IS NOT NULL;"
 
 # Remove stale socket file from a previous crash
 rm -f "$KAV_SOCK_FILE"

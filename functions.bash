@@ -238,13 +238,26 @@ _hist_bind_keys() {
 
 _hist_bind_keys
 
+_hist_corr=""
+_hist_corr_n=0
+
 preexec_hook() {
-    "$_SCRIPT_DIR/hook.sh" "$1" "$PWD" "" ""
+    _hist_corr_n=$((_hist_corr_n + 1))
+    _hist_corr="${BASHPID}-${_hist_corr_n}"
+    "$_SCRIPT_DIR/hook.sh" W "$1" "$PWD" "$_hist_corr"
 }
 preexec_functions+=(preexec_hook)
 
+# precmd: clear navigation state AND report the finished line's exit code.
+# bash-preexec restores the real $? before invoking each precmd function
+# (__bp_set_ret_value in bash-preexec.sh), so capturing it first is safe.
 precmd_hist_reset() {
+    local _hist_exit=$?
     _hist_reset 2> /dev/null
+    if [[ -n $_hist_corr ]]; then
+        "$_SCRIPT_DIR/hook.sh" U "$_hist_corr" "$_hist_exit"
+        _hist_corr=""
+    fi
 }
 precmd_functions+=(precmd_hist_reset)
 

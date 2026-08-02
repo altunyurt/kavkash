@@ -173,14 +173,21 @@ function _hist_reset
 end
 
 # Record executed commands: fire-and-forget write to the daemon (like bash/zsh).
-# fish_preexec fires for the whole command line once, just before it runs.
+# fish_preexec fires for the whole command line once, just before it runs —
+# the line is stored with a per-shell correlation key; fish_postexec then
+# sends the real exit code for that key (see processor.sh U).
 # Skip empty lines and commands spawned from command substitutions (e.g. fzf
 # inside _hist_search) so we only store what the user actually typed.
+set -g __hist_corr ""
+set -g __hist_corr_n 0
+
 function _hist_preexec --on-event fish_preexec
     status is-command-substitution; and return 0
     [ -n "$argv[1]" ]; or return 0
 
-    "$_HIST_HOOK" "$argv[1]" "$PWD" "" "" &
+    set -g __hist_corr_n (math $__hist_corr_n + 1)
+    set -g __hist_corr "$fish_pid-$__hist_corr_n"
+    "$_HIST_HOOK" W "$argv[1]" "$PWD" "$__hist_corr" &
 end
 
 # _hist_cancel - Ctrl+C: clear state, cancel the current line
@@ -220,10 +227,16 @@ end
 # so a mid-session `source functions.fish` would otherwise never bind.
 fish_user_key_bindings
 
-# Clear navigation state after each command completes
-# fish_postexec fires after a command line finishes
+# Clear navigation state after each command completes and report its exit
+# code. fish_postexec fires after a command line finishes; $status is the
+# line's exit code — captured FIRST before anything else runs.
 function _hist_postexec --on-event fish_postexec
+    set -l s $status
     _hist_reset 2>/dev/null
+    if test -n "$__hist_corr"
+        "$_HIST_HOOK" U "$__hist_corr" "$s" &
+        set -g __hist_corr ""
+    end
 end
 
 # Preload the first batch so the first Up press doesn't block on IPC.

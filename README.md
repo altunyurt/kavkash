@@ -26,11 +26,17 @@ shell up/down/fzf ← functions.{bash,fish,zsh} ←┘
 
 Netstrings, one field per netstring. Concatenated in a single stream.
 
-- **Write:** `W,cmd,cwd,exit_code,duration`
+- **Write:** `W,cmd,cwd,corr` — sent by the shell's preexec hook when a
+  command starts. Exit code and duration aren't known yet; `corr` is a
+  per-command-line key (shell pid + per-shell counter) that pairs this row
+  with its later update.
+- **Update:** `U,corr,exit_code` — sent by the shell's precmd hook when the
+  command finishes; fills in the real exit code and duration (computed from
+  the write's timestamp). The corr key is cleared once applied.
 - **Query up:** `Q,up,offset,count` → returns `count` commands starting at `offset`
 - **Query search:** `Q,search,arg,count` → returns all commands (capped at 10k); fzf filters client-side
 
-Example write message: `1:W,17:ls -la /home/user,10:/home/user,1:0,3:100,`
+Example write message: `1:W,2:ls,10:/home/user,7:1234-5,`
 
 ## Installation
 
