@@ -207,8 +207,9 @@ $line"
     ns=$(sqlite3 "$f" "SELECT max(timestamp) FROM $table;")
     div=1
     [ "${#ns}" -gt 16 ] && div=1000000
-    # cwd may be NULL in some versions.
-    sqlite3 -noheader "$f" "SELECT CAST(timestamp/$div AS INTEGER), COALESCE(cwd,''), command FROM $table;" \
+    # cwd may be NULL in some versions. Order by timestamp so the import
+    # follows atuin's chronology even if the table's rowid order differs.
+    sqlite3 -noheader "$f" "SELECT CAST(timestamp/$div AS INTEGER), COALESCE(cwd,''), command FROM $table ORDER BY timestamp ASC;" \
         | while IFS='|' read -r ts cwd cmd || [ -n "$cmd" ]; do
             [ -z "$cmd" ] && continue
             emit "$ts" "$(b64 "$cmd")" "$(b64 "$cwd")"
