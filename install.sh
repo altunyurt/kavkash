@@ -239,7 +239,7 @@ unpack() {
 install_files() {
     install -d "$KAV_DATA_HOME"
 
-    for f in includes.sh hook.sh server.sh processor.sh import.sh functions.bash functions.fish functions.zsh; do
+    for f in includes.sh hook.sh server.sh processor.sh query.sh import.sh functions.bash functions.fish functions.zsh; do
         install -m 755 "$src/$f" "$KAV_DATA_HOME/$f"
     done
 

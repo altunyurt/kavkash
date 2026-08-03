@@ -6,37 +6,63 @@ Minimal shell history daemon. Captures commands via preexec hook, stores in SQLi
 
 ```
 shell preexec → hook.sh → Unix socket → server.sh → processor.sh → SQLite
-                                                                  ↓
-shell up/down/fzf ← functions.{bash,fish,zsh} ←┘
+                                                                    ↓
+shell up/Ctrl+R fzf picker ← query.sh ←────────────────────────────┘
 ```
 
 ## Components
 
-- **includes.sh** — shared defaults (data location, socket/pid paths)
+- **includes.sh** — shared defaults (data location, socket/pid paths) and the
+  UUIDv7 id builder
 - **install.sh** — curl-pipe installer (fetches latest stable release from GitHub)
 - **server.sh** — socat daemon, listens on Unix socket
 - **processor.sh** — parses netstring messages, routes writes/queries
 - **import.sh** — imports existing history (bash/zsh/fish, atuin) into the DB
 - **hook.sh** — sends commands as netstrings from shell preexec hooks
-- **functions.bash** — bash integration (↑↓ history, Ctrl+R fzf)
+- **query.sh** — fzf picker back-end (sockets the daemon, batch-decodes rows)
+- **functions.bash** — bash integration (Up/Ctrl+R fzf picker)
 - **functions.fish** — fish integration (same)
 - **functions.zsh** — zsh integration (same)
+
+## Navigation
+
+Up and Ctrl+R both open the same fzf picker:
+
+- **Up** — the 500 newest commands, empty query.
+- **Ctrl+R** — live search, seeded with the current line, capped at 10k.
+
+As you type, the list reloads from the daemon per keystroke (debounced
+100ms): the server expands each whitespace-separated query term into a
+subsequence `LIKE` pattern, so the SQL filter is a superset of fzf's own
+matcher. `--disabled` keeps fzf from re-filtering — the database query *is*
+the filter, and there is no result cap beyond the per-widget limits above.
+
+Accept: one Enter both picks and **runs** the command in zsh/fish; in bash
+one Enter places it on the line and a second Enter runs it (readline
+widgets can't execute). Multi-line commands display as a single ⏎-marked
+line and round-trip to real newlines on accept.
 
 ## Protocol
 
 Netstrings, one field per netstring. Concatenated in a single stream.
 
-- **Write:** `W,cmd,cwd,corr` — sent by the shell's preexec hook when a
-  command starts. Exit code and duration aren't known yet; `corr` is a
-  per-command-line key (shell pid + per-shell counter) that pairs this row
-  with its later update.
-- **Update:** `U,corr,exit_code` — sent by the shell's precmd hook when the
-  command finishes; fills in the real exit code and duration (computed from
-  the write's timestamp). The corr key is cleared once applied.
-- **Query up:** `Q,up,offset,count` → returns `count` commands starting at `offset`
-- **Query search:** `Q,search,arg,count` → returns all commands (capped at 10k); fzf filters client-side
+- **Write:** `W,cmd,cwd,id` — sent by the shell's preexec hook when a
+  command starts. `id` is a UUIDv7 minted by hook.sh: it is the row's
+  primary key **and** its timestamp (lexicographic id order == chronological
+  order), so no separate timestamp column exists. Exit code and duration
+  aren't known yet.
+- **Update:** `U,id,exit_code,duration_ms` — sent by the shell's precmd hook
+  when the command finishes; the shell measured the duration between
+  preexec and precmd. UUIDs are never reused, so stale keys are impossible
+  and nothing needs clearing.
+- **Query:** `Q,search,query,count` → returns up to `count` commands whose
+  text subsequence-matches every term of `query` (empty query = newest
+  `count`). Each row is base64-encoded with its trailing newline inside the
+  payload, so the client batch-decodes the whole response into one display
+  line per row. Display is sanitized: embedded newlines become ⏎ and the
+  sqlite3 framing hazards 0x1E/0x1F plus `\r` are stripped.
 
-Example write message: `1:W,2:ls,10:/home/user,7:1234-5,`
+Example write message: `1:W,2:ls,10:/home/user,36:018f2a3b-1c2d-7000-8000-9a8b7c6d5e4f,`
 
 ## Installation
 

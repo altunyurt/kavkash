@@ -1,10 +1,13 @@
 #!/usr/bin/dash
 # hook.sh - Called by shell hooks to record commands to history.
 # Two modes:
-#   hook.sh W CMD CWD CORR   preexec: store the command line (exit unknown yet)
-#   hook.sh U CORR EXIT      precmd:  store the real exit code for corr
-# CORR is a per-command-line key (shell pid + per-shell counter) that pairs
-# the precmd update with the preexec row — see processor.sh U case.
+#   hook.sh W CMD CWD   preexec: mint a UUIDv7 id, store the command line,
+#                       and PRINT the id — the shell keeps it as the
+#                       correlation key for the later update.
+#   hook.sh U ID EXIT DURATION   precmd: store the real exit code and the
+#                       shell-measured duration for the pending id.
+# The id is the row's primary key AND its timestamp (UUIDv7 sorts
+# chronologically), so there is no separate corr/timestamp column.
 
 # Source includes.sh relative to THIS script, not CWD: hook.sh is launched
 # from interactive shells whose CWD is arbitrary.
@@ -25,22 +28,31 @@ case "$MODE" in
     W)
         CMD="$2"
         CWD="$3"
-        CORR="$4"
-        # Skip empty commands (defensive — shouldn't happen but harmless)
+        # Skip empty commands (defensive — shouldn't happen but harmless).
         [ -z "$CMD" ] && exit 0
+        ID=$(kav_uuidv7)
         MSG=$(printf '1:W,%s:%s,%s:%s,%s:%s,' \
             "$(_ns_len "$CMD")" "$CMD" \
             "$(_ns_len "$CWD")" "$CWD" \
-            "$(_ns_len "$CORR")" "$CORR")
+            "$(_ns_len "$ID")" "$ID")
+        # Print the id BEFORE backgrounding the delivery: the shell captures
+        # it as the correlation key for the precmd U. The backgrounded socat
+        # gets stdout redirected to /dev/null, so it never holds this pipe.
+        # Only the 3-arg protocol prints — an extra argument means the caller
+        # is not capturing stdout, and printing would pollute the terminal.
+        [ "$#" -eq 3 ] && printf '%s\n' "$ID"
         ;;
     U)
-        CORR="$2"
+        ID="$2"
         EXIT="$3"
-        [ -n "$CORR" ] || exit 0
+        DURATION="$4"
+        [ -n "$ID" ] || exit 0
         [ -n "$EXIT" ] || EXIT=0
-        MSG=$(printf '1:U,%s:%s,%s:%s,' \
-            "$(_ns_len "$CORR")" "$CORR" \
-            "$(_ns_len "$EXIT")" "$EXIT")
+        [ -n "$DURATION" ] || DURATION=0
+        MSG=$(printf '1:U,%s:%s,%s:%s,%s:%s,' \
+            "$(_ns_len "$ID")" "$ID" \
+            "$(_ns_len "$EXIT")" "$EXIT" \
+            "$(_ns_len "$DURATION")" "$DURATION")
         ;;
     *)
         exit 1

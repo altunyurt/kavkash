@@ -1,244 +1,69 @@
 # kavkash zsh integration — source from .zshrc.
-# Shared paths/batch size from includes.sh (same dir as this file).
-_SCRIPT_DIR=${0:A:h}      # kavkash root, where hook.sh lives
+# Shared paths from includes.sh (same dir as this file).
+_SCRIPT_DIR=${0:A:h}      # kavkash root, where hook.sh/query.sh live
 . "$_SCRIPT_DIR/includes.sh"
 
-# _write_ns - netstring: "length:payload,". Byte count via wc -c
-# (${#var} counts chars, not bytes — wrong under UTF-8).
-_write_ns() {
-    local len
-    len=$(printf '%s' "$1" | LC_ALL=C wc -c | tr -d ' ')
-    printf '%s:%s,' "$len" "$1"
-}
+# _hist_picker — the single fzf widget behind both Up and Ctrl+R (see
+# functions.bash for the design rationale; zsh mirrors it, except accept
+# RUNS the picked command — zsh can from a widget).
+_hist_picker() {
+    local count="$1" init_q="${2:-}" selected
+    # NOTE: fzf's stderr must stay connected to the terminal. Inside a
+    # command substitution stdout is a pipe, so fzf falls back to stderr
+    # (then /dev/tty) for its UI — a `2>/dev/null` here makes the picker
+    # render nothing and appear stuck.
+    selected=$("$_SCRIPT_DIR/query.sh" "$count" "$init_q" | fzf \
+        --disabled --height 15 --no-sort --prompt 'history> ' \
+        --query "$init_q" \
+        --bind "change:reload:sleep 0.1; $_SCRIPT_DIR/query.sh $count {q}" \
+        | awk '{ gsub("⏎", "\n"); print }')
 
-# _read_b64 - decode server's response: one base64 row per line (EOF-terminated).
-# Base64 framing survives embedded newlines in multi-line commands.
-_read_b64() {
-    local b64line
-    while IFS= read -r b64line || [[ -n "$b64line" ]]; do
-        printf '%s' "$b64line" | base64 -d 2> /dev/null
-        printf '\n'
-    done
-}
-
-# _hist_query - send a query to the server and return raw response
-# Usage: _hist_query action [arg] [count]
-# Protocol: "Q,action,arg[,count]" as concatenated netstrings
-# Falls back from socat to nc if socat is unavailable
-_hist_query() {
-    local mode="$1" arg="${2:-}" count="${3:-}" ns_action ns_arg ns_count payload
-    ns_action=$(_write_ns "$mode")
-    ns_arg=$(_write_ns "$arg")
-    payload="1:Q,${ns_action}${ns_arg}"
-    if [[ -n "$count" ]]; then
-        ns_count=$(_write_ns "$count")
-        payload="${payload}${ns_count}"
-    fi
-    if command -v socat > /dev/null 2>&1; then
-        printf '%s' "$payload" | socat - UNIX-CONNECT:"$KAV_SOCK_FILE" 2> /dev/null
-    elif command -v nc > /dev/null 2>&1; then
-        printf '%s' "$payload" | nc -U "$KAV_SOCK_FILE" 2> /dev/null
-    fi
-}
-
-# _hist_fetch - fetch batch at offset and APPEND to __hist_resultset
-_hist_fetch() {
-    local offset="$1" count="$2" result line
-    result=$(_hist_query "up" "$offset" "$count" | _read_b64)
-    if [[ -n "$result" ]]; then
-        while IFS= read -r line || [[ -n "$line" ]]; do
-            __hist_resultset+=("$line")
-        done <<< "$result"
-    fi
-}
-
-# Prefetch config — start fetching the next batch once this many entries remain
-_HIST_PREFETCH_THRESHOLD=20
-
-# _hist_prefetch_start - background-fetch the next batch via process
-# substitution (fd + writer process); skip if one is in flight. zsh's $! is
-# 0 for process substitution, so no pid — closing the fd cancels the writer.
-_hist_prefetch_start() {
-    local offset="$1"
-    [[ -n "${__hist_prefetch_fd:-}" ]] && return
-
-    exec {__hist_prefetch_fd}< <(_hist_query "up" "$offset" "$KAV_HIST_BATCH" | _read_b64)
-    __hist_prefetch_offset="$offset"
-}
-
-# _hist_prefetch_collect - drain a prefetch into __hist_resultset. Blocks
-# only if the background fetch is still running.
-_hist_prefetch_collect() {
-    [[ -z "${__hist_prefetch_fd:-}" ]] && return 1
-    local line
-    while IFS= read -r -u "$__hist_prefetch_fd" line || [[ -n "$line" ]]; do
-        __hist_resultset+=("$line")
-    done
-    exec {__hist_prefetch_fd}<&-
-    unset __hist_prefetch_fd __hist_prefetch_offset
-}
-
-# _hist_prefetch_cancel - abandon an in-flight prefetch (from reset/cancel)
-_hist_prefetch_cancel() {
-    if [[ -n "${__hist_prefetch_fd:-}" ]]; then
-        exec {__hist_prefetch_fd}<&-
-    fi
-    unset __hist_prefetch_fd __hist_prefetch_offset
-}
-
-# _hist_search - Ctrl+R: open fzf with all commands for fuzzy search
-# Queries server for all commands (capped at 10k), pipes through fzf,
-# replaces the current line with the selected command
-_hist_search() {
-    local selected
-    selected=$(_hist_query "search" "" | _read_b64 | fzf --height 15 --no-sort --query "$BUFFER")
     if [[ -n "$selected" ]]; then
         BUFFER="$selected"
         CURSOR=${#BUFFER}
-    fi
-    zle reset-prompt
-    return 0
-}
-
-# _hist_stepper - handle Up/Down arrow history navigation
-# State (all global, prefixed with __ to avoid clashes):
-#   __hist_resultset  - array of commands, newest first (index 1 = most recent)
-#   __hist_rsi        - index to read next on Up
-#   __hist_offset     - total items consumed from server (next batch offset)
-#
-# Up:   if at end of resultset, fetch next batch (older commands).
-#       Display resultset[__hist_rsi], advance both rsi and offset.
-# Down: step back through resultset. If at start, clear line and reset.
-_hist_stepper() {
-    local direction="$1"
-    if [[ -z "${__hist_resultset+x}" ]]; then
-        __hist_resultset=()
-        __hist_rsi=1
-        __hist_offset=0
-    fi
-
-    local rsi_len=${#__hist_resultset[@]}
-    if [[ "$direction" == "up" ]]; then
-        # Fetch more if we've consumed everything in the current batch
-        if ((__hist_rsi > rsi_len)); then
-            local prev_len=$rsi_len
-            if [[ -n "${__hist_prefetch_fd:-}" && "${__hist_prefetch_offset:-}" == "$__hist_offset" ]]; then
-                _hist_prefetch_collect # usually instant — already fetched in background
-            else
-                _hist_fetch "$__hist_offset" "$KAV_HIST_BATCH" # fallback: cold start / prefetch missed
-            fi
-            rsi_len=${#__hist_resultset[@]}
-            if ((rsi_len == prev_len)); then
-                return 0
-            fi
-        fi
-
-        BUFFER="${__hist_resultset[$__hist_rsi]}"
-        CURSOR=${#BUFFER}
-        __hist_rsi=$((__hist_rsi + 1))
-        __hist_offset=$((__hist_offset + 1))
-
-        # stay ahead: prefetch at rsi_len (= end of current batch) so
-        # prefetch_offset matches __hist_offset at the batch boundary.
-        if ((rsi_len - __hist_rsi <= _HIST_PREFETCH_THRESHOLD)) && [[ -z "${__hist_prefetch_fd:-}" ]]; then
-            _hist_prefetch_start "$rsi_len"
-        fi
-
-    elif [[ "$direction" == "down" ]]; then
-        if ((rsi_len > 0 && __hist_rsi > 1)); then
-            # Step back within the resultset
-            __hist_rsi=$((__hist_rsi - 1))
-            __hist_offset=$((__hist_offset - 1))
-            if ((__hist_rsi > 1)); then
-                # Step back: show the entry before the new rsi (last up
-                # displayed resultset[old_rsi] then incremented rsi).
-                BUFFER="${__hist_resultset[$((__hist_rsi - 1))]}"
-                CURSOR=${#BUFFER}
-            else
-                # At the first history entry — clear line and reset
-                BUFFER=""
-                CURSOR=0
-                unset __hist_resultset __hist_rsi __hist_offset
-            fi
-        else
-            # Past the start — clear line and reset state
-            BUFFER=""
-            CURSOR=0
-            unset __hist_resultset __hist_rsi __hist_offset
-        fi
+        # one Enter both accepts and runs (zsh/fish decision; bash keeps the
+        # two-Enter accept-then-run because readline widgets can't execute).
+        zle accept-line
     fi
     return 0
 }
 
-# zle widgets can't take arguments, so wrap with direction argument
-# Up wrapper times press->redraw: zle repaints right after the widget returns,
-# so elapsed ≈ redraw latency. Prints to stderr (keeps stdout clean for IPC).
-_hist_stepper_up() {
-    local _t0=$EPOCHREALTIME
-    _hist_stepper "up"
-    local _t1=$EPOCHREALTIME
-    if [[ $KAV_DEBUG -eq 1 ]]; then
-        printf 'kavkash debug: up->redraw %.1f ms\n' "$(awk -v a="$_t0" -v b="$_t1" 'BEGIN{printf "%.1f", (b-a)*1000}')" >&2
-    fi
-}
-_hist_stepper_down() { _hist_stepper "down" }
+# Up: picker over the 500 newest commands. Down is left at zsh's default.
+_hist_up() { _hist_picker 500 ""; }
 
-# _hist_reset - clear navigation state (called by precmd hook, NOT bound to Enter)
-_hist_reset() {
-    _hist_prefetch_cancel
-    unset __hist_resultset __hist_rsi __hist_offset
-}
+# Ctrl+R: picker seeded with the current line, 10k cap.
+_hist_search() { _hist_picker 10000 "$BUFFER"; }
 
-# _hist_cancel - Ctrl+C: clear state, cancel the current line
-_hist_cancel() {
-    _hist_prefetch_cancel
-    unset __hist_resultset __hist_rsi __hist_offset
-    BUFFER=""
-    CURSOR=0
-    zle reset-prompt
-    return 0
-}
-
-# Register all zle widgets and key bindings.
-# Enter is NOT bound — normal zle Enter executes the command.
+# Register widgets and bindings. Enter/Ctrl+C are NOT bound — zsh defaults
+# handle them.
 zle -N kavkash-search _hist_search
-zle -N kavkash-stepper-up _hist_stepper_up
-zle -N kavkash-stepper-down _hist_stepper_down
-zle -N kavkash-cancel _hist_cancel
+zle -N kavkash-up _hist_up
 
 bindkey '^R' kavkash-search
-bindkey '^[[A' kavkash-stepper-up
-bindkey '^[[B' kavkash-stepper-down
-bindkey '^C' kavkash-cancel
+bindkey '^[[A' kavkash-up
 
-# Record executed commands and clear navigation state after each one.
-# preexec stores the line (with a per-shell correlation key); precmd sends
-# the real exit code for that key (see processor.sh U). $? is captured FIRST
-# in precmd before anything else can clobber it.
+# Record executed commands: preexec mints the correlation id (hook.sh prints
+# it) and captures the start time; precmd reports exit + shell-measured
+# duration for that id (see processor.sh U). $? is captured FIRST in precmd
+# before anything else can clobber it.
 autoload -Uz add-zsh-hook
 
 typeset -g _hist_corr=""
-typeset -g _hist_corr_n=0
+typeset -g _hist_t0=0
 
 _hist_preexec() {
-    _hist_corr_n=$((_hist_corr_n + 1))
-    _hist_corr="$$-$_hist_corr_n"
-    # &! = background + disown: without it, interactive zsh prints job-control
-    # notices ([1] PID, "[1] + done ...hook.sh...") before/after EVERY command.
-    "$_SCRIPT_DIR/hook.sh" W "${2:-$1}" "$PWD" "$_hist_corr" &!
+    _hist_t0=$(date +%s%3N 2>/dev/null || echo "$(date +%s)000")
+    _hist_corr=$("$_SCRIPT_DIR/hook.sh" W "${2:-$1}" "$PWD")
 }
 
 _hist_precmd() {
     local _hist_exit=$?
-    _hist_reset 2> /dev/null
     if [ -n "$_hist_corr" ]; then
-        "$_SCRIPT_DIR/hook.sh" U "$_hist_corr" "$_hist_exit" &!
+        local _now=$(date +%s%3N 2>/dev/null || echo "$(date +%s)000")
+        "$_SCRIPT_DIR/hook.sh" U "$_hist_corr" "$_hist_exit" "$((_now - _hist_t0))"
         _hist_corr=""
     fi
 }
 
 add-zsh-hook preexec _hist_preexec
 add-zsh-hook precmd _hist_precmd
-
-# Preload the first batch so the first Up press doesn't block on IPC
-_hist_prefetch_start 0

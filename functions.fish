@@ -1,248 +1,102 @@
-# Configuration: socket path and batch size for history navigation
-# Must match includes.sh: ${XDG_RUNTIME_DIR}/kavkash/history.sock. fish cannot
-# source includes.sh (POSIX sh syntax), so these stay duplicated — keep in sync.
+# kavkash fish integration — source from config.fish.
+# Socket path must match includes.sh: ${XDG_RUNTIME_DIR}/kavkash/history.sock.
+# fish cannot source includes.sh (POSIX sh syntax), so these stay duplicated
+# — keep in sync.
 if set -q XDG_RUNTIME_DIR
     set -g _HIST_SOCK "$XDG_RUNTIME_DIR/kavkash/history.sock"
 else
     set -g _HIST_SOCK "/tmp/kavkash/history.sock"
 end
-set -g _HIST_BATCH 100
-# Debug prints (timing on Up/Down navigation). Must match includes.sh
-# (KAV_DEBUG=${KAV_DEBUG:-1}): respect a pre-set value so users can disable.
-set -q KAV_DEBUG; or set -g KAV_DEBUG 0
-# Directory containing this file (project root); hook.sh lives beside it.
+# Directory containing this file (project root); hook.sh/query.sh live here.
 # Resolved to a REAL path: fish refuses to exec command paths containing "..".
 set -g _HIST_SCRIPT_DIR (dirname (status filename))
 set -g _HIST_HOOK (realpath "$_HIST_SCRIPT_DIR/hook.sh")
 
-# _write_ns - encode a string as a netstring: "length:payload,"
-# Uses wc -c for byte count (works for any byte sequence, not just text)
-function _write_ns
-    set -l len (printf '%s' "$argv[1]" | LC_ALL=C wc -c | tr -d ' ')
-    printf '%s:%s,' "$len" "$argv[1]"
-end
-
-# _read_b64 - decode server's response: one base64 row per line (EOF-terminated).
-# Base64 framing survives embedded newlines in multi-line commands.
-function _read_b64
-    while begin
-            read b64line
-            or test -n "$b64line"
-        end
-        printf '%s' "$b64line" | base64 -d 2>/dev/null
-        echo
-    end
-end
-
-# _hist_query - send a query to the server and return raw response
-# Usage: _hist_query action [arg] [count]
-# Protocol: "Q,action,arg[,count]" as concatenated netstrings
-function _hist_query
-    set -l mode $argv[1]
-    set -l arg $argv[2]
-    set -l count $argv[3]
-
-    set -l ns_action (_write_ns "$mode")
-    set -l ns_arg (_write_ns "$arg")
-    set -l payload (printf '1:Q,%s%s' "$ns_action" "$ns_arg")
-
-    if test -n "$count"
-        set -l ns_count (_write_ns "$count")
-        set payload "$payload$ns_count"
-    end
-
-    if command -vq socat
-        printf '%s' "$payload" | socat - UNIX-CONNECT:"$_HIST_SOCK" 2>/dev/null
-    else if command -vq nc
-        printf '%s' "$payload" | nc -U "$_HIST_SOCK" 2>/dev/null
-    end
-end
-
-# _hist_fetch - fetch batch at offset and APPEND to __hist_resultset
-# (older batches pile up so navigation can keep going back).
-function _hist_fetch
-    set -l offset $argv[1]
-    set -l count $argv[2]
-    set -l result (_hist_query "up" "$offset" "$count" | _read_b64)
-    if test -n "$result"
-        set -a __hist_resultset $result
-    end
-end
-
-# _hist_search - Ctrl+R: open fzf with all commands for fuzzy search
-# Queries server for all commands (capped at 10k), pipes through fzf,
-# replaces the current line with the selected command
-function _hist_search
-    set -l selected (_hist_query "search" "" | _read_b64 | fzf --height 15 --no-sort --query (commandline -b))
+# _hist_picker — the single fzf widget behind both Up and Ctrl+R (see
+# functions.bash for the design rationale; fish mirrors it, except accept
+# RUNS the picked command — fish can from a binding).
+function _hist_picker
+    set -l count $argv[1]
+    set -l init_q $argv[2]
+    # NOTE: fzf's stderr must stay connected to the terminal. Inside a
+    # command substitution stdout is a pipe, so fzf falls back to stderr
+    # (then /dev/tty) for its UI — a `2>/dev/null` here makes the picker
+    # render nothing and appear stuck.
+    set -l selected ("$_HIST_SCRIPT_DIR/query.sh" "$count" "$init_q" | fzf \
+        --disabled --height 15 --no-sort --prompt 'history> ' \
+        --query "$init_q" \
+        --bind "change:reload:sleep 0.1; $_HIST_SCRIPT_DIR/query.sh $count {q}" \
+        | awk '{ gsub("⏎", "\n"); print }')
     if test -n "$selected"
         commandline -r "$selected"
-    end
-    commandline -f end-of-line
-end
-
-# _hist_stepper - handle Up/Down arrow history navigation
-# State (all global, prefixed with __ to avoid clashes):
-#   __hist_resultset  - array of commands, newest first (index 1 = most recent)
-#   __hist_rsi        - current position in resultset (index to read next)
-#   __hist_offset     - total items consumed from server (for next batch offset)
-#
-# Up:   if at end of resultset, fetch next batch (older commands).
-#       Display resultset[__hist_rsi], advance both rsi and offset.
-# Down: step back through resultset. If at start, clear line and reset.
-# Note: fish arrays are 1-indexed.
-function _hist_stepper
-    if not set -q __hist_resultset
-        set -g __hist_resultset
-        set -g __hist_rsi 1
-        set -g __hist_offset 0
-    end
-
-    set -l rsi_len (count $__hist_resultset)
-
-    switch "$argv[1]"
-        case up
-            # Fetch more if we've consumed everything in the current batch
-            if test $__hist_rsi -gt $rsi_len
-                set -l prev_len $rsi_len
-                _hist_fetch $__hist_offset $_HIST_BATCH
-                set rsi_len (count $__hist_resultset)
-                # If nothing new fetched, we've hit the end of history
-                if test $rsi_len -eq $prev_len
-                    return
-                end
-            end
-            commandline -r "$__hist_resultset[$__hist_rsi]"
-            set -g __hist_rsi (math $__hist_rsi + 1)
-            set -g __hist_offset (math $__hist_offset + 1)
-            # end-of-line: redraws the line and parks the caret at the end.
-            # Plain `repaint`/`repaint-mode` re-run fish_prompt (slow prompts
-            # like git status stall every arrow) and can leave the caret over
-            # the text when the previous line was wrapped or the caret wasn't
-            # at the end.
-            commandline -f end-of-line
-
-        case down
-            if test $rsi_len -gt 0; and test $__hist_rsi -gt 1
-                # Step back within the resultset
-                set -g __hist_rsi (math $__hist_rsi - 1)
-                set -g __hist_offset (math $__hist_offset - 1)
-                if test $__hist_rsi -gt 1
-                    # Show index rsi-1 (one step before the new rsi). fish is 1-indexed.
-                    # (fish can't expand a command-substitution index inside quotes)
-                    set -l idx (math $__hist_rsi - 1)
-                    commandline -r "$__hist_resultset[$idx]"
-                else
-                    # At the first history entry — clear line and reset
-                    commandline -r ""
-                    set -e __hist_resultset __hist_rsi __hist_offset
-                end
-                commandline -f end-of-line
-            else
-                # Past the start — clear line and reset state
-                commandline -r ""
-                set -e __hist_resultset __hist_rsi __hist_offset
-                commandline -f end-of-line
-            end
+        # one Enter both accepts and runs (zsh/fish decision)
+        commandline -f execute
     end
 end
 
-# _hist_stepper_up - Up arrow wrapper. With KAV_DEBUG=1, times press->redraw
-# (repaint happens when _hist_stepper returns) to stderr — keeps stdout clean.
-function _hist_stepper_up
-    set -l t0 (date +%s%3N)
-    _hist_stepper up
-    if test "$KAV_DEBUG" = "1"
-        set -l t1 (date +%s%3N)
-        echo "kavkash debug: up->redraw "(math $t1 - $t0)" ms" >&2
-    end
+# Up: picker over the 500 newest commands. Down is deliberately unbound.
+function _hist_up
+    _hist_picker 500 ""
 end
 
-# _hist_stepper_down - Down arrow wrapper, same KAV_DEBUG-gated timing.
-function _hist_stepper_down
-    set -l t0 (date +%s%3N)
-    _hist_stepper down
-    if test "$KAV_DEBUG" = "1"
-        set -l t1 (date +%s%3N)
-        echo "kavkash debug: down->redraw "(math $t1 - $t0)" ms" >&2
-    end
+# Ctrl+R: picker seeded with the current line, 10k cap.
+function _hist_search
+    _hist_picker 10000 (commandline -b)
 end
 
-# _hist_reset - clear navigation state (called via fish_postexec below)
-function _hist_reset
-    set -e __hist_resultset __hist_rsi __hist_offset
-end
-
-# Record executed commands: fire-and-forget write to the daemon (like bash/zsh).
-# fish_preexec fires for the whole command line once, just before it runs —
-# the line is stored with a per-shell correlation key; fish_postexec then
-# sends the real exit code for that key (see processor.sh U).
+# Record executed commands: preexec mints the correlation id (hook.sh prints
+# it) and captures the start time; postexec reports exit + shell-measured
+# duration for that id (see processor.sh U).
 # Skip empty lines and commands spawned from command substitutions (e.g. fzf
-# inside _hist_search) so we only store what the user actually typed.
+# inside _hist_picker) so we only store what the user actually typed.
 set -g __hist_corr ""
-set -g __hist_corr_n 0
+set -g __hist_t0 0
 
 function _hist_preexec --on-event fish_preexec
     status is-command-substitution; and return 0
     [ -n "$argv[1]" ]; or return 0
 
-    set -g __hist_corr_n (math $__hist_corr_n + 1)
-    set -g __hist_corr "$fish_pid-$__hist_corr_n"
-    "$_HIST_HOOK" W "$argv[1]" "$PWD" "$__hist_corr" &
+    set -l t0 (date +%s%3N 2>/dev/null)
+    [ -n "$t0" ]; or set t0 (date +%s)000
+    set -g __hist_t0 $t0
+    set -g __hist_corr ("$_HIST_HOOK" W "$argv[1]" "$PWD")
 end
 
-# _hist_cancel - Ctrl+C: clear state, cancel the current line
-function _hist_cancel
-    set -e __hist_resultset __hist_rsi __hist_offset
-    commandline -f cancel-commandline
+# fish_postexec fires after a command line finishes; $status is the line's
+# exit code — captured FIRST before anything else runs.
+function _hist_postexec --on-event fish_postexec
+    set -l s $status
+    if test -n "$__hist_corr"
+        set -l now (date +%s%3N 2>/dev/null)
+        [ -n "$now" ]; or set now (date +%s)000
+        "$_HIST_HOOK" U "$__hist_corr" "$s" (math "$now - $__hist_t0") &
+        set -g __hist_corr ""
+    end
 end
 
-# fish_user_key_bindings - register all key bindings.
-# Enter is NOT bound — fish's normal Enter executes the command.
+# fish_user_key_bindings — register all key bindings.
+# Enter and Ctrl+C are NOT bound — fish's own Enter executes and Ctrl+C
+# cancels.
 function fish_user_key_bindings
+    # erase any user bindings for these keys so re-sourcing this file never
+    # leaves stale handlers bound
     bind --user --erase up 2>/dev/null
     bind --user --erase down 2>/dev/null
     bind --user --erase \cr 2>/dev/null
 
     # Bind by keyname AND by raw escape sequence: fish resolves incoming
     # bytes against raw-sequence bindings first, so a keyname-only binding
-    # can lose to the preset up-line/down-line (fish's own history).
-    bind --user up _hist_stepper_up
-    bind --user down _hist_stepper_down
-    bind --user -M insert up _hist_stepper_up
-    bind --user -M insert down _hist_stepper_down
-    bind --user \e\[A _hist_stepper_up
-    bind --user \e\[B _hist_stepper_down
-    bind --user -M insert \e\[A _hist_stepper_up
-    bind --user -M insert \e\[B _hist_stepper_down
-    bind --user \eOA _hist_stepper_up
-    bind --user \eOB _hist_stepper_down
-    bind --user -M insert \eOA _hist_stepper_up
-    bind --user -M insert \eOB _hist_stepper_down
+    # can lose to the preset up-line (fish's own history).
+    bind --user up _hist_up
+    bind --user -M insert up _hist_up
+    bind --user \e\[A _hist_up
+    bind --user -M insert \e\[A _hist_up
+    bind --user \eOA _hist_up
+    bind --user -M insert \eOA _hist_up
     bind --user \cr _hist_search
     bind --user -M insert \cr _hist_search
-    bind --user \cc _hist_cancel
 end
 
 # Apply bindings now: fish only auto-calls fish_user_key_bindings at startup,
 # so a mid-session `source functions.fish` would otherwise never bind.
 fish_user_key_bindings
-
-# Clear navigation state after each command completes and report its exit
-# code. fish_postexec fires after a command line finishes; $status is the
-# line's exit code — captured FIRST before anything else runs.
-function _hist_postexec --on-event fish_postexec
-    set -l s $status
-    _hist_reset 2>/dev/null
-    if test -n "$__hist_corr"
-        "$_HIST_HOOK" U "$__hist_corr" "$s" &
-        set -g __hist_corr ""
-    end
-end
-
-# Preload the first batch so the first Up press doesn't block on IPC.
-# Pre-init state explicitly (stepper skips lazy init when the resultset
-# exists) and fetch synchronously to avoid a race on the first keypress.
-set -g __hist_resultset
-set -g __hist_rsi 1
-set -g __hist_offset 0
-_hist_fetch 0 $_HIST_BATCH

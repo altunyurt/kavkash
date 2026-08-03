@@ -23,20 +23,16 @@ DB="$KAV_DB_FILE"
 kav_have sqlite3 || kav_die "sqlite3 required for history import"
 kav_have base64 || kav_die "base64 required for history import"
 
-# Ensure schema exists (same as server.sh) so import works before first run.
-# corr stays NULL for imported rows — precmd updates only target live rows.
-sqlite3 "$DB" << 'EOF'
-CREATE TABLE IF NOT EXISTS history (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+# Ensure the schema exists (same as server.sh) so import works before the
+# first server run. Imported rows get a UUIDv7 id minted from their original
+# timestamp in SQL below, so ordering survives.
+sqlite3 "$DB" "CREATE TABLE IF NOT EXISTS history (
+    id TEXT PRIMARY KEY,
     command TEXT NOT NULL,
     cwd TEXT NOT NULL,
     exit_code INTEGER NOT NULL,
-    duration_ms INTEGER NOT NULL,
-    timestamp INTEGER NOT NULL,
-    corr TEXT
-);
-EOF
-sqlite3 "$DB" "ALTER TABLE history ADD COLUMN corr TEXT;" 2> /dev/null || true
+    duration_ms INTEGER NOT NULL
+);"
 
 tmpdir=${TMPDIR:-/tmp}
 ENTRIES=$(mktemp "$tmpdir/kavkash-import.XXXXXX")
@@ -245,9 +241,18 @@ while IFS=' ' read -r ts b64cmd b64cwd dur exit src || [ -n "$b64cmd" ]; do
     [ -n "$dur" ] || dur=0
     [ -n "$exit" ] || exit=0
     if [ "$src" = A ]; then
-        printf "UPDATE history SET cwd='%s', duration_ms=%s, exit_code=%s, timestamp=%s WHERE command='%s' AND cwd='';\n" "$safe_cwd" "$dur" "$exit" "$ts" "$safe" >> "$SQLOUT"
+        # atuin rows first enrich any existing cwd-less row (a bash/zsh/fish
+        # import may already hold the same command without a path). The id
+        # stays — only the enriched fields change.
+        printf "UPDATE history SET cwd='%s', duration_ms=%s, exit_code=%s WHERE command='%s' AND cwd='';\n" "$safe_cwd" "$dur" "$exit" "$safe" >> "$SQLOUT"
     fi
-    printf "INSERT INTO history (command, cwd, exit_code, duration_ms, timestamp) SELECT '%s', '%s', %s, %s, %s WHERE NOT EXISTS (SELECT 1 FROM history WHERE command = '%s');\n" "$safe" "$safe_cwd" "$exit" "$dur" "$ts" "$safe" >> "$SQLOUT"
+    # id is a UUIDv7 minted from the row's own timestamp, so the imported
+    # chronology maps onto the id ordering (ORDER BY id DESC == time order).
+    # The SQL printf() format specifiers (%08x …) must be escaped as %% so
+    # the SHELL printf emits them literally instead of consuming arguments;
+    # otherwise a non-numeric command ("%s") trips "expected numeric value"
+    # and the whole row shifts into garbage.
+    printf "INSERT INTO history (id, command, cwd, exit_code, duration_ms) SELECT printf('%%08x-%%04x-%%04x-%%04x-%%012x', (%s >> 16) & 0xffffffff, %s & 0xffff, 0x7000 | (abs(random()) & 0x0fff), 0xa000 | (abs(random()) & 0x0fff), abs(random()) & 0xffffffffffff), '%s', '%s', %s, %s WHERE NOT EXISTS (SELECT 1 FROM history WHERE command = '%s');\n" "$ts" "$ts" "$safe" "$safe_cwd" "$dur" "$exit" "$safe" >> "$SQLOUT"
 done < "$ENTRIES"
 
 n_before=$(sqlite3 "$DB" "SELECT count(*) FROM history;")

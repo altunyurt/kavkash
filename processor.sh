@@ -6,14 +6,17 @@
 #
 # Wire protocol:
 #   Client -> Server: concatenated netstrings ("len:payload,")
-#       Write:  W, cmd, cwd, corr        (preexec; exit/duration unknown yet)
-#       Update: U, corr, exit_code       (precmd; duration = now - row.timestamp;
-#                                        corr cleared so PIDs can be reused)
-#       Query:  Q, action [arg] [count]
+#       Write:  W, cmd, cwd, id        (preexec; id is a UUIDv7 minted by
+#                                       hook.sh — it doubles as the row's
+#                                       timestamp; exit/duration unknown yet)
+#       Update: U, id, exit_code, duration_ms
+#                                     (precmd; duration measured by the shell
+#                                     between preexec and precmd)
+#       Query:  Q, search, query, count
 #   Server -> Client (Q only): one base64-encoded row per line (EOF-terminated).
-#       Base64 is used instead of raw text because history entries (e.g.
-#       multi-line commands) may contain embedded newlines, which would
-#       otherwise corrupt line-based framing.
+#       Each payload is "display\n" (embedded newlines rendered as ⏎, framing
+#       hazards 0x1E/0x1F stripped), so the client can batch-decode the whole
+#       response and still get exactly one display line per row.
 db_file="${KAV_DB_FILE:-$1}" # computed by includes.sh (sourced above); $1 fallback for manual invocation
 
 # Bound total bytes read to defend against unbounded-buffering DoS from a
@@ -79,67 +82,103 @@ shift
 
 case "$TYPE" in
     W)
-        # Write: W cmd cwd corr — preexec hook. Exit/duration are unknown
-        # until the command completes; the precmd hook sends a U for corr.
+        # Write: W cmd cwd id — preexec hook. The UUIDv7 id IS the row's
+        # timestamp (lexicographic id order == chronological). Exit and
+        # duration are unknown until the precmd hook sends a U for id.
         cmd="$1"
         cwd="$2"
-        corr="$3"
+        id="$3"
+        [ -n "$id" ] || exit 0
 
         safe_cmd=$(printf '%s' "$cmd" | sed "s/'/''/g")
         safe_cwd=$(printf '%s' "$cwd" | sed "s/'/''/g")
-        safe_corr=$(printf '%s' "$corr" | sed "s/'/''/g")
-        now=$(date +%s%3N 2> /dev/null || echo "$(date +%s)000")
-        if [ -n "$corr" ]; then
-            # OR REPLACE: a corr key is only unique while its command is
-            # pending, so the only possible conflict is a stale row from a
-            # shell that died mid-command AND had its PID+counter reused.
-            # Recycle it instead of silently dropping the new command.
-            sqlite3 "$db_file" "INSERT OR REPLACE INTO history (command, cwd, exit_code, duration_ms, timestamp, corr) VALUES ('$safe_cmd', '$safe_cwd', 0, 0, $now, '$safe_corr');"
-        else
-            sqlite3 "$db_file" "INSERT INTO history (command, cwd, exit_code, duration_ms, timestamp) VALUES ('$safe_cmd', '$safe_cwd', 0, 0, $now);"
-        fi
+        safe_id=$(printf '%s' "$id" | sed "s/'/''/g")
+        # Plain INSERT: a fresh UUIDv7 cannot collide. A shell that dies
+        # mid-command leaves its row at exit 0 / duration 0 — visible as
+        # history; ids are never reused, so it can never be resurrected.
+        sqlite3 "$db_file" "INSERT INTO history (id, command, cwd, exit_code, duration_ms) VALUES ('$safe_id', '$safe_cmd', '$safe_cwd', 0, 0);"
         ;;
     U)
-        # Update: U corr exit_code — precmd hook fires after the command
-        # line finished; $? is the line's exit. Duration is computed from the
-        # row's preexec timestamp (same server clock). corr is cleared in the
-        # same statement (WHERE matches before SET), freeing the key for PID
-        # reuse — it is only meaningful while the command is pending.
-        corr="$1"
+        # Update: U id exit_code duration_ms — precmd hook fires after the
+        # command line finished; $? is the line's exit and the shell measured
+        # the duration between preexec and precmd (same wall clock). UUIDs
+        # are never reused.
+        id="$1"
         exit_code="$2"
-        [ -n "$corr" ] || exit 0
+        duration="$3"
+        [ -n "$id" ] || exit 0
         case "$exit_code" in '' | *[!0-9]*) exit_code=0 ;; esac
-        safe_corr=$(printf '%s' "$corr" | sed "s/'/''/g")
-        now=$(date +%s%3N 2> /dev/null || echo "$(date +%s)000")
-        sqlite3 "$db_file" "UPDATE history SET exit_code=$exit_code, duration_ms=CASE WHEN $now > timestamp THEN $now - timestamp ELSE 0 END, corr=NULL WHERE corr='$safe_corr';"
+        case "$duration" in '' | *[!0-9]*) duration=0 ;; esac
+        safe_id=$(printf '%s' "$id" | sed "s/'/''/g")
+        sqlite3 "$db_file" "UPDATE history SET exit_code=$exit_code, duration_ms=$duration WHERE id='$safe_id';"
         ;;
     Q)
-        # Query: Q action [arg] [count]
+        # Query: Q search query count — up to `count` commands whose text
+        # contains every whitespace-separated term of `query` as a
+        # subsequence. The server expands each term into a LIKE pattern with
+        # % between its characters (so SQL is a superset of fzf's matcher),
+        # escaping LIKE wildcards and quotes. Empty query = the newest
+        # `count` commands. The returned command is sanitized for
+        # single-line display: 0x1E/0x1F (sqlite3 -ascii framing hazards)
+        # and \r are dropped, embedded newlines become ⏎ (U+23CE).
         action="$1"
-        arg="$2"
+        query="$2"
         count="$3"
-        # Validate numeric inputs (prevents SQL injection in LIMIT/OFFSET)
-        case "$arg" in '' | *[!0-9]*) arg=0 ;; esac
-        case "$count" in '' | *[!0-9]*) count=1 ;; esac
+        case "$count" in '' | *[!0-9]*) count=10000 ;; esac
         case "$action" in
-            up)
-                sql="SELECT command FROM history ORDER BY timestamp DESC LIMIT $count OFFSET $arg;"
-                ;;
             search)
-                # Cap at 10000 results to avoid OOM on large histories
-                sql="SELECT command FROM history ORDER BY timestamp DESC LIMIT 10000;"
+                where=$(printf '%s' "$query" | LC_ALL=C awk -v q="'" '
+                    {
+                        n = 0
+                        for (i = 1; i <= NF; i++) {
+                            term = $i
+                            pattern = "%"
+                            j = 1
+                            while (j <= length(term)) {
+                                c = substr(term, j, 1)
+                                # UTF-8 char width: keep multi-byte sequences
+                                # intact so the % only lands between characters
+                                # (splitting a multi-byte char would make the
+                                # pattern unmatchable in SQLite LIKE).
+                                w = 1
+                                if (c >= sprintf("%c", 194) && c <= sprintf("%c", 223)) w = 2
+                                else if (c >= sprintf("%c", 224) && c <= sprintf("%c", 239)) w = 3
+                                else if (c >= sprintf("%c", 240) && c <= sprintf("%c", 244)) w = 4
+                                ch = substr(term, j, w)
+                                if (w == 1) {
+                                    if (c == "%" || c == "_" || c == "\\") ch = "\\" ch
+                                    else if (c == q) ch = q q
+                                }
+                                pattern = pattern ch "%"
+                                j += w
+                            }
+                            clauses[++n] = "command LIKE " q pattern q " ESCAPE " q "\\" q
+                        }
+                    }
+                    END {
+                        if (n == 0) print ""
+                        else {
+                            printf "WHERE "
+                            for (i = 1; i <= n; i++) {
+                                if (i > 1) printf " AND "
+                                printf "%s", clauses[i]
+                            }
+                            print ""
+                        }
+                    }')
+                sql="SELECT REPLACE(REPLACE(REPLACE(REPLACE(command, char(30), ''), char(31), ''), char(10), char(9166)), char(13), '') FROM history $where ORDER BY id DESC LIMIT $count;"
                 ;;
             *)
-                sql=""
+                exit 0
                 ;;
         esac
-        [ -z "$sql" ] && exit 0
 
-        # Use -ascii mode (0x1E row separator, 0x1F column separator)
-        # instead of sqlite3's default newline-separated list output.
-        # A history entry containing an embedded literal newline would
-        # otherwise be mis-split into multiple bogus "rows" by any
-        # newline-based consumer downstream.
+        # -ascii mode (0x1E row separator, 0x1F column separator) instead of
+        # sqlite3's default newline-separated list output. The SELECT already
+        # stripped 0x1E/0x1F from the display, so no embedded separator can
+        # tear a row. Each row is base64-encoded WITH a trailing newline
+        # inside the payload: a client-side batch decode then reproduces
+        # exactly one display line per row.
         sqlite3 -ascii "$db_file" "$sql" | LC_ALL=C awk '
         BEGIN { RS = "\036" }
         {
@@ -147,7 +186,7 @@ case "$TYPE" in
             sub(/\n$/, "", row)   # strip sqlite3 trailing newline artifact, if any
             if (row == "") next   # sqlite3 -ascii trailing-separator artifact; real rows are never empty
             b64cmd = "base64 -w0"
-            printf "%s", row | b64cmd
+            printf "%s\n", row | b64cmd
             close(b64cmd)
             print ""
         }'

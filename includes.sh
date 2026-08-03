@@ -12,12 +12,6 @@ KAV_SOCK_FILE="$KAV_RUNTIME_DIR/history.sock"
 KAV_PID_FILE="$KAV_RUNTIME_DIR/server.pid"
 KAV_DB_FILE="$KAV_DATA_HOME/history.db"
 
-# History batch size for the shell integrations (functions.bash/.zsh source
-# this file; functions.fish can't — fish syntax — so keep its copy in sync).
-KAV_HIST_BATCH=100
-
-KAV_DEBUG=${KAV_DEBUG:-0}
-
 # Small shared helpers. kav_ prefix: this file is also sourced into
 # interactive shells (functions.bash/.zsh), where plain names like `die`
 # or `have` could clash with user-defined functions. install.sh keeps its
@@ -29,3 +23,28 @@ kav_die() {
 kav_have() { command -v "$1" > /dev/null 2>&1; }
 kav_say() { printf '%s\n' "$*"; }
 kav_warn() { printf 'warning: %s\n' "$*" >&2; }
+
+# kav_uuidv7 — RFC 9562 UUIDv7: 48-bit millisecond timestamp (lexicographic
+# order == chronological order, so history sorts by id alone), version 7,
+# variant 10, 72 random bits. hook.sh mints one per command; order matters
+# for ORDER BY id DESC. Needs /dev/urandom (falls back to date+pid entropy).
+kav_uuidv7() {
+    ts=$(printf '%012x' "$(date +%s%3N 2> /dev/null || echo "$(date +%s)000")")
+    rand=$(od -An -N9 -tx1 /dev/urandom 2> /dev/null | tr -d ' \n')
+    [ "${#rand}" -ge 18 ] || rand=$(printf '%06x%06x%06x' "$$" "$(date +%s)" "$$")
+    # dash has no ${var:off:len}; cut does the same slicing
+    printf '%s-%s-7%s-a%s-%s\n' \
+        "$(printf '%s' "$ts" | cut -c1-8)" \
+        "$(printf '%s' "$ts" | cut -c9-12)" \
+        "$(printf '%s' "$rand" | cut -c1-3)" \
+        "$(printf '%s' "$rand" | cut -c4-6)" \
+        "$(printf '%s' "$rand" | cut -c7-18)"
+}
+
+# kav_uuidv7_decode ID — human-readable time from a UUIDv7 id (debug helper).
+kav_uuidv7_decode() {
+    hex_ts=$(printf '%s' "$1" | tr -d '-' | cut -c1-12)
+    ms_ts=$((0x$hex_ts))
+    date -d "@$((ms_ts / 1000))" +"%Y-%m-%d %H:%M:%S" 2> /dev/null || printf '%s\n' "$ms_ts"
+}
+
