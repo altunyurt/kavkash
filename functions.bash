@@ -19,19 +19,23 @@ _SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # change:reload (sleep 0.1; fzf kills the previous reload on each keystroke,
 # so only a query that stays stable for 100ms actually hits the DB).
 # --disabled turns fzf into a pure selector — the DB query IS the filter.
-# The server renders embedded newlines as ⏎ for single-line display; on
-# accept we reverse that so multi-line commands round-trip intact.
+# The server emits NUL-terminated rows with embedded newlines kept raw, so
+# multi-line commands display as-is and round-trip intact (fzf --read0/
+# --print0; the terminator is stripped with tr before readline sees it).
 _hist_picker() {
     local count="$1" init_q="${2:-}" selected
     # NOTE: fzf's stderr must stay connected to the terminal. Inside a
     # command substitution stdout is a pipe, so fzf falls back to stderr
     # (then /dev/tty) for its UI — a `2>/dev/null` here makes the picker
     # render nothing and appear stuck.
+    # NUL-framed rows: fzf --read0/--print0; tr strips the terminator so the
+    # picked multi-line command survives $(...) intact (embedded newlines are
+    # preserved; only trailing ones are trimmed, which is fine).
     selected=$("$_SCRIPT_DIR/query.sh" "$count" "$init_q" | fzf \
         --disabled --height 15 --no-sort --prompt 'history> ' \
-        --query "$init_q" \
+        --query "$init_q" --read0 --print0 \
         --bind "change:reload:sleep 0.1; $_SCRIPT_DIR/query.sh $count {q}" \
-        | awk '{ gsub("⏎", "\n"); print }')
+        | tr -d '\0')
 
     if [[ -n "$selected" ]]; then
         # accept-then-Enter: readline can't run the line from a widget, so

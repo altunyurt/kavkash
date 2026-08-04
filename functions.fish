@@ -22,11 +22,16 @@ function _hist_picker
     # command substitution stdout is a pipe, so fzf falls back to stderr
     # (then /dev/tty) for its UI — a `2>/dev/null` here makes the picker
     # render nothing and appear stuck.
-    set -l selected ("$_HIST_SCRIPT_DIR/query.sh" "$count" "$init_q" | fzf \
+    # read -z: NUL-delimited capture. Fish variables can't hold NUL and the
+    # picked command may contain real newlines (multi-line commands), so the
+    # selection must NOT go through command substitution. fzf --read0/--print0
+    # frame the NUL stream from query.sh.
+    set -l selected
+    "$_HIST_SCRIPT_DIR/query.sh" "$count" "$init_q" | fzf \
         --disabled --height 15 --no-sort --prompt 'history> ' \
-        --query "$init_q" \
+        --query "$init_q" --read0 --print0 \
         --bind "change:reload:sleep 0.1; $_HIST_SCRIPT_DIR/query.sh $count {q}" \
-        | awk '{ gsub("⏎", "\n"); print }')
+        | read -z selected
     if test -n "$selected"
         commandline -r "$selected"
         # one Enter both accepts and runs (zsh/fish decision)

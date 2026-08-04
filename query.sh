@@ -7,11 +7,11 @@
 #   - the fzf picker's initial pipe (functions.bash/.fish/.zsh)
 #   - the picker's change:reload target on every keystroke
 #
-# Output: one display line per command, newline-safe. The server renders
-# embedded newlines as ⏎ and strips the sqlite3 -ascii framing hazards
-# (0x1E/0x1F) plus \r, and base64-encodes each row WITH its trailing
-# newline inside the payload — so a single batch decode reproduces exactly
-# one display line per row, with no per-row forking.
+# Output: NUL-separated command rows, framed for fzf --read0. The server
+# keeps embedded newlines raw (NUL can't appear in command text, so the
+# framing is unambiguous) and strips the sqlite3 -ascii framing hazards
+# (0x1E/0x1F) plus \r. No encoding on either side — the response is passed
+# through as-is.
 
 . "$(dirname -- "$(realpath -- "$0")")/includes.sh"
 
@@ -29,14 +29,12 @@ _ns() {
 
 payload=$(printf '1:Q,%s%s%s' "$(_ns search)" "$(_ns "$query")" "$(_ns "$count")")
 
+# The NUL-framed response must not pass through a command substitution —
+# shells drop NUL bytes in $(...) — so it is streamed straight to stdout.
 if command -v socat > /dev/null 2>&1; then
-    response=$(printf '%s' "$payload" | socat - UNIX-CONNECT:"$KAV_SOCK_FILE" 2> /dev/null)
+    printf '%s' "$payload" | socat - UNIX-CONNECT:"$KAV_SOCK_FILE" 2> /dev/null
 elif command -v nc > /dev/null 2>&1; then
-    response=$(printf '%s' "$payload" | nc -U "$KAV_SOCK_FILE" 2> /dev/null)
+    printf '%s' "$payload" | nc -U "$KAV_SOCK_FILE" 2> /dev/null
 else
     exit 0
 fi
-
-# One base64 line per row, each decoding to "display\n". base64 ignores the
-# inter-row newlines, so the decoded stream is display1\n display2\n ….
-printf '%s' "$response" | base64 -d 2> /dev/null

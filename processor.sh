@@ -13,10 +13,10 @@
 #                                     (precmd; duration measured by the shell
 #                                     between preexec and precmd)
 #       Query:  Q, search, query, count
-#   Server -> Client (Q only): one base64-encoded row per line (EOF-terminated).
-#       Each payload is "display\n" (embedded newlines rendered as ⏎, framing
-#       hazards 0x1E/0x1F stripped), so the client can batch-decode the whole
-#       response and still get exactly one display line per row.
+#   Server -> Client (Q only): NUL-separated rows (one row per record).
+#       Embedded newlines are kept raw (command text can never contain NUL,
+#       so NUL framing is unambiguous); 0x1E/0x1F (sqlite3 -ascii framing
+#       hazards) and \r are stripped.
 db_file="${KAV_DB_FILE:-$1}" # computed by includes.sh (sourced above); $1 fallback for manual invocation
 
 # Bound total bytes read to defend against unbounded-buffering DoS from a
@@ -118,9 +118,9 @@ case "$TYPE" in
         # subsequence. The server expands each term into a LIKE pattern with
         # % between its characters (so SQL is a superset of fzf's matcher),
         # escaping LIKE wildcards and quotes. Empty query = the newest
-        # `count` commands. The returned command is sanitized for
-        # single-line display: 0x1E/0x1F (sqlite3 -ascii framing hazards)
-        # and \r are dropped, embedded newlines become ⏎ (U+23CE).
+        # `count` commands. 0x1E/0x1F (sqlite3 -ascii framing hazards) and
+        # \r are stripped; embedded newlines are kept — the response is
+        # NUL-framed, so newlines are safe and multi-line commands round-trip.
         action="$1"
         query="$2"
         count="$3"
@@ -166,7 +166,7 @@ case "$TYPE" in
                             print ""
                         }
                     }')
-                sql="SELECT REPLACE(REPLACE(REPLACE(REPLACE(command, char(30), ''), char(31), ''), char(10), char(9166)), char(13), '') FROM history $where ORDER BY id DESC LIMIT $count;"
+                sql="SELECT REPLACE(REPLACE(REPLACE(command, char(30), ''), char(31), ''), char(13), '') FROM history $where ORDER BY id DESC LIMIT $count;"
                 ;;
             *)
                 exit 0
@@ -176,19 +176,18 @@ case "$TYPE" in
         # -ascii mode (0x1E row separator, 0x1F column separator) instead of
         # sqlite3's default newline-separated list output. The SELECT already
         # stripped 0x1E/0x1F from the display, so no embedded separator can
-        # tear a row. Each row is base64-encoded WITH a trailing newline
-        # inside the payload: a client-side batch decode then reproduces
-        # exactly one display line per row.
+        # tear a row. Rows are emitted NUL-terminated: command text can never
+        # contain NUL, so multi-line commands survive the framing untouched
+        # (no per-row base64 fork, no display escaping). mawk's printf eats a
+        # literal \0 in the format, so rows are rejoined with 0x1E via ORS
+        # and one tr pass converts that to NUL.
         sqlite3 -ascii "$db_file" "$sql" | LC_ALL=C awk '
-        BEGIN { RS = "\036" }
+        BEGIN { RS = "\036"; ORS = "\036" }
         {
             row = $0
             sub(/\n$/, "", row)   # strip sqlite3 trailing newline artifact, if any
             if (row == "") next   # sqlite3 -ascii trailing-separator artifact; real rows are never empty
-            b64cmd = "base64 -w0"
-            printf "%s\n", row | b64cmd
-            close(b64cmd)
-            print ""
-        }'
+            print row
+        }' | tr '\036' '\000'
         ;;
 esac

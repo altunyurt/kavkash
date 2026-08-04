@@ -39,8 +39,8 @@ the filter, and there is no result cap beyond the per-widget limits above.
 
 Accept: one Enter both picks and **runs** the command in zsh/fish; in bash
 one Enter places it on the line and a second Enter runs it (readline
-widgets can't execute). Multi-line commands display as a single ⏎-marked
-line and round-trip to real newlines on accept.
+widgets can't execute). Multi-line commands display as-is (fzf `--read0`)
+and round-trip to real newlines on accept.
 
 ## Protocol
 
@@ -57,10 +57,10 @@ Netstrings, one field per netstring. Concatenated in a single stream.
   and nothing needs clearing.
 - **Query:** `Q,search,query,count` → returns up to `count` commands whose
   text subsequence-matches every term of `query` (empty query = newest
-  `count`). Each row is base64-encoded with its trailing newline inside the
-  payload, so the client batch-decodes the whole response into one display
-  line per row. Display is sanitized: embedded newlines become ⏎ and the
-  sqlite3 framing hazards 0x1E/0x1F plus `\r` are stripped.
+  `count`). Rows are NUL-terminated (command text can never contain NUL,
+  so the framing is unambiguous) with embedded newlines kept raw — fzf
+  consumes them via `--read0`/`--print0`. The sqlite3 framing hazards
+  0x1E/0x1F plus `\r` are stripped server-side.
 
 Example write message: `1:W,2:ls,10:/home/user,36:018f2a3b-1c2d-7000-8000-9a8b7c6d5e4f,`
 

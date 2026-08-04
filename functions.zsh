@@ -12,11 +12,14 @@ _hist_picker() {
     # command substitution stdout is a pipe, so fzf falls back to stderr
     # (then /dev/tty) for its UI — a `2>/dev/null` here makes the picker
     # render nothing and appear stuck.
+    # NUL-framed rows: fzf --read0/--print0; tr strips the terminator so the
+    # picked multi-line command survives $(...) intact (embedded newlines are
+    # preserved; only trailing ones are trimmed, which is fine).
     selected=$("$_SCRIPT_DIR/query.sh" "$count" "$init_q" | fzf \
         --disabled --height 15 --no-sort --prompt 'history> ' \
-        --query "$init_q" \
+        --query "$init_q" --read0 --print0 \
         --bind "change:reload:sleep 0.1; $_SCRIPT_DIR/query.sh $count {q}" \
-        | awk '{ gsub("⏎", "\n"); print }')
+        | tr -d '\0')
 
     if [[ -n "$selected" ]]; then
         BUFFER="$selected"
