@@ -5,11 +5,19 @@
 _SCRIPT_DIR="$(dirname -- "$(realpath -- "$0")")"
 . "$_SCRIPT_DIR/includes.sh"
 
-[ -f $KAV_PID_FILE ] \
-    && printf "error: %s\n" "A pid file already exists at $KAV_PID_FILE" \
-    && exit 1
+# Refuse to start when a live daemon is already running, but tolerate a
+# stale pid file (crashed daemon): a dead pid is a leftover, not a lock.
+if [ -f "$KAV_PID_FILE" ]; then
+    old_pid=$(cat "$KAV_PID_FILE" 2> /dev/null || true)
+    if [ -n "$old_pid" ] && kill -0 "$old_pid" 2> /dev/null; then
+        printf "error: %s\n" "A kavkash daemon is already running (pid $old_pid)" >&2
+        exit 1
+    fi
+    # stale pid: process is gone — drop it and start fresh
+    rm -f "$KAV_PID_FILE"
+fi
 
-# Path to processor.sh (resolved from _SCRIPT_DIR in includes.sh)
+# Path to processor.sh (resolved here, relative to this script)
 KAV_PROC_SCRIPT="${_SCRIPT_DIR}/processor.sh"
 
 # Create the schema (id is a UUIDv7: it doubles as the write timestamp, so
@@ -37,7 +45,7 @@ cleanup() {
     rm -f "$KAV_SOCK_FILE" "$KAV_PID_FILE"
 }
 trap cleanup EXIT
-trap 'kill -TERM "$SOCAT_PID" 2> /dev/null' TERM INT HUP
+trap 'kill -TERM "$KAV_SOCAT_PID" 2> /dev/null' TERM INT HUP
 
 # - fork: one child process per connection (isolates each request)
 # - mode=0600: socket accessible only to owner

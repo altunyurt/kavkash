@@ -14,9 +14,10 @@
 #                                     between preexec and precmd)
 #       Query:  Q, search, query, count
 #   Server -> Client (Q only): NUL-separated rows (one row per record).
-#       Embedded newlines are kept raw (command text can never contain NUL,
-#       so NUL framing is unambiguous); 0x1E/0x1F (sqlite3 -ascii framing
-#       hazards) and \r are stripped.
+#       Embedded newlines are display-escaped as `\n` (and `\` doubled)
+#       so each command renders on one line in the picker; 0x1E/0x1F
+#       (sqlite3 -ascii framing hazards) and \r are stripped. NUL framing
+#       is unambiguous — command text can never contain NUL.
 db_file="${KAV_DB_FILE:-$1}" # computed by includes.sh (sourced above); $1 fallback for manual invocation
 
 # Bound total bytes read to defend against unbounded-buffering DoS from a
@@ -103,6 +104,11 @@ case "$TYPE" in
         # command line finished; $? is the line's exit and the shell measured
         # the duration between preexec and precmd (same wall clock). UUIDs
         # are never reused.
+        # Bash records W and U back-to-back in separate fire-and-forget
+        # connections (unlike zsh/fish, where the whole command runs between
+        # them), so this UPDATE can win the race and find no row yet. Retry
+        # briefly — either the row appears in the window or the W never
+        # landed (shell died mid-command) and there is nothing to update.
         id="$1"
         exit_code="$2"
         duration="$3"
@@ -110,7 +116,13 @@ case "$TYPE" in
         case "$exit_code" in '' | *[!0-9]*) exit_code=0 ;; esac
         case "$duration" in '' | *[!0-9]*) duration=0 ;; esac
         safe_id=$(printf '%s' "$id" | sed "s/'/''/g")
-        sqlite3 "$db_file" "UPDATE history SET exit_code=$exit_code, duration_ms=$duration WHERE id='$safe_id';"
+        n=0
+        while [ "$n" -lt 5 ]; do
+            changed=$(sqlite3 "$db_file" "UPDATE history SET exit_code=$exit_code, duration_ms=$duration WHERE id='$safe_id'; SELECT changes();" 2> /dev/null)
+            case "$changed" in *[1-9]*) break ;; esac
+            n=$((n + 1))
+            sleep 0.01 2> /dev/null || break
+        done
         ;;
     Q)
         # Query: Q search query count — up to `count` commands whose text
@@ -119,8 +131,11 @@ case "$TYPE" in
         # % between its characters (so SQL is a superset of fzf's matcher),
         # escaping LIKE wildcards and quotes. Empty query = the newest
         # `count` commands. 0x1E/0x1F (sqlite3 -ascii framing hazards) and
-        # \r are stripped; embedded newlines are kept — the response is
-        # NUL-framed, so newlines are safe and multi-line commands round-trip.
+        # \r are stripped; embedded newlines are escaped for single-line
+        # display: `\` → `\\` and newline → `\n` (lossless — a command
+        # containing a literal `\n` survives as `\\n`). The response is
+        # NUL-framed, so the escaped rows are unambiguous; clients decode
+        # `\\`→`\`, `\n`→newline on accept.
         action="$1"
         query="$2"
         count="$3"
@@ -166,7 +181,7 @@ case "$TYPE" in
                             print ""
                         }
                     }')
-                sql="SELECT REPLACE(REPLACE(REPLACE(command, char(30), ''), char(31), ''), char(13), '') FROM history $where ORDER BY id DESC LIMIT $count;"
+                sql="SELECT REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(command, char(30), ''), char(31), ''), char(13), ''), char(92), char(92)||char(92)), char(10), char(92)||char(110)) FROM history $where ORDER BY id DESC LIMIT $count;"
                 ;;
             *)
                 exit 0
@@ -175,10 +190,10 @@ case "$TYPE" in
 
         # -ascii mode (0x1E row separator, 0x1F column separator) instead of
         # sqlite3's default newline-separated list output. The SELECT already
-        # stripped 0x1E/0x1F from the display, so no embedded separator can
-        # tear a row. Rows are emitted NUL-terminated: command text can never
-        # contain NUL, so multi-line commands survive the framing untouched
-        # (no per-row base64 fork, no display escaping). mawk's printf eats a
+        # stripped 0x1E/0x1F from the display and escaped embedded newlines
+        # (`\n`) plus backslashes (`\\`), so no embedded separator can tear
+        # a row. Rows are emitted NUL-terminated — zero per-row forks, no
+        # display escapes to reverse on the wire. mawk's printf eats a
         # literal \0 in the format, so rows are rejoined with 0x1E via ORS
         # and one tr pass converts that to NUL.
         sqlite3 -ascii "$db_file" "$sql" | LC_ALL=C awk '
