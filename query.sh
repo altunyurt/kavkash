@@ -1,14 +1,14 @@
 #!/bin/sh
 # query.sh COUNT [QUERY] — history picker back-end.
 #
-# Asks the daemon for up to COUNT commands whose text subsequence-matches
-# every whitespace-separated term of QUERY (see processor.sh search).
-# Serves the picker's initial pipe and its change:reload target.
+# Asks the daemon for up to COUNT commands (see processor.sh search). The
+# picker's paginated windows always pass an EMPTY query — newest COUNT,
+# unfiltered — and fzf's own matcher does the filtering, so this serves the
+# start:reload-sync loads and the pagination reloads.
 #
-# Output: NUL-separated command rows for fzf --read0. The server
-# display-escapes embedded newlines (\n, backslashes doubled) so each
-# command renders on one line; the picker clients reverse that pair on
-# accept. Passed through as-is.
+# Output: NUL-separated raw command rows for fzf --read0. Multi-line commands
+# pass through verbatim (fzf >= 0.53 renders them natively); nothing is
+# escaped. Passed through as-is.
 
 . "$(dirname -- "$(realpath -- "$0")")/includes.sh"
 

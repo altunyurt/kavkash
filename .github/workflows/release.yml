@@ -17,7 +17,7 @@ jobs:
       - name: Bundle
         run: |
           mkdir -p release/kavkash-${{ github.ref_name }}
-          cp includes.sh hook.sh server.sh processor.sh query.sh import.sh install.sh \
+          cp includes.sh hook.sh server.sh processor.sh query.sh picker.sh import.sh install.sh \
              functions.bash functions.fish functions.zsh VERSION LICENSE README.md \
              release/kavkash-${{ github.ref_name }}/
           tar -czf kavkash-${{ github.ref_name }}.tar.gz -C release kavkash-${{ github.ref_name }}

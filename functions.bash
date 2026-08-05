@@ -15,40 +15,39 @@ _SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # _hist_picker — the single fzf widget behind both Up and Ctrl+R.
 #   count:  DB result cap (Up=500, Ctrl+R=10000)
 #   init_q: initial query — Ctrl+R seeds it with the current line, Up empty
-# Live list: the initial pipe plus a debounced change:reload (sleep 0.1;
-# fzf kills the previous reload per keystroke, so only a query stable for
-# 100ms hits the DB). --disabled makes fzf a pure selector — the DB query
-# IS the filter. The server display-escapes embedded newlines (\n,
-# backslashes doubled) so multi-line commands render on one line.
+#
+# Design (fzf >= 0.54): the picker loads a *window* of the newest commands —
+# start:reload-sync, one code path, no initial pipe — and fzf filters it
+# in-memory as the user types: no per-keystroke DB round trips, and the full
+# fzf search syntax works. picker.sh (this dir) drives pagination from fzf
+# events: a `result`-event transform doubles the window when it's exhausted
+# (every loaded command matches, or none do); f5 forces the next page. --sync
+# resolves the cascade before the first paint, so a seeded query reaches full
+# coverage in a few log2-sized round trips; --track keeps the cursor on the
+# current command across reloads. The server sends raw commands — multi-line
+# ones display natively (fzf >= 0.53), no escaping.
 _hist_picker() {
-    local count="$1" init_q="${2:-}" picked key cmd
-    # NOTE: fzf's stderr must stay connected to the terminal. Inside a
-    # command substitution stdout is a pipe, so fzf falls back to stderr
-    # (then /dev/tty) for its UI — a `2>/dev/null` here makes the picker
-    # render nothing and appear stuck.
-    # --expect=tab prefixes the output with the accepting key ("tab" or
-    # empty for Enter), NUL-framed; the awk turns that into "key\n<decoded
-    # command>" — reversing the server's \n / \\ display escaping — for
-    # the shell to split.
-    picked=$("$_SCRIPT_DIR/query.sh" "$count" "$init_q" | fzf \
-        --disabled --height 15 --no-sort --prompt 'history> ' \
-        --query "$init_q" --read0 --print0 --expect=tab \
-        --bind "change:reload:sleep 0.1; $_SCRIPT_DIR/query.sh $count {q}" \
+    local count="$1" init_q="${2:-}" picked key cmd win win_file
+    win=$count
+    (( win > 1000 )) && win=1000
+    win_file=$(mktemp) || return 0
+    printf '%s\n' "$win" > "$win_file"
+    # NOTE: fzf's stderr must stay on the terminal (a 2>/dev/null here
+    # renders a blank UI); </dev/null keeps the tty out of its stdin —
+    # start:reload drives the list. print()+accept NUL-frames
+    # "key\0<cmd>\0"; the awk turns that into "key\n<cmd>".
+    picked=$(fzf --height 15 --no-sort --track --sync --highlight-line \
+        --prompt 'history> ' --query "$init_q" --read0 --print0 \
+        --header 'f5: older · tab: paste · enter: run' \
+        --bind "start:reload-sync:$_SCRIPT_DIR/picker.sh $win_file $count load" \
+        --bind "result:transform:$_SCRIPT_DIR/picker.sh $win_file $count" \
+        --bind "f5:transform:$_SCRIPT_DIR/picker.sh $win_file $count force" \
+        --bind 'enter:print()+accept,tab:print(tab)+accept' \
+        < /dev/null \
         | awk 'BEGIN { RS = "\0" }
             NR == 1 { key = $0; next }
-            NR == 2 {
-                s = $0; o = ""; n = length(s); i = 1
-                while (i <= n) {
-                    c = substr(s, i, 1)
-                    if (c == "\\" && i < n) {
-                        c2 = substr(s, i + 1, 1)
-                        if (c2 == "\\") { o = o "\\"; i += 2; continue }
-                        if (c2 == "n")  { o = o "\n"; i += 2; continue }
-                    }
-                    o = o c; i++
-                }
-                printf "%s\n%s\n", key, o
-            }')
+            NR == 2 { printf "%s\n%s\n", key, $0 }')
+    rm -f "$win_file"
 
     [ -z "$picked" ] && return 0
     key="${picked%%$'\n'*}"
@@ -109,5 +108,19 @@ precmd_functions+=(kav_precmd_record)
 
 # bind -x runs the function directly (not just inserts text).
 # Enter and Ctrl+C are NOT bound — readline's defaults execute/cancel.
-bind -x '"\C-r": _hist_search'
-bind -x '"\e[A": _hist_up'
+#
+# fzf >= 0.54 required: multi-line display (0.53), print() (0.53), transform +
+# FZF_* env + result event (0.45/0.46), start:reload without an initial reader
+# and the --sync render guarantee (0.54). Older fzf can't render the raw
+# multi-line rows the server now sends, so the picker is disabled, not
+# degraded.
+_kav_fzf_ver=$(fzf --version 2>/dev/null | awk 'NR == 1 { print $1 }')
+if [ -n "$_kav_fzf_ver" ] && printf '%s\n' "$_kav_fzf_ver" | \
+        awk -F. 'NR == 1 { exit ($1 > 0 || $2 >= 54) ? 0 : 1 }'; then
+    bind -x '"\C-r": _hist_search'
+    bind -x '"\e[A": _hist_up'
+else
+    printf 'kavkash: fzf >= 0.54 required (found %s) — picker disabled; Up/Ctrl-R keep shell defaults\n' \
+        "${_kav_fzf_ver:-not installed}" >&2
+fi
+unset _kav_fzf_ver

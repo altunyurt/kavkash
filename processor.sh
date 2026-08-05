@@ -8,9 +8,10 @@
 #   W cmd cwd id            write (preexec; id is a UUIDv7 = row timestamp)
 #   U id exit_code dur_ms   update (precmd)
 #   Q search query count    query -> NUL-separated rows
-# Response rows: newlines display-escaped as `\n`, backslashes doubled;
-# 0x1E/0x1F (sqlite3 -ascii hazards) and \r stripped. NUL framing is safe —
-# command text can never contain NUL.
+# Response rows: raw command text — multi-line commands pass through intact
+# (fzf >= 0.53 renders them natively); only 0x1E/0x1F (sqlite3 -ascii
+# hazards) and \r are stripped. NUL framing is safe — command text can
+# never contain NUL.
 db_file="${KAV_DB_FILE:-$1}" # computed by includes.sh (sourced above); $1 fallback for manual invocation
 
 # Bound input size: a client that never sends a valid netstring would
@@ -109,12 +110,13 @@ case "$TYPE" in
         ;;
     Q)
         # Query: up to `count` commands whose text contains every
-        # whitespace-separated term as a subsequence. Each term becomes a
-        # LIKE pattern with % between its characters (SQL is a superset of
-        # fzf's matcher), escaping wildcards and quotes. Empty query = the
-        # newest `count`. 0x1E/0x1F and \r stripped; newlines escaped as
-        # `\n` (backslashes doubled) for single-line display; the response
-        # is NUL-framed, clients decode on accept.
+        # whitespace-separated term as a subsequence (legacy — the picker
+        # now pages unfiltered windows and lets fzf's own matcher filter,
+        # so it always sends an empty query; the builder stays for
+        # query.sh's interface). Empty query = the newest `count`. Only
+        # 0x1E/0x1F and \r are stripped; multi-line commands pass through
+        # verbatim (fzf >= 0.53 renders them natively); the response is
+        # NUL-framed.
         action="$1"
         query="$2"
         count="$3"
@@ -160,7 +162,7 @@ case "$TYPE" in
                             print ""
                         }
                     }')
-                sql="SELECT REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(command, char(30), ''), char(31), ''), char(13), ''), char(92), char(92)||char(92)), char(10), char(92)||char(110)) FROM history $where ORDER BY id DESC LIMIT $count;"
+                sql="SELECT REPLACE(REPLACE(REPLACE(command, char(30), ''), char(31), ''), char(13), '') FROM history $where ORDER BY id DESC LIMIT $count;"
                 ;;
             *)
                 exit 0
@@ -168,9 +170,9 @@ case "$TYPE" in
         esac
 
         # sqlite3 -ascii (0x1E rows / 0x1F cols); the SELECT already stripped
-        # those hazards and escaped newlines/backslashes, so no embedded
-        # separator can tear a row. Rows are rejoined with 0x1E via ORS and
-        # one tr converts to NUL (mawk printf eats a literal \0 in formats).
+        # those hazards, so no embedded separator can tear a row. Rows are
+        # rejoined with 0x1E via ORS and one tr converts to NUL (mawk printf
+        # eats a literal \0 in formats).
         sqlite3 -ascii "$db_file" "$sql" | LC_ALL=C awk '
         BEGIN { RS = "\036"; ORS = "\036" }
         {

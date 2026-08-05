@@ -9,7 +9,7 @@ queries for interactive navigation.
 ```
 shell hooks → hook.sh → Unix socket → server.sh → processor.sh → SQLite
                                                                     ↓
-shell up/Ctrl+R fzf picker ← query.sh ←────────────────────────────┘
+shell up/Ctrl+R fzf picker ← picker.sh → query.sh ←──────────────────┘
 ```
 
 ## Components
@@ -21,7 +21,11 @@ shell up/Ctrl+R fzf picker ← query.sh ←────────────�
 - **processor.sh** — parses netstring messages, routes writes/queries
 - **import.sh** — imports existing history (bash/zsh/fish, atuin) into the DB
 - **hook.sh** — sends commands as netstrings from shell preexec hooks
-- **query.sh** — fzf picker back-end (sockets the daemon, batch-decodes rows)
+- **query.sh** — fzf picker back-end (sockets the daemon; serves the picker's
+  paginated result windows)
+- **picker.sh** — fzf event-driven pagination helper: grows the picker's
+  window via `reload-sync` actions when the loaded window is exhausted (or on
+  F5)
 - **functions.bash** — bash integration (Up/Ctrl+R fzf picker)
 - **functions.fish** — fish integration (same)
 - **functions.zsh** — zsh integration (same)
@@ -33,19 +37,23 @@ Up and Ctrl+R both open the same fzf picker:
 - **Up** — the 500 newest commands, empty query.
 - **Ctrl+R** — live search, seeded with the current line, capped at 10k.
 
-As you type, the list reloads from the daemon per keystroke (debounced
-100ms): the server expands each whitespace-separated query term into a
-subsequence `LIKE` pattern, so the SQL filter is a superset of fzf's own
-matcher. `--disabled` keeps fzf from re-filtering — the database query *is*
-the filter, and there is no result cap beyond the per-widget limits above.
+The picker loads a *window* of the newest commands (min(cap, 1000)) through
+`start:reload-sync` — a single code path, no initial pipe — and fzf filters
+it in-memory as you type. No per-keystroke database round trips, and the
+full fzf search syntax works (`!` exclusions, `'exact'` terms, `a|b`). When
+the window is exhausted — every loaded command matches, or none do — a
+`result`-event `transform` doubles the window up to the per-widget cap
+(picker.sh); **F5** forces the next page. `--sync` resolves the initial
+cascade before the first paint, so a seeded Ctrl+R query reaches full
+coverage in a few log₂-sized round trips, and `--track` keeps the cursor on
+the current command across reloads.
 
 Accept: **Enter** picks and runs the command (zsh/fish accept the line
 from the widget; bash records it with `history -s` and runs it directly —
 readline widgets can't accept the line). **Tab** picks and pastes the
 command onto the line without running it, ready to edit. Multi-line
-commands display on a single line with newlines shown as `\n`
-(backslashes doubled, so the notation is lossless) and round-trip to real
-newlines on accept.
+commands display natively on multiple lines (fzf ≥ 0.53); command text
+passes through verbatim — the old `\n`/`\\` display escaping is gone.
 
 ## Protocol
 
@@ -66,13 +74,13 @@ Netstrings, one field per netstring. Concatenated in a single stream.
   are impossible and nothing needs clearing.
 - **Query:** `Q,search,query,count` → returns up to `count` commands whose
   text subsequence-matches every term of `query` (empty query = newest
-  `count`). Rows are NUL-terminated (command text can never contain NUL,
-  so the framing is unambiguous) and fzf consumes them via
-  `--read0`/`--print0`. For single-line display the server escapes
-  embedded newlines as `\n` and doubles backslashes (`\` → `\\`);
-  clients reverse exactly that pair on accept, so a command containing a
-  literal `\n` round-trips intact as `\\n`. The sqlite3 framing hazards
-  0x1E/0x1F plus `\r` are stripped server-side.
+  `count`; the picker pages unfiltered windows, so it always sends an empty
+  query and fzf's own matcher does the filtering — the server-side
+  subsequence builder is legacy). Rows are raw commands, NUL-terminated
+  (command text can never contain NUL, so the framing is unambiguous);
+  fzf consumes them via `--read0`/`--print0` and displays multi-line
+  commands natively. The sqlite3 framing hazards 0x1E/0x1F plus `\r` are
+  stripped server-side.
 
 Example write message: `1:W,2:ls,10:/home/user,36:018f2a3b-1c2d-7000-8000-9a8b7c6d5e4f,`
 
@@ -111,7 +119,8 @@ Then:
 - `dash` (server scripts)
 - `socat` (server and client transport)
 - `sqlite3` (storage)
-- `fzf` (Ctrl+R search)
+- `fzf` ≥ 0.54 (Ctrl+R search; the picker uses `transform`, `result` events,
+  `start:reload`, multi-line display, and the `--sync` render guarantee)
 - `awk` (netstring parser)
 
 ## License
