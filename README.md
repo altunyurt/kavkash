@@ -39,11 +39,13 @@ subsequence `LIKE` pattern, so the SQL filter is a superset of fzf's own
 matcher. `--disabled` keeps fzf from re-filtering — the database query *is*
 the filter, and there is no result cap beyond the per-widget limits above.
 
-Accept: one Enter both picks and **runs** the command in zsh/fish; in bash
-one Enter places it on the line and a second Enter runs it (readline
-widgets can't execute). Multi-line commands display on a single line with
-newlines shown as `\n` (backslashes doubled, so the notation is lossless)
-and round-trip to real newlines on accept.
+Accept: **Enter** picks and runs the command (zsh/fish accept the line
+from the widget; bash records it with `history -s` and runs it directly —
+readline widgets can't accept the line). **Tab** picks and pastes the
+command onto the line without running it, ready to edit. Multi-line
+commands display on a single line with newlines shown as `\n`
+(backslashes doubled, so the notation is lossless) and round-trip to real
+newlines on accept.
 
 ## Protocol
 
