@@ -1,89 +1,57 @@
 # kavkash
 
-Minimal shell history daemon. Captures commands via shell hooks (preexec
-for fish/zsh, precmd+history for bash), stores in SQLite, serves history
-queries for interactive navigation.
+Minimal shell history daemon. Commands are captured through shell hooks into
+SQLite and served back via an fzf picker — **Up** browses the recent ones,
+**Ctrl+R** searches everything.
 
 ## Architecture
 
 ```
 shell hooks → hook.sh → Unix socket → server.sh → processor.sh → SQLite
                                                                     ↓
-shell up/Ctrl+R fzf picker ← picker.sh → query.sh ←──────────────────┘
+shell Up/Ctrl+R fzf picker ← picker.sh → query.sh ←──────────────────┘
 ```
 
 ## Components
 
-- **includes.sh** — shared defaults (data location, socket/pid paths) and the
-  UUIDv7 id builder
-- **install.sh** — curl-pipe installer (fetches latest stable release from GitHub)
-- **server.sh** — socat daemon, listens on Unix socket
-- **processor.sh** — parses netstring messages, routes writes/queries
-- **import.sh** — imports existing history (bash/zsh/fish, atuin) into the DB
-- **hook.sh** — sends commands as netstrings from shell preexec hooks
-- **query.sh** — fzf picker back-end (sockets the daemon; serves the picker's
-  paginated result windows)
-- **picker.sh** — fzf event-driven pagination helper: grows the picker's
-  window via `reload-sync` actions when the loaded window is exhausted (or on
-  F5)
-- **functions.bash** — bash integration (Up/Ctrl+R fzf picker)
-- **functions.fish** — fish integration (same)
-- **functions.zsh** — zsh integration (same)
+- **includes.sh** — shared XDG paths and the UUIDv7 id builder
+- **hook.sh** — mints ids, sends `W`/`U` messages from shell hooks
+- **server.sh** — socat daemon on the Unix socket
+- **processor.sh** — netstring parser, message routing, SQLite
+- **query.sh** — serves NUL-framed result rows to the picker
+- **picker.sh** — paginates the picker's window (grows on exhaustion, F5 forces)
+- **import.sh** — imports bash/zsh/fish/atuin history
+- **install.sh**, **uninstall.sh** — install and remove
+- **functions.{bash,zsh,fish}** — the Up/Ctrl+R picker per shell
 
 ## Navigation
 
-Up and Ctrl+R both open the fzf picker, distinguished by prompt and header:
+- **Up** (`walk> `) — browse the 500 newest commands.
+- **Ctrl+R** (`search> `) — search everything, seeded with the current line
+  (cap 10k).
 
-- **Up** (`walk> `) — browse the 500 newest commands, empty query.
-- **Ctrl+R** (`search> `) — full-text search, seeded with the current line,
-  capped at 10k.
-
-The picker loads a *window* of the newest commands (min(cap, 1000)) through
-`start:reload-sync` — a single code path, no initial pipe — and fzf filters
-it in-memory as you type. No per-keystroke database round trips, and the
-full fzf search syntax works (`!` exclusions, `'exact'` terms, `a|b`). When
-the window is exhausted — every loaded command matches, or none do — a
-`result`-event `transform` doubles the window up to the per-widget cap
-(picker.sh); **F5** forces the next page. `--sync` resolves the initial
-cascade before the first paint, so a seeded Ctrl+R query reaches full
-coverage in a few log₂-sized round trips, and `--track` keeps the cursor on
-the current command across reloads.
-
-Accept: **Enter** picks and runs the command (zsh/fish accept the line
-from the widget; bash records it with `history -s` and runs it directly —
-readline widgets can't accept the line). **Tab** picks and pastes the
-command onto the line without running it, ready to edit. Multi-line
-commands display natively on multiple lines (fzf ≥ 0.53); command text
-passes through verbatim — the old `\n`/`\\` display escaping is gone.
+The picker shows a window of the newest commands and filters it in-memory as
+you type — full fzf syntax (`!`, `'exact'`, `a|b`), no per-keystroke DB
+queries. When the loaded window is exhausted it doubles automatically (up to
+the cap); **F5** forces the next page. **Enter** runs the picked command,
+**Tab** pastes it onto the line for editing. Multi-line commands display
+natively.
 
 ## Protocol
 
-Netstrings, one field per netstring. Concatenated in a single stream.
+Netstrings (`len:payload,`), one field per netstring, over the Unix socket.
 
-- **Write:** `W,cmd,cwd,id` — sent by the shell's preexec hook when a
-  command starts (fish/zsh), or by bash's precmd hook after it ran.
-  (bash: the DEBUG-trap-based preexec can't see function-definition
-  commands, so bash reads `history 1` in precmd instead — duration is 0
-  there, and `exit`/leading-space commands aren't captured). `id` is a
-  UUIDv7 minted by hook.sh: it is the row's primary key **and** its
-  timestamp (lexicographic id order == chronological order), so no
-  separate timestamp column exists. Exit code and duration arrive via
-  Update.
-- **Update:** `U,id,exit_code,duration_ms` — sent by the shell's precmd hook
-  when the command finishes; the shell measured the duration between
-  preexec and precmd (0 in bash). UUIDs are never reused, so stale keys
-  are impossible and nothing needs clearing.
-- **Query:** `Q,search,query,count` → returns up to `count` commands whose
-  text subsequence-matches every term of `query` (empty query = newest
-  `count`; the picker pages unfiltered windows, so it always sends an empty
-  query and fzf's own matcher does the filtering — the server-side
-  subsequence builder is legacy). Rows are raw commands, NUL-terminated
-  (command text can never contain NUL, so the framing is unambiguous);
-  fzf consumes them via `--read0`/`--print0` and displays multi-line
-  commands natively. The sqlite3 framing hazards 0x1E/0x1F plus `\r` are
-  stripped server-side.
+- **W** `cmd,cwd,id` — command started. `id` is a UUIDv7: the row's primary
+  key *and* timestamp (id order == time order). fish/zsh send this in
+  preexec; bash in precmd (duration 0; `exit` and leading-space commands are
+  missed).
+- **U** `id,exit_code,duration_ms` — command finished.
+- **Q** `search,query,count` — newest `count` commands, NUL-framed raw rows
+  (multi-line safe; 0x1E/0x1F/`\r` stripped). The picker sends an empty query
+  and fzf does the filtering; a subsequence matcher remains for non-empty
+  queries.
 
-Example write message: `1:W,2:ls,10:/home/user,36:018f2a3b-1c2d-7000-8000-9a8b7c6d5e4f,`
+Example: `1:W,2:ls,10:/home/user,36:018f2a3b-1c2d-7000-8000-9a8b7c6d5e4f,`
 
 ## Installation
 
@@ -91,39 +59,38 @@ Example write message: `1:W,2:ls,10:/home/user,36:018f2a3b-1c2d-7000-8000-9a8b7c
 curl -fsSL https://raw.githubusercontent.com/altunyurt/kavkash/main/install.sh | dash
 ```
 
-(Piping to `bash` works too.) The installer fetches the latest stable release
-from GitHub and installs it to `${XDG_DATA_HOME:-~/.local/share}/kavkash`.
-There is no config file: the data location follows the XDG spec, and the
-socket path follows `XDG_RUNTIME_DIR` — identical for the daemon and the
-shell integrations everywhere.
+Installs to `${XDG_DATA_HOME:-~/.local/share}/kavkash` (socket under
+`XDG_RUNTIME_DIR`); no config file. The installer offers to import existing
+history (bash/zsh/fish, atuin ≥ v18 via its CLI) — `KAVKASH_IMPORT=0|1`
+skips/forces. Idempotent; rerun any time.
 
-On install it offers to import your existing history — bash/zsh/fish history
-files and the atuin database. Skip or force with `KAVKASH_IMPORT=0|1`; the
-import is idempotent (commands already in the DB are skipped). You can also
-run `~/.local/share/kavkash/import.sh` manually any time.
-
-Then:
-
-1. Start the daemon and keep it running across reboots (login shell, service
-   manager, …):
+1. Start the daemon once (login shell, service manager, …):
    ```sh
    ~/.local/share/kavkash/server.sh &
    ```
-2. Hook your shell in its rc file:
-   - Bash: `source ~/.local/share/kavkash/functions.bash`
-     (requires [bash-preexec](https://github.com/rcaloras/bash-preexec))
-   - Fish: `source ~/.local/share/kavkash/functions.fish`
-   - Zsh: `source ~/.local/share/kavkash/functions.zsh`
+2. Source the integration in your rc file:
+   ```sh
+   source ~/.local/share/kavkash/functions.bash
+   source ~/.local/share/kavkash/functions.fish
+   source ~/.local/share/kavkash/functions.zsh
+   ```
 
-## Dependencies
+## Requirements
 
-- `dash` (server scripts)
-- `socat` (server and client transport)
-- `sqlite3` (storage)
-- `fzf` ≥ 0.54 (Ctrl+R search; the picker uses `transform`, `result` events,
-  `start:reload`, multi-line display, and the `--sync` render guarantee)
-- `awk` (netstring parser)
+| dependency  | minimum      | notes                                        |
+|-------------|--------------|----------------------------------------------|
+| fzf         | 0.54         | enforced — older versions disable the picker (warning printed, shell defaults kept) |
+| socat       | 1.7          | Unix-socket transport; `nc -U` works as fallback |
+| sqlite3     | 3.x          | storage                                      |
+| awk         | mawk 1.3.4 / gawk | netstring parsing, query building       |
+| dash        | any          | scripts are plain POSIX sh                   |
+
+## Compatibility
+
+Developed and tested on **Debian GNU/Linux 13 (trixie)** with dash 0.5.12,
+socat 1.8.0.3, sqlite3 3.46.1, mawk 1.3.4, fzf 0.60, bash 5.2, zsh 5.9 and
+fish 4.0.2. Any Linux with the dependencies above should work.
 
 ## License
 
-See LICENSE.
+MIT — see LICENSE.
