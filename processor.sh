@@ -4,34 +4,23 @@
 . "$(dirname -- "$(realpath -- "$0")")/includes.sh"
 
 #
-# Wire protocol:
-#   Client -> Server: concatenated netstrings ("len:payload,")
-#       Write:  W, cmd, cwd, id        (preexec; id is a UUIDv7 minted by
-#                                       hook.sh — it doubles as the row's
-#                                       timestamp; exit/duration unknown yet)
-#       Update: U, id, exit_code, duration_ms
-#                                     (precmd; duration measured by the shell
-#                                     between preexec and precmd)
-#       Query:  Q, search, query, count
-#   Server -> Client (Q only): NUL-separated rows (one row per record).
-#       Embedded newlines are display-escaped as `\n` (and `\` doubled)
-#       so each command renders on one line in the picker; 0x1E/0x1F
-#       (sqlite3 -ascii framing hazards) and \r are stripped. NUL framing
-#       is unambiguous — command text can never contain NUL.
+# Wire protocol: concatenated netstrings ("len:payload,").
+#   W cmd cwd id            write (preexec; id is a UUIDv7 = row timestamp)
+#   U id exit_code dur_ms   update (precmd)
+#   Q search query count    query -> NUL-separated rows
+# Response rows: newlines display-escaped as `\n`, backslashes doubled;
+# 0x1E/0x1F (sqlite3 -ascii hazards) and \r stripped. NUL framing is safe —
+# command text can never contain NUL.
 db_file="${KAV_DB_FILE:-$1}" # computed by includes.sh (sourced above); $1 fallback for manual invocation
 
-# Bound total bytes read to defend against unbounded-buffering DoS from a
-# client that never sends a valid netstring (no colon => awk parser would
-# otherwise still have consumed all of `cat`'s output before rejecting it).
+# Bound input size: a client that never sends a valid netstring would
+# otherwise buffer unboundedly in the awk parser.
 INPUT=$(head -c 2097152)
 [ -z "$INPUT" ] && exit 0
 
-# Netstring parser: decodes "length:payload," into fields.
-# Each field is emitted base64-encoded, one per output line. Base64 output
-# is guaranteed newline-free (with -w0) and NUL-free, so it survives a
-# shell command-substitution round trip intact regardless of what bytes
-# (including raw newlines) the original payload contained.
-# Max payload size: 1MB (prevents OOM from malicious clients).
+# Netstring parser: decodes "length:payload," into base64 fields, one per
+# line — base64 is newline/NUL-free, so fields survive the $(...) round
+# trip intact. Max payload 1MB (OOM guard).
 FIELDS=$(printf '%s' "$INPUT" | LC_ALL=C awk '
 BEGIN { RS = "\0" }  # treat entire input as one record
 {
@@ -95,20 +84,14 @@ case "$TYPE" in
         safe_cwd=$(printf '%s' "$cwd" | sed "s/'/''/g")
         safe_id=$(printf '%s' "$id" | sed "s/'/''/g")
         # Plain INSERT: a fresh UUIDv7 cannot collide. A shell that dies
-        # mid-command leaves its row at exit 0 / duration 0 — visible as
-        # history; ids are never reused, so it can never be resurrected.
+        # mid-command leaves exit 0 / duration 0; ids are never reused.
         sqlite3 "$db_file" "INSERT INTO history (id, command, cwd, exit_code, duration_ms) VALUES ('$safe_id', '$safe_cmd', '$safe_cwd', 0, 0);"
         ;;
     U)
-        # Update: U id exit_code duration_ms — precmd hook fires after the
-        # command line finished; $? is the line's exit and the shell measured
-        # the duration between preexec and precmd (same wall clock). UUIDs
-        # are never reused.
-        # Bash records W and U back-to-back in separate fire-and-forget
-        # connections (unlike zsh/fish, where the whole command runs between
-        # them), so this UPDATE can win the race and find no row yet. Retry
-        # briefly — either the row appears in the window or the W never
-        # landed (shell died mid-command) and there is nothing to update.
+        # Update: precmd reports $? and shell-measured duration for the id.
+        # Bash fires W and U back-to-back in separate fire-and-forget
+        # connections (zsh/fish run a whole command between them), so the U
+        # can win the race and find no row yet — retry briefly.
         id="$1"
         exit_code="$2"
         duration="$3"
@@ -125,17 +108,13 @@ case "$TYPE" in
         done
         ;;
     Q)
-        # Query: Q search query count — up to `count` commands whose text
-        # contains every whitespace-separated term of `query` as a
-        # subsequence. The server expands each term into a LIKE pattern with
-        # % between its characters (so SQL is a superset of fzf's matcher),
-        # escaping LIKE wildcards and quotes. Empty query = the newest
-        # `count` commands. 0x1E/0x1F (sqlite3 -ascii framing hazards) and
-        # \r are stripped; embedded newlines are escaped for single-line
-        # display: `\` → `\\` and newline → `\n` (lossless — a command
-        # containing a literal `\n` survives as `\\n`). The response is
-        # NUL-framed, so the escaped rows are unambiguous; clients decode
-        # `\\`→`\`, `\n`→newline on accept.
+        # Query: up to `count` commands whose text contains every
+        # whitespace-separated term as a subsequence. Each term becomes a
+        # LIKE pattern with % between its characters (SQL is a superset of
+        # fzf's matcher), escaping wildcards and quotes. Empty query = the
+        # newest `count`. 0x1E/0x1F and \r stripped; newlines escaped as
+        # `\n` (backslashes doubled) for single-line display; the response
+        # is NUL-framed, clients decode on accept.
         action="$1"
         query="$2"
         count="$3"
@@ -188,14 +167,10 @@ case "$TYPE" in
                 ;;
         esac
 
-        # -ascii mode (0x1E row separator, 0x1F column separator) instead of
-        # sqlite3's default newline-separated list output. The SELECT already
-        # stripped 0x1E/0x1F from the display and escaped embedded newlines
-        # (`\n`) plus backslashes (`\\`), so no embedded separator can tear
-        # a row. Rows are emitted NUL-terminated — zero per-row forks, no
-        # display escapes to reverse on the wire. mawk's printf eats a
-        # literal \0 in the format, so rows are rejoined with 0x1E via ORS
-        # and one tr pass converts that to NUL.
+        # sqlite3 -ascii (0x1E rows / 0x1F cols); the SELECT already stripped
+        # those hazards and escaped newlines/backslashes, so no embedded
+        # separator can tear a row. Rows are rejoined with 0x1E via ORS and
+        # one tr converts to NUL (mawk printf eats a literal \0 in formats).
         sqlite3 -ascii "$db_file" "$sql" | LC_ALL=C awk '
         BEGIN { RS = "\036"; ORS = "\036" }
         {

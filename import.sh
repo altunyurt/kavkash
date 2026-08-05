@@ -128,13 +128,12 @@ import_fish() {
 }
 
 import_atuin() {
-    # atuin's own CLI is the most robust reader: it honours a custom db_path in
-    # config.toml, any schema version, and decrypts PASETO-encrypted stores
-    # (v18+). Fall back to direct plaintext SQLite reads only when the CLI is
-    # unavailable. Template fields: time|directory|duration|exit|command.
-    # Command is LAST so embedded tabs/newlines can't shift earlier fields;
-    # --print0 keeps multiline commands intact (tr maps NUL back to newline
-    # for the shell reader; continuation lines are re-attached below).
+    # The atuin CLI is the most robust reader: honours custom db_path, any
+    # schema, and decrypts PASETO stores (v18+); fall back to plaintext
+    # SQLite only when the CLI is unavailable. Template fields:
+    # time|directory|duration|exit|command — command LAST so embedded
+    # tabs/newlines can't shift earlier fields; --print0 keeps multiline
+    # commands intact (continuation lines re-attached below).
     if kav_have atuin; then
         ATUINOUT=$(mktemp "$tmpdir/kavkash-atuin.XXXXXX")
         if atuin history list -r false -f '{time}|{directory}|{duration}|{exit}|{command}' --print0 > "$ATUINOUT" 2> /dev/null && [ -s "$ATUINOUT" ]; then
@@ -176,11 +175,10 @@ $line"
         fi
         rm -f "$ATUINOUT"
     fi
-    # No CLI (or it had nothing): read plaintext SQLite directly. Resolve the
-    # DB location the same way atuin does: config.toml db_path, else the
-    # default under $XDG_DATA_HOME/atuin. Keep the IFS='|' read with the
-    # command as the LAST variable: commands may contain '|', and read assigns
-    # the remainder to the final variable, so adding fields after it would break.
+    # No CLI (or nothing read): read plaintext SQLite directly. Resolve the
+    # DB path like atuin does (config.toml db_path, else the default). The
+    # IFS='|' read keeps command LAST: commands may contain '|' and read
+    # assigns the remainder to the final variable.
     data_dir="${XDG_DATA_HOME:-$HOME/.local/share}/atuin"
     cfg="${XDG_CONFIG_HOME:-$HOME/.config}/atuin/config.toml"
     f="$data_dir/history.db"

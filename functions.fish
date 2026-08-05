@@ -24,10 +24,8 @@ function _hist_picker
     # render nothing and appear stuck.
     # read -z: NUL-delimited capture. Fish variables can't hold NUL, so the
     # selection must NOT go through command substitution. fzf --read0/--print0
-    # frame the NUL stream from query.sh. The server display-escaped
-    # newlines (\n) and doubled backslashes (\\) — decode the same pair
-    # back with the same single-pass awk (other backslash sequences are
-    # untouched, so the round-trip is lossless).
+    # frame the NUL stream from query.sh; a single-pass awk then reverses the
+    # server's \n / \\ display escaping.
     set -l selected
     "$_HIST_SCRIPT_DIR/query.sh" "$count" "$init_q" | fzf \
         --disabled --height 15 --no-sort --prompt 'history> ' \
@@ -65,11 +63,9 @@ function _hist_search
     _hist_picker 10000 (commandline -b)
 end
 
-# Record executed commands: preexec mints the correlation id (hook.sh prints
-# it) and captures the start time; postexec reports exit + shell-measured
-# duration for that id (see processor.sh U).
-# Skip empty lines and commands spawned from command substitutions (e.g. fzf
-# inside _hist_picker) so we only store what the user actually typed.
+# preexec mints the correlation id + start time; postexec reports exit +
+# duration for that id (see processor.sh U). Skip command-substitution
+# spawns (e.g. fzf inside _hist_picker) so only typed commands are stored.
 set -g __hist_corr ""
 set -g __hist_t0 0
 

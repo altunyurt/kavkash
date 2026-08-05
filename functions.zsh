@@ -12,10 +12,8 @@ _hist_picker() {
     # command substitution stdout is a pipe, so fzf falls back to stderr
     # (then /dev/tty) for its UI — a `2>/dev/null` here makes the picker
     # render nothing and appear stuck.
-    # NUL-framed rows: fzf --read0/--print0; tr strips the terminator. The
-    # server display-escaped newlines (\n) and doubled backslashes (\\), so
-    # a single-pass awk undoes exactly that pair — any other backslash
-    # sequence passes through untouched, keeping the round-trip lossless.
+    # NUL-framed rows: fzf --read0/--print0; tr strips the terminator, then
+    # a single-pass awk reverses the server's \n / \\ display escaping.
     selected=$("$_SCRIPT_DIR/query.sh" "$count" "$init_q" | fzf \
         --disabled --height 15 --no-sort --prompt 'history> ' \
         --query "$init_q" --read0 --print0 \
@@ -57,14 +55,11 @@ zle -N kavkash-up _hist_up
 bindkey '^R' kavkash-search
 bindkey '^[[A' kavkash-up
 
-# Record executed commands: zsh's native preexec fires for every command
-# line — including multiline function definitions (unlike bash's DEBUG
-# trap) — so the two-phase design works in full here: preexec mints the
-# correlation id (hook.sh prints it) and captures the start time; precmd
-# reports exit + shell-measured duration for that id (see processor.sh U).
-# $? is captured FIRST in precmd before anything else can clobber it.
-# IMPORTANT: record $1 (the line as typed, newlines intact); $2 is zsh's
-# re-rendered form, which abbreviates function bodies as `g8 () { ... }`.
+# Record: zsh's preexec fires for every command line (incl. multiline
+# function definitions, unlike bash's DEBUG trap) and mints the correlation
+# id + start time; precmd reports exit + duration for that id ($? captured
+# FIRST). Record $1 (as typed, newlines intact) — $2 is zsh's re-rendered
+# form, which abbreviates function bodies as `g8 () { ... }`.
 autoload -Uz add-zsh-hook
 
 typeset -g _hist_corr=""

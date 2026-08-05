@@ -15,23 +15,19 @@ _SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # _hist_picker — the single fzf widget behind both Up and Ctrl+R.
 #   count:  DB result cap (Up=500, Ctrl+R=10000)
 #   init_q: initial query — Ctrl+R seeds it with the current line, Up empty
-# The list is loaded live from the daemon: the initial pipe plus a debounced
-# change:reload (sleep 0.1; fzf kills the previous reload on each keystroke,
-# so only a query that stays stable for 100ms actually hits the DB).
-# --disabled turns fzf into a pure selector — the DB query IS the filter.
-# The server emits NUL-terminated rows with embedded newlines kept raw, so
-# multi-line commands display as-is and round-trip intact (fzf --read0/
-# --print0; the terminator is stripped with tr before readline sees it).
+# Live list: the initial pipe plus a debounced change:reload (sleep 0.1;
+# fzf kills the previous reload per keystroke, so only a query stable for
+# 100ms hits the DB). --disabled makes fzf a pure selector — the DB query
+# IS the filter. The server display-escapes embedded newlines (\n,
+# backslashes doubled) so multi-line commands render on one line.
 _hist_picker() {
     local count="$1" init_q="${2:-}" selected
     # NOTE: fzf's stderr must stay connected to the terminal. Inside a
     # command substitution stdout is a pipe, so fzf falls back to stderr
     # (then /dev/tty) for its UI — a `2>/dev/null` here makes the picker
     # render nothing and appear stuck.
-    # NUL-framed rows: fzf --read0/--print0; tr strips the terminator. The
-    # server display-escaped newlines (\n) and doubled backslashes (\\), so
-    # a single-pass awk undoes exactly that pair — any other backslash
-    # sequence passes through untouched, keeping the round-trip lossless.
+    # NUL-framed rows: fzf --read0/--print0; tr strips the terminator, then
+    # a single-pass awk reverses the server's \n / \\ display escaping.
     selected=$("$_SCRIPT_DIR/query.sh" "$count" "$init_q" | fzf \
         --disabled --height 15 --no-sort --prompt 'history> ' \
         --query "$init_q" --read0 --print0 \
@@ -63,18 +59,12 @@ _hist_up() { _hist_picker 500 ""; }
 # Ctrl+R: picker seeded with the current line, 10k cap.
 _hist_search() { _hist_picker 10000 "$READLINE_LINE"; }
 
-# Record executed commands from precmd ONLY. bash-preexec's preexec is
-# built on the DEBUG trap, which bash never fires for function-definition
-# commands — so a preexec-based recorder can't see `f() { ... }` at all.
-# Reading `history 1` in precmd sees every command that actually ran, with
-# the real exit code (bash-preexec restores $? before each precmd function
-# via __bp_set_ret_value).
-# Tradeoffs vs preexec: duration is 0 (no reliable pre-command hook exists
-# for every command form); `exit`/`logout` aren't recorded (no prompt
-# after); commands starting with a space never enter bash history
-# (HISTCONTROL=ignoreboth) so they aren't recorded either. Repeated
-# identical commands are also dedup'd by bash history itself (ignoreboth)
-# plus the _hist_last guard below.
+# Record from precmd ONLY: bash-preexec's preexec (DEBUG trap) never fires
+# for function-definition commands, so it would miss `f() { ... }`.
+# Reading `history 1` in precmd sees every command that ran. Tradeoffs:
+# duration is always 0; `exit` and leading-space commands never enter bash
+# history, so they aren't recorded; consecutive duplicates are dedup'd by
+# bash itself plus the _hist_last guard.
 _hist_last=""
 
 kav_precmd_record() {

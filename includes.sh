@@ -1,8 +1,7 @@
 #! /usr/bin/dash
 
-# Data location follows the XDG spec; nothing configurable — the daemon and
-# the shell integrations (bash/zsh source this file, fish mirrors it) can
-# never disagree on paths.
+# XDG paths shared by daemon + shell hooks; fish mirrors them (can't
+# source POSIX sh).
 KAV_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/kavkash"
 
 KAV_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp}/kavkash"
@@ -12,10 +11,9 @@ KAV_SOCK_FILE="$KAV_RUNTIME_DIR/history.sock"
 KAV_PID_FILE="$KAV_RUNTIME_DIR/server.pid"
 KAV_DB_FILE="$KAV_DATA_HOME/history.db"
 
-# Small shared helpers. kav_ prefix: this file is also sourced into
-# interactive shells (functions.bash/.zsh), where plain names like `die`
-# or `have` could clash with user-defined functions. install.sh keeps its
-# own copies — it must run standalone before includes.sh is installed.
+# Shared helpers. kav_ prefix: this file is also sourced into interactive
+# shells, so plain names like `die` could clash with user functions.
+# install.sh keeps its own copies — it must run standalone pre-install.
 kav_die() {
     printf 'error: %s\n' "$*" >&2
     exit 1
@@ -24,10 +22,8 @@ kav_have() { command -v "$1" > /dev/null 2>&1; }
 kav_say() { printf '%s\n' "$*"; }
 kav_warn() { printf 'warning: %s\n' "$*" >&2; }
 
-# kav_uuidv7 — RFC 9562 UUIDv7: 48-bit millisecond timestamp (lexicographic
-# order == chronological order, so history sorts by id alone), version 7,
-# variant 10, 72 random bits. hook.sh mints one per command; order matters
-# for ORDER BY id DESC. Needs /dev/urandom (falls back to date+pid entropy).
+# RFC 9562 UUIDv7: 48-bit ms timestamp (id order == time order), version 7,
+# variant 10, 72 random bits. /dev/urandom, falling back to date+pid.
 kav_uuidv7() {
     ts=$(printf '%012x' "$(date +%s%3N 2> /dev/null || echo "$(date +%s)000")")
     rand=$(od -An -N9 -tx1 /dev/urandom 2> /dev/null | tr -d ' \n')

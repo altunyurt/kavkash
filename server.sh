@@ -36,27 +36,21 @@ rm -f "$KAV_SOCK_FILE"
 # Write PID file for external ops (status check, graceful kill)
 echo $$ > "$KAV_PID_FILE"
 
-# Cleanup on exit: a stale socket file would block the next bind, and a
-# stale pid file would trip the startup guard — both must go when the
-# daemon stops. socat runs as a background child so the shell stays in
-# control of its lifetime: signals (SIGTERM from the pid file, etc.)
-# kill socat first, then the EXIT trap removes the socket and pid files.
+# On exit: remove socket + pid files (stale ones block the next start).
+# socat is a background child; TERM/INT/HUP kill it first, then EXIT
+# cleans up.
 cleanup() {
     rm -f "$KAV_SOCK_FILE" "$KAV_PID_FILE"
 }
 trap cleanup EXIT
 trap 'kill -TERM "$KAV_SOCAT_PID" 2> /dev/null' TERM INT HUP
 
-# - fork: one child process per connection (isolates each request)
-# - mode=0600: socket accessible only to owner
-# - Bidirectional (no -u): required for query responses to reach the client
-# - EXEC:"$KAV_PROC_SCRIPT": processor.sh sources includes.sh itself, so it
-#   knows the DB path (KAV_DB_FILE) with no argv/env handoff.
-#
-# stderr -> server.log: clients disconnecting mid-response is normal
-# (fzf exit) and would otherwise spam broken-pipe noise
-# on the daemon's terminal. Real errors (bind failures, sqlite problems)
-# are still recorded in the log.
+# - fork: one process per connection (isolates requests)
+# - mode=0600: socket owner-only
+# - Bidirectional (no -u): query responses must reach the client
+# - EXEC: processor.sh sources includes.sh itself, so it knows the DB path
+#   with no argv/env handoff. stderr -> server.log (broken pipes from fzf
+#   exits are normal; real errors still land there).
 socat UNIX-LISTEN:"$KAV_SOCK_FILE",fork,mode=0600 EXEC:"$KAV_PROC_SCRIPT" 2>> "$KAV_RUNTIME_DIR/server.log" &
 KAV_SOCAT_PID=$!
 wait "$KAV_SOCAT_PID"
