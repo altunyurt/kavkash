@@ -392,7 +392,6 @@ print_summary() {
 
     say "  2. hook your shell — add ONE line to your rc file, then start a new shell:"
     say "       bash:  source $KAV_DATA_HOME/functions.bash"
-    say "              (requires bash-preexec: https://github.com/rcaloras/bash-preexec)"
     say "       zsh:   source $KAV_DATA_HOME/functions.zsh"
     say "       fish:  source $KAV_DATA_HOME/functions.fish"
 

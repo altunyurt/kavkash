@@ -1,12 +1,5 @@
-# kavkash bash integration — source from .bashrc.
-# Requires bash-preexec.
-
-if [[ -z "${bash_preexec_imported:-}" ]]; then
-    printf "Bash-preexec is NOT loaded. If you don't have bash-preexec installed yet, visit"
-    printf "\n    https://github.com/rcaloras/bash-preexec\n"
-    printf "for installation instructions"
-    exit 1
-fi
+# kavkash bash integration — source from .bashrc. Self-contained: no
+# bash-preexec — recording happens in precmd via bash's own PROMPT_COMMAND.
 
 # Shared paths from includes.sh (same dir as this file).
 _SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -84,9 +77,8 @@ _hist_up() { _hist_picker 500 "" walk; }
 # Ctrl+R: picker seeded with the current line (search mode), 10k cap.
 _hist_search() { _hist_picker 10000 "$READLINE_LINE" search; }
 
-# Record from precmd ONLY: bash-preexec's preexec (DEBUG trap) never fires
-# for function-definition commands, so it would miss `f() { ... }`.
-# Reading `history 1` in precmd sees every command that ran. Tradeoffs:
+# Record from precmd: reading `history 1` sees every command that ran (a
+# DEBUG-trap preexec would miss function-definition commands). Tradeoffs:
 # duration is always 0; `exit` and leading-space commands never enter bash
 # history, so they aren't recorded; consecutive duplicates are dedup'd by
 # bash itself plus the _hist_last guard.
@@ -105,7 +97,15 @@ kav_precmd_record() {
     [[ -n "$id" ]] || return 0
     "$_SCRIPT_DIR/hook.sh" U "$id" "$_hist_exit" 0
 }
-precmd_functions+=(kav_precmd_record)
+
+# Run it on every primary prompt via bash's PROMPT_COMMAND (array form in
+# bash 5.1+, scalar before); kavkash's hook goes FIRST so $? is still the
+# last command's exit status when it runs.
+if [[ $(declare -p PROMPT_COMMAND 2> /dev/null) == declare\ -*a* ]]; then
+    PROMPT_COMMAND=(kav_precmd_record "${PROMPT_COMMAND[@]}")
+else
+    PROMPT_COMMAND="kav_precmd_record${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
+fi
 
 # bind -x runs the function directly (not just inserts text).
 # Enter and Ctrl+C are NOT bound — readline's defaults execute/cancel.
