@@ -16,10 +16,13 @@ set -g _HIST_PICKER (realpath "$_HIST_SCRIPT_DIR/picker.sh")
 
 # _hist_picker — the single fzf widget behind both Up and Ctrl+R (see
 # functions.bash for the design rationale; fish mirrors it). Accept: Enter
-# runs the picked command, Tab pastes it onto the line.
+# runs the picked command, Tab pastes it onto the line. mode: "walk" (Up)
+# or "search" (Ctrl+R) — shown in the fzf prompt/header.
 function _hist_picker
     set -l count $argv[1]
     set -l init_q $argv[2]
+    set -l mode walk
+    test -n "$argv[3]"; and set mode $argv[3]
     set -l win $count
     if test $win -gt 1000
         set win 1000
@@ -34,8 +37,8 @@ function _hist_picker
     # NUL-frames "key\0<cmd>\0"; the awk turns that into "key\n<cmd>".
     set -l picked
     fzf --height 15 --no-sort --track --sync --highlight-line \
-        --prompt 'history> ' --query "$init_q" --read0 --print0 \
-        --header 'f5: older · tab: paste · enter: run' \
+        --prompt "$mode> " --query "$init_q" --read0 --print0 \
+        --header "$mode · $count newest · f5: older · tab: paste · enter: run" \
         --bind "start:reload-sync:$_HIST_PICKER $win_file $count load" \
         --bind "result:transform:$_HIST_PICKER $win_file $count" \
         --bind "f5:transform:$_HIST_PICKER $win_file $count force" \
@@ -66,14 +69,14 @@ function _hist_picker
     end
 end
 
-# Up: picker over the 500 newest commands. Down is deliberately unbound.
+# Up: picker over the 500 newest commands (walk mode). Down is deliberately unbound.
 function _hist_up
-    _hist_picker 500 ""
+    _hist_picker 500 "" walk
 end
 
-# Ctrl+R: picker seeded with the current line, 10k cap.
+# Ctrl+R: picker seeded with the current line (search mode), 10k cap.
 function _hist_search
-    _hist_picker 10000 (commandline -b)
+    _hist_picker 10000 (commandline -b) search
 end
 
 # preexec mints the correlation id + start time; postexec reports exit +

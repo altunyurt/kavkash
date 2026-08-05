@@ -7,7 +7,7 @@ _SCRIPT_DIR=${0:A:h}      # kavkash root, where hook.sh/query.sh/picker.sh live
 # functions.bash for the design rationale; zsh mirrors it, except accept
 # RUNS the picked command — zsh can from a widget).
 _hist_picker() {
-    local count="$1" init_q="${2:-}" picked key cmd win win_file
+    local count="$1" init_q="${2:-}" mode="${3:-walk}" picked key cmd win win_file
     win=$count
     (( win > 1000 )) && win=1000
     win_file=$(mktemp) || return 0
@@ -17,8 +17,8 @@ _hist_picker() {
     # start:reload drives the list. print()+accept NUL-frames
     # "key\0<cmd>\0"; the awk turns that into "key\n<cmd>".
     picked=$(fzf --height 15 --no-sort --track --sync --highlight-line \
-        --prompt 'history> ' --query "$init_q" --read0 --print0 \
-        --header 'f5: older · tab: paste · enter: run' \
+        --prompt "$mode> " --query "$init_q" --read0 --print0 \
+        --header "$mode · $count newest · f5: older · tab: paste · enter: run" \
         --bind "start:reload-sync:$_SCRIPT_DIR/picker.sh $win_file $count load" \
         --bind "result:transform:$_SCRIPT_DIR/picker.sh $win_file $count" \
         --bind "f5:transform:$_SCRIPT_DIR/picker.sh $win_file $count force" \
@@ -47,11 +47,11 @@ _hist_picker() {
     return 0
 }
 
-# Up: picker over the 500 newest commands. Down is left at zsh's default.
-_hist_up() { _hist_picker 500 ""; }
+# Up: picker over the 500 newest commands (walk mode). Down is left at zsh's default.
+_hist_up() { _hist_picker 500 "" walk; }
 
-# Ctrl+R: picker seeded with the current line, 10k cap.
-_hist_search() { _hist_picker 10000 "$BUFFER"; }
+# Ctrl+R: picker seeded with the current line (search mode), 10k cap.
+_hist_search() { _hist_picker 10000 "$BUFFER" search; }
 
 # Register widgets and bindings. Enter/Ctrl+C are NOT bound — zsh defaults
 # handle them.

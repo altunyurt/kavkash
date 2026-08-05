@@ -32,10 +32,11 @@ shell up/Ctrl+R fzf picker ← picker.sh → query.sh ←───────�
 
 ## Navigation
 
-Up and Ctrl+R both open the same fzf picker:
+Up and Ctrl+R both open the fzf picker, distinguished by prompt and header:
 
-- **Up** — the 500 newest commands, empty query.
-- **Ctrl+R** — live search, seeded with the current line, capped at 10k.
+- **Up** (`walk> `) — browse the 500 newest commands, empty query.
+- **Ctrl+R** (`search> `) — full-text search, seeded with the current line,
+  capped at 10k.
 
 The picker loads a *window* of the newest commands (min(cap, 1000)) through
 `start:reload-sync` — a single code path, no initial pipe — and fzf filters
