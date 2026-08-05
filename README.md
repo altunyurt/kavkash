@@ -1,11 +1,13 @@
 # kavkash
 
-Minimal shell history daemon. Captures commands via preexec hook, stores in SQLite, serves history queries for interactive navigation.
+Minimal shell history daemon. Captures commands via shell hooks (preexec
+for fish/zsh, precmd+history for bash), stores in SQLite, serves history
+queries for interactive navigation.
 
 ## Architecture
 
 ```
-shell preexec → hook.sh → Unix socket → server.sh → processor.sh → SQLite
+shell hooks → hook.sh → Unix socket → server.sh → processor.sh → SQLite
                                                                     ↓
 shell up/Ctrl+R fzf picker ← query.sh ←────────────────────────────┘
 ```
@@ -39,7 +41,8 @@ the filter, and there is no result cap beyond the per-widget limits above.
 
 Accept: one Enter both picks and **runs** the command in zsh/fish; in bash
 one Enter places it on the line and a second Enter runs it (readline
-widgets can't execute). Multi-line commands display as-is (fzf `--read0`)
+widgets can't execute). Multi-line commands display on a single line with
+newlines shown as `\n` (backslashes doubled, so the notation is lossless)
 and round-trip to real newlines on accept.
 
 ## Protocol
@@ -47,19 +50,26 @@ and round-trip to real newlines on accept.
 Netstrings, one field per netstring. Concatenated in a single stream.
 
 - **Write:** `W,cmd,cwd,id` — sent by the shell's preexec hook when a
-  command starts. `id` is a UUIDv7 minted by hook.sh: it is the row's
-  primary key **and** its timestamp (lexicographic id order == chronological
-  order), so no separate timestamp column exists. Exit code and duration
-  aren't known yet.
+  command starts (fish/zsh), or by bash's precmd hook after it ran.
+  (bash: the DEBUG-trap-based preexec can't see function-definition
+  commands, so bash reads `history 1` in precmd instead — duration is 0
+  there, and `exit`/leading-space commands aren't captured). `id` is a
+  UUIDv7 minted by hook.sh: it is the row's primary key **and** its
+  timestamp (lexicographic id order == chronological order), so no
+  separate timestamp column exists. Exit code and duration arrive via
+  Update.
 - **Update:** `U,id,exit_code,duration_ms` — sent by the shell's precmd hook
   when the command finishes; the shell measured the duration between
-  preexec and precmd. UUIDs are never reused, so stale keys are impossible
-  and nothing needs clearing.
+  preexec and precmd (0 in bash). UUIDs are never reused, so stale keys
+  are impossible and nothing needs clearing.
 - **Query:** `Q,search,query,count` → returns up to `count` commands whose
   text subsequence-matches every term of `query` (empty query = newest
   `count`). Rows are NUL-terminated (command text can never contain NUL,
-  so the framing is unambiguous) with embedded newlines kept raw — fzf
-  consumes them via `--read0`/`--print0`. The sqlite3 framing hazards
+  so the framing is unambiguous) and fzf consumes them via
+  `--read0`/`--print0`. For single-line display the server escapes
+  embedded newlines as `\n` and doubles backslashes (`\` → `\\`);
+  clients reverse exactly that pair on accept, so a command containing a
+  literal `\n` round-trips intact as `\\n`. The sqlite3 framing hazards
   0x1E/0x1F plus `\r` are stripped server-side.
 
 Example write message: `1:W,2:ls,10:/home/user,36:018f2a3b-1c2d-7000-8000-9a8b7c6d5e4f,`

@@ -22,16 +22,32 @@ function _hist_picker
     # command substitution stdout is a pipe, so fzf falls back to stderr
     # (then /dev/tty) for its UI — a `2>/dev/null` here makes the picker
     # render nothing and appear stuck.
-    # read -z: NUL-delimited capture. Fish variables can't hold NUL and the
-    # picked command may contain real newlines (multi-line commands), so the
+    # read -z: NUL-delimited capture. Fish variables can't hold NUL, so the
     # selection must NOT go through command substitution. fzf --read0/--print0
-    # frame the NUL stream from query.sh.
+    # frame the NUL stream from query.sh. The server display-escaped
+    # newlines (\n) and doubled backslashes (\\) — decode the same pair
+    # back with the same single-pass awk (other backslash sequences are
+    # untouched, so the round-trip is lossless).
     set -l selected
     "$_HIST_SCRIPT_DIR/query.sh" "$count" "$init_q" | fzf \
         --disabled --height 15 --no-sort --prompt 'history> ' \
         --query "$init_q" --read0 --print0 \
         --bind "change:reload:sleep 0.1; $_HIST_SCRIPT_DIR/query.sh $count {q}" \
         | read -z selected
+    set -l decoded
+    printf '%s' "$selected" | awk '{
+        s = $0; o = ""; n = length(s); i = 1
+        while (i <= n) {
+            c = substr(s, i, 1)
+            if (c == "\\\\" && i < n) {
+                c2 = substr(s, i + 1, 1)
+                if (c2 == "\\\\") { o = o "\\\\"; i += 2; continue }
+                if (c2 == "n")  { o = o "\n"; i += 2; continue }
+            }
+            o = o c; i++
+        }
+        printf "%s", o }' | read -z decoded
+    set -l selected "$decoded"
     if test -n "$selected"
         commandline -r "$selected"
         # one Enter both accepts and runs (zsh/fish decision)
