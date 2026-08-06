@@ -1,10 +1,10 @@
 #!/bin/sh
 # query.sh COUNT [QUERY] — history picker back-end.
 #
-# Asks the daemon for up to COUNT commands (see processor.sh search). The
-# picker's paginated windows always pass an EMPTY query — newest COUNT,
-# unfiltered — and fzf's own matcher does the filtering, so this serves the
-# start:reload-sync loads and the pagination reloads.
+# Asks the daemon for the newest COUNT commands. QUERY is accepted for wire
+# compatibility and ignored — the picker passes an empty query and fzf
+# filters the loaded window in-memory (the server-side subsequence matcher
+# was removed).
 #
 # Output: NUL-separated raw command rows for fzf --read0. Multi-line commands
 # pass through verbatim (fzf >= 0.53 renders them natively); nothing is

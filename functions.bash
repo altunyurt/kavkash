@@ -1,5 +1,5 @@
 # kavkash bash integration — source from .bashrc. Self-contained: no
-# bash-preexec — recording happens in precmd via bash's own PROMPT_COMMAND.
+# bash-preexec — recording is a DEBUG-trap preexec + PROMPT_COMMAND.
 
 # Shared paths from includes.sh (same dir as this file).
 _SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -22,9 +22,14 @@ _SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # ones display natively (fzf >= 0.53), no escaping.
 _hist_picker() {
     local count="$1" init_q="${2:-}" mode="${3:-walk}" picked key cmd win win_file
+    _hist_armed=0   # the trap fires for the bind -x widget invocation itself
+                    # and for the eval'd Enter command — both must not record
     win=$count
     (( win > 1000 )) && win=1000
-    win_file=$(mktemp) || return 0
+    win_file=$(mktemp) || {
+        _hist_armed=1
+        return 0
+    }
     printf '%s\n' "$win" > "$win_file"
     # NOTE: fzf's stderr must stay on the terminal (a 2>/dev/null here
     # renders a blank UI); </dev/null keeps the tty out of its stdin —
@@ -43,32 +48,39 @@ _hist_picker() {
             NR == 2 { printf "%s\n%s\n", key, $0 }')
     rm -f "$win_file"
 
-    [ -z "$picked" ] && return 0
-    key="${picked%%$'\n'*}"
-    cmd="${picked#*$'\n'}"
-    [ -z "$cmd" ] && return 0
-
-    if [[ -z "$key" ]]; then
-        # Enter: paste and run. readline can't accept the line from a
-        # widget, so record it (history -s, so Up-arrow still sees it) and
-        # eval it directly. A new prompt is NOT displayed after a bind -x
-        # callback, so precmd never runs — record here via hook.sh instead.
-        history -s "$cmd"
-        READLINE_LINE=""
-        local _hist_exit
-        eval "$cmd"
-        _hist_exit=$?
-        local id
-        id=$("$_SCRIPT_DIR/hook.sh" W "$cmd" "$PWD")
-        if [[ -n "$id" ]]; then
-            "$_SCRIPT_DIR/hook.sh" U "$id" "$_hist_exit" 0
+    if [[ -n "$picked" ]]; then
+        key="${picked%%$'\n'*}"
+        cmd="${picked#*$'\n'}"
+        if [[ -n "$cmd" ]]; then
+            if [[ -z "$key" ]]; then
+                # Enter: paste and run. readline can't accept the line from
+                # a widget, so record it (history -s, so Up-arrow still
+                # sees it) and eval it directly. The DEBUG preexec is
+                # disarmed for this whole widget, so the eval'd command
+                # doesn't self-record; hook.sh does W here and U right
+                # after with the real exit code.
+                history -s "$cmd"
+                READLINE_LINE=""
+                local _hist_exit
+                eval "$cmd"
+                _hist_exit=$?
+                local id
+                id=$("$_SCRIPT_DIR/hook.sh" W "$cmd" "$PWD")
+                if [[ -n "$id" ]]; then
+                    "$_SCRIPT_DIR/hook.sh" U "$id" "$_hist_exit" 0
+                fi
+                # precmd won't run for this line (bind -x callbacks don't
+                # re-display the prompt), so sync the index baseline.
+                _hist_last_idx=$(_kav_hist_idx)
+            else
+                # Tab: paste onto the line; Enter will run it (and precmd
+                # records).
+                READLINE_LINE="$cmd"
+                READLINE_POINT=${#READLINE_LINE}
+            fi
         fi
-        _hist_last="$cmd"   # same consecutive-dup dedup as the precmd path
-    else
-        # Tab: paste onto the line; Enter will run it (and precmd records).
-        READLINE_LINE="$cmd"
-        READLINE_POINT=${#READLINE_LINE}
     fi
+    _hist_armed=1   # re-arm on every exit path: the next typed line records again
 }
 
 # Up: picker over the 500 newest commands (walk mode). Down is deliberately unbound.
@@ -77,35 +89,106 @@ _hist_up() { _hist_picker 500 "" walk; }
 # Ctrl+R: picker seeded with the current line (search mode), 10k cap.
 _hist_search() { _hist_picker 10000 "$READLINE_LINE" search; }
 
-# Record from precmd: reading `history 1` sees every command that ran (a
-# DEBUG-trap preexec would miss function-definition commands). Tradeoffs:
-# duration is always 0; `exit` and leading-space commands never enter bash
-# history, so they aren't recorded; consecutive duplicates are dedup'd by
-# bash itself plus the _hist_last guard.
-_hist_last=""
+# --- capture: preexec (DEBUG trap) + precmd (PROMPT_COMMAND) ---
+#
+# bash has no preexec event, so kavkash synthesizes one with a DEBUG trap
+# (the same trick bash-preexec uses). Empirically, in interactive bash:
+#   - the trap fires before EVERY simple command, but NOT recursively (no
+#     re-entry for commands inside the trap body) and NOT in subshells
+#   - it fires once per simple command of a line (`a && b` twice) and for
+#     commands in PROMPT_COMMAND — filtered by the history-index check
+#   - it fires for bind -x widget invocations (e.g. the picker) — filtered
+#     the same way, since history doesn't grow
+#   - it does NOT fire for function definitions — but the PROMPT_COMMAND
+#     fire at the next prompt sees the history growth and records the line
+#     then (real exit code, prompt-sized duration); the precmd fallback
+#     below is only the safety net
+#   - leading-space commands never reach history (HISTCONTROL=ignorespace)
+#     and BASH_COMMAND only holds the current simple command, so they can't
+#     be captured with the full line — documented limitation
+#
+# Two guards:
+#   _hist_armed — set ONLY at the end of PROMPT_COMMAND, so startup files
+#                 (where history is not even loaded yet) and the first
+#                 prompt can't fire. After the first prompt it stays armed
+#                 across prompt redraws; a real command consumes it.
+#   index check — a fire only records when history has actually grown past
+#                 the last recorded entry. That kills bind -x widgets,
+#                 PROMPT_COMMAND's own commands, and blank Enters without
+#                 needing to know which command is which.
+_hist_armed=0
+_hist_initialized=0
+_hist_corr=""
+_hist_t0=0
+_hist_last_idx=0
+
+_kav_hist_idx() {
+    HISTTIMEFORMAT='' builtin history 1 | sed -n '1s/^[[:space:]]*\([0-9][0-9]*\).*/\1/p'
+}
+
+kav_preexec_record() {
+    (( _hist_armed )) || return 0
+    local line idx cmd
+    line=$(HISTTIMEFORMAT='' builtin history 1)
+    idx=$(_kav_hist_idx)
+    [[ "$idx" =~ ^[0-9]+$ ]] || return 0
+    (( idx > _hist_last_idx )) || return 0   # bind -x widget / prompt noise
+    cmd="${line#*[[:digit:]][* ] }"
+    [[ -n "$cmd" ]] || return 0
+    _hist_last_idx=$idx
+    _hist_armed=0
+    if [[ "$cmd" == "exit" || "$cmd" == "logout" ]]; then
+        # The shell exits before a backgrounded delivery could connect,
+        # so the last command would be lost — send this one synchronously.
+        "$_SCRIPT_DIR/hook.sh" W "$cmd" "$PWD" sync
+        return 0
+    fi
+    _hist_t0=$(date +%s%3N 2> /dev/null || date +%s)
+    _hist_corr=$("$_SCRIPT_DIR/hook.sh" W "$cmd" "$PWD")
+}
 
 kav_precmd_record() {
     local _hist_exit=$?    # capture FIRST — anything else clobbers it
-    local cmd
-    cmd=$(HISTTIMEFORMAT='' builtin history 1)
-    cmd="${cmd#*[[:digit:]][* ] }"
-    # blank-prompt Enter leaves history unchanged — dedup skips it
-    [[ -n "$cmd" && "$cmd" != "$_hist_last" ]] || return 0
-    _hist_last="$cmd"
-    local id
-    id=$("$_SCRIPT_DIR/hook.sh" W "$cmd" "$PWD")
-    [[ -n "$id" ]] || return 0
-    "$_SCRIPT_DIR/hook.sh" U "$id" "$_hist_exit" 0
+    if [[ -n "$_hist_corr" ]]; then
+        local _now=$(date +%s%3N 2> /dev/null || date +%s)
+        "$_SCRIPT_DIR/hook.sh" U "$_hist_corr" "$_hist_exit" "$((_now - _hist_t0))"
+        _hist_corr=""
+    fi
+    # Baseline the history index on the first prompt: history is loaded
+    # only after the rc files, so entries that predate sourcing must not
+    # be treated as new. After that, the prompt's own DEBUG fire already
+    # consumed any growth (function definitions); this fallback records
+    # whatever slipped through, exit code included, duration unknown (0).
+    local line idx cmd
+    line=$(HISTTIMEFORMAT='' builtin history 1)
+    idx=$(_kav_hist_idx)
+    if (( _hist_initialized )); then
+        cmd="${line#*[[:digit:]][* ] }"
+        if [[ "$idx" =~ ^[0-9]+$ && $idx -gt _hist_last_idx && -n "$cmd" ]]; then
+            _hist_last_idx=$idx
+            local id
+            id=$("$_SCRIPT_DIR/hook.sh" W "$cmd" "$PWD")
+            [[ -n "$id" ]] && "$_SCRIPT_DIR/hook.sh" U "$id" "$_hist_exit" 0
+        fi
+    elif [[ "$idx" =~ ^[0-9]+$ ]]; then
+        _hist_last_idx=$idx
+        _hist_initialized=1
+    fi
+    _hist_armed=1
 }
 
-# Run it on every primary prompt via bash's PROMPT_COMMAND (array form in
-# bash 5.1+, scalar before); kavkash's hook goes FIRST so $? is still the
-# last command's exit status when it runs.
+# Run the recorder on every primary prompt via bash's PROMPT_COMMAND (array
+# form in bash 5.1+, scalar before); kavkash's hook goes FIRST so $? is
+# still the last command's exit status when it runs.
 if [[ $(declare -p PROMPT_COMMAND 2> /dev/null) == declare\ -*a* ]]; then
     PROMPT_COMMAND=(kav_precmd_record "${PROMPT_COMMAND[@]}")
 else
     PROMPT_COMMAND="kav_precmd_record${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
 fi
+
+# Preempt any existing DEBUG trap (kavkash takes it over, like
+# bash-preexec does); the guards above keep it inert outside commands.
+trap kav_preexec_record DEBUG
 
 # bind -x runs the function directly (not just inserts text).
 # Enter and Ctrl+C are NOT bound — readline's defaults execute/cancel.

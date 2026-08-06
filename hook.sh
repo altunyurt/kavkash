@@ -53,8 +53,18 @@ case "$MODE" in
 esac
 
 # Fire-and-forget: backgrounded (&), stdout/stderr silenced, errors ignored.
+# A 4th argument "sync" delivers in the foreground instead — bash's `exit`
+# would kill the backgrounded socat before it connects, losing the row.
 if command -v socat > /dev/null 2>&1; then
-    printf '%s' "$MSG" | socat - UNIX-CONNECT:"$KAV_SOCK_FILE" > /dev/null 2>&1 &
+    if [ "$4" = sync ]; then
+        printf '%s' "$MSG" | socat - UNIX-CONNECT:"$KAV_SOCK_FILE" > /dev/null 2>&1
+    else
+        printf '%s' "$MSG" | socat - UNIX-CONNECT:"$KAV_SOCK_FILE" > /dev/null 2>&1 &
+    fi
 elif command -v nc > /dev/null 2>&1; then
-    printf '%s' "$MSG" | nc -U "$KAV_SOCK_FILE" > /dev/null 2>&1 &
+    if [ "$4" = sync ]; then
+        printf '%s' "$MSG" | nc -U "$KAV_SOCK_FILE" > /dev/null 2>&1
+    else
+        printf '%s' "$MSG" | nc -U "$KAV_SOCK_FILE" > /dev/null 2>&1 &
+    fi
 fi

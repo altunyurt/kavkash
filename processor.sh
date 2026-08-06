@@ -86,7 +86,9 @@ case "$TYPE" in
         safe_id=$(printf '%s' "$id" | sed "s/'/''/g")
         # Plain INSERT: a fresh UUIDv7 cannot collide. A shell that dies
         # mid-command leaves exit 0 / duration 0; ids are never reused.
-        sqlite3 "$db_file" "INSERT INTO history (id, command, cwd, exit_code, duration_ms) VALUES ('$safe_id', '$safe_cmd', '$safe_cwd', 0, 0);"
+        # busy_timeout makes concurrent writers (several terminals at once)
+        # wait for the lock instead of failing with SQLITE_BUSY.
+        sqlite3 "$db_file" "PRAGMA busy_timeout = 3000; INSERT INTO history (id, command, cwd, exit_code, duration_ms) VALUES ('$safe_id', '$safe_cmd', '$safe_cwd', 0, 0);"
         ;;
     U)
         # Update: precmd reports $? and shell-measured duration for the id.
@@ -102,78 +104,33 @@ case "$TYPE" in
         safe_id=$(printf '%s' "$id" | sed "s/'/''/g")
         n=0
         while [ "$n" -lt 5 ]; do
-            changed=$(sqlite3 "$db_file" "UPDATE history SET exit_code=$exit_code, duration_ms=$duration WHERE id='$safe_id'; SELECT changes();" 2> /dev/null)
+            changed=$(sqlite3 "$db_file" "PRAGMA busy_timeout = 3000; UPDATE history SET exit_code=$exit_code, duration_ms=$duration WHERE id='$safe_id'; SELECT changes();" 2> /dev/null)
             case "$changed" in *[1-9]*) break ;; esac
             n=$((n + 1))
             sleep 0.01 2> /dev/null || break
         done
         ;;
     Q)
-        # Query: up to `count` commands whose text contains every
-        # whitespace-separated term as a subsequence (legacy — the picker
-        # now pages unfiltered windows and lets fzf's own matcher filter,
-        # so it always sends an empty query; the builder stays for
-        # query.sh's interface). Empty query = the newest `count`. Only
-        # 0x1E/0x1F and \r are stripped; multi-line commands pass through
-        # verbatim (fzf >= 0.53 renders them natively); the response is
-        # NUL-framed.
+        # Query: newest `count` commands, NUL-framed raw rows. The picker
+        # always sends an empty query — fzf filters the loaded window
+        # in-memory — and the server-side subsequence matcher was removed
+        # (dead, untested code). The query field is still accepted on the
+        # wire for protocol stability and ignored. Only 0x1E/0x1F and \r
+        # are stripped; multi-line commands pass through verbatim.
         action="$1"
-        query="$2"
         count="$3"
         case "$count" in '' | *[!0-9]*) count=10000 ;; esac
         case "$action" in
-            search)
-                where=$(printf '%s' "$query" | LC_ALL=C awk -v q="'" '
-                    {
-                        n = 0
-                        for (i = 1; i <= NF; i++) {
-                            term = $i
-                            pattern = "%"
-                            j = 1
-                            while (j <= length(term)) {
-                                c = substr(term, j, 1)
-                                # UTF-8 char width: keep multi-byte sequences
-                                # intact so the % only lands between characters
-                                # (splitting a multi-byte char would make the
-                                # pattern unmatchable in SQLite LIKE).
-                                w = 1
-                                if (c >= sprintf("%c", 194) && c <= sprintf("%c", 223)) w = 2
-                                else if (c >= sprintf("%c", 224) && c <= sprintf("%c", 239)) w = 3
-                                else if (c >= sprintf("%c", 240) && c <= sprintf("%c", 244)) w = 4
-                                ch = substr(term, j, w)
-                                if (w == 1) {
-                                    if (c == "%" || c == "_" || c == "\\") ch = "\\" ch
-                                    else if (c == q) ch = q q
-                                }
-                                pattern = pattern ch "%"
-                                j += w
-                            }
-                            clauses[++n] = "command LIKE " q pattern q " ESCAPE " q "\\" q
-                        }
-                    }
-                    END {
-                        if (n == 0) print ""
-                        else {
-                            printf "WHERE "
-                            for (i = 1; i <= n; i++) {
-                                if (i > 1) printf " AND "
-                                printf "%s", clauses[i]
-                            }
-                            print ""
-                        }
-                    }')
-                sql="SELECT REPLACE(REPLACE(REPLACE(command, char(30), ''), char(31), ''), char(13), '') FROM history $where ORDER BY id DESC LIMIT $count;"
-                ;;
-            *)
-                exit 0
-                ;;
+            search) ;;
+            *) exit 0 ;;
         esac
+        sql="SELECT REPLACE(REPLACE(REPLACE(command, char(30), ''), char(31), ''), char(13), '') FROM history ORDER BY id DESC LIMIT $count;"
 
         # sqlite3 -ascii (0x1E rows / 0x1F cols); the SELECT already stripped
         # those hazards, so no embedded separator can tear a row. Rows are
         # rejoined with 0x1E via ORS and one tr converts to NUL (mawk printf
         # eats a literal \0 in formats).
-        sqlite3 -ascii "$db_file" "$sql" | LC_ALL=C awk '
+        sqlite3 -ascii "$db_file" "PRAGMA busy_timeout = 3000; $sql" | LC_ALL=C awk '
         BEGIN { RS = "\036"; ORS = "\036" }
         {
             row = $0

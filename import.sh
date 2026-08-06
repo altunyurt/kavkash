@@ -2,7 +2,10 @@
 # import.sh — import existing history (bash/zsh/fish + atuin) into kavkash DB.
 #
 # Runs standalone any time (install.sh invokes it when the user opts in) and
-# is idempotent: commands already in the DB are skipped (match on text).
+# is idempotent: rows already in the DB are skipped, matching on
+# (command, cwd, timestamp) — the same triple that makes an invocation
+# unique — so re-running an import adds nothing, while distinct invocations
+# of the same command (different times and/or cwds) are all kept.
 #
 # Sources and their formats:
 #   bash  ~/.bash_history            plain lines, or "#<epoch>" + line pairs
@@ -39,14 +42,18 @@ ENTRIES=$(mktemp "$tmpdir/kavkash-import.XXXXXX")
 SQLOUT=$(mktemp "$tmpdir/kavkash-import.XXXXXX")
 trap 'rm -f "$ENTRIES" "$SQLOUT"' EXIT
 
-now=$(date +%s%3N 2> /dev/null || echo "$(date +%s)000")
-counter=0
-
 # emit <epoch_ms> <base64(cmd)> [base64(cwd) [dur_ms exit src]]
 # src=A marks atuin-sourced rows: their cwd/duration enrich existing rows
-# (see INSERT loop). Commands without a real timestamp get sequential values
-# just below `now`, so un-timestamped files keep their original order
-# (newest last = first Up).
+# (see INSERT loop). Commands without a real timestamp get a deterministic
+# pseudo-timestamp from a per-parser line counter: un-timestamped files
+# keep their order (newest last = first Up) and a re-import of the same
+# files produces the same pseudo-timestamps, so the dedup stays idempotent.
+# bash and zsh share counter/base 0 because both read $HISTFILE — the same
+# physical lines must get the same pseudo-timestamps or the shared file
+# would be imported twice; fish and atuin use disjoint bases.
+counter=0
+PSEUDO_BASE=0
+
 emit() {
     counter=$((counter + 1))
     ts=$1
@@ -56,7 +63,7 @@ emit() {
     exit=${5:-}
     src=${6:-}
     [ -n "$b64" ] || return 0
-    case "$ts" in '' | *[!0-9]*) ts=$((now - counter)) ;; esac
+    case "$ts" in '' | *[!0-9]*) ts=$((PSEUDO_BASE + counter)) ;; esac
     printf '%s %s %s %s %s %s\n' "$ts" "$b64" "$cwd" "$dur" "$exit" "$src" >> "$ENTRIES"
 }
 
@@ -66,11 +73,17 @@ import_bash() {
     f="${HISTFILE:-$HOME/.bash_history}"
     [ -f "$f" ] || return 0
     prev_ts=""
+    counter=0
     while IFS= read -r line || [ -n "$line" ]; do
         case "$line" in
             \#*)
                 prev_ts=${line#\#}
                 case "$prev_ts" in *[!0-9]*) prev_ts="" ;; esac
+                ;;
+            ": "[0-9]*:[0-9]*\;*)
+                # zsh extended-format line — not ours, skip (and don't
+                # treat the next line as if a # timestamp preceded it)
+                prev_ts=""
                 ;;
             *)
                 [ -z "$line" ] && { prev_ts=""; continue; }
@@ -84,8 +97,12 @@ import_bash() {
 import_zsh() {
     f="${HISTFILE:-$HOME/.zsh_history}"
     [ -f "$f" ] || return 0
+    counter=0
     while IFS= read -r line || [ -n "$line" ]; do
         case "$line" in
+            "#"*) # bash HISTTIMEFORMAT marker — not ours, skip
+                continue
+                ;;
             ": "*) # extended: ": <epoch>:<duration>;<command>"
                 rest=${line#": "}
                 ts=${rest%%:*}
@@ -107,10 +124,16 @@ import_fish() {
     [ -f "$f" ] || return 0
     ts=""
     cmd=""
+    counter=0
+    PSEUDO_BASE=1000000000
+    flush() {
+        [ -n "$cmd" ] || return 0
+        emit "$ts" "$(b64 "$cmd")"
+    }
     while IFS= read -r line || [ -n "$line" ]; do
         case "$line" in
             "- cmd: "*)
-                [ -n "$cmd" ] && emit "$ts" "$(b64 "$cmd")"
+                flush
                 cmd=${line#"- cmd: "}
                 ts=""
                 ;;
@@ -124,7 +147,7 @@ import_fish() {
                 ;;
         esac
     done < "$f"
-    [ -n "$cmd" ] && emit "$ts" "$(b64 "$cmd")"
+    flush
 }
 
 import_atuin() {
@@ -134,6 +157,8 @@ import_atuin() {
     # time|directory|duration|exit|command — command LAST so embedded
     # tabs/newlines can't shift earlier fields; --print0 keeps multiline
     # commands intact (continuation lines re-attached below).
+    counter=0
+    PSEUDO_BASE=2000000000
     if kav_have atuin; then
         ATUINOUT=$(mktemp "$tmpdir/kavkash-atuin.XXXXXX")
         if atuin history list -r false -f '{time}|{directory}|{duration}|{exit}|{command}' --print0 > "$ATUINOUT" 2> /dev/null && [ -s "$ATUINOUT" ]; then
@@ -246,11 +271,13 @@ while IFS=' ' read -r ts b64cmd b64cwd dur exit src || [ -n "$b64cmd" ]; do
     fi
     # id is a UUIDv7 minted from the row's own timestamp, so the imported
     # chronology maps onto the id ordering (ORDER BY id DESC == time order).
+    # Dedup is on (command, cwd, ts): the timestamp lives in the id's first
+    # 48 bits (chars 1-13), so the NOT EXISTS test is against that prefix.
     # The SQL printf() format specifiers (%08x …) must be escaped as %% so
     # the SHELL printf emits them literally instead of consuming arguments;
     # otherwise a non-numeric command ("%s") trips "expected numeric value"
     # and the whole row shifts into garbage.
-    printf "INSERT INTO history (id, command, cwd, exit_code, duration_ms) SELECT printf('%%08x-%%04x-%%04x-%%04x-%%012x', (%s >> 16) & 0xffffffff, %s & 0xffff, 0x7000 | (abs(random()) & 0x0fff), 0xa000 | (abs(random()) & 0x0fff), abs(random()) & 0xffffffffffff), '%s', '%s', %s, %s WHERE NOT EXISTS (SELECT 1 FROM history WHERE command = '%s');\n" "$ts" "$ts" "$safe" "$safe_cwd" "$dur" "$exit" "$safe" >> "$SQLOUT"
+    printf "INSERT INTO history (id, command, cwd, exit_code, duration_ms) SELECT printf('%%08x-%%04x-%%04x-%%04x-%%012x', (%s >> 16) & 0xffffffff, %s & 0xffff, 0x7000 | (abs(random()) & 0x0fff), 0xa000 | (abs(random()) & 0x0fff), abs(random()) & 0xffffffffffff), '%s', '%s', %s, %s WHERE NOT EXISTS (SELECT 1 FROM history WHERE command = '%s' AND cwd = '%s' AND substr(id, 1, 13) = printf('%%08x-%%04x', (%s >> 16) & 0xffffffff, %s & 0xffff));\n" "$ts" "$ts" "$safe" "$safe_cwd" "$dur" "$exit" "$safe" "$safe_cwd" "$ts" "$ts" >> "$SQLOUT"
 done < "$ENTRIES"
 
 n_before=$(sqlite3 "$DB" "SELECT count(*) FROM history;")
