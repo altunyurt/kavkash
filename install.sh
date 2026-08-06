@@ -248,6 +248,57 @@ install_files() {
     [ -f "$src/VERSION" ] && install -m 644 "$src/VERSION" "$KAV_DATA_HOME/VERSION"
 }
 
+# --- runtime dependency check ---------------------------------------------
+
+_dep() {
+    # _dep NAME MESSAGE — one line of the dependency report; warns on missing
+    _d_name=$1
+    _d_msg=$2
+    if have "$_d_name"; then
+        printf '  %-9s %s\n' "$_d_name" "OK"
+    else
+        printf '  %-9s %s\n' "$_d_name" "MISSING"
+        warn "missing dependency: $_d_name — $_d_msg"
+    fi
+}
+
+check_deps() {
+    # Reports the RUNTIME dependencies after files are installed (what
+    # kavkash needs to run, not what the installer itself needed to
+    # download/unpack). Warnings only — install never blocks — but the
+    # messages make severity explicit: sqlite3/awk/base64/dash are required
+    # (nothing works without them), socat has an nc -U fallback, and fzf
+    # gates only the picker (the shell files re-check the fzf version when
+    # sourced; this is early feedback).
+    say "dependency check:"
+    _dep sqlite3 "required — storage; the daemon cannot run without it"
+    _dep awk "required — netstring/query parsing in the daemon"
+    _dep base64 "required — netstring field decoding in the daemon"
+    _dep dash "required — all helper scripts run under #!/usr/bin/dash"
+    if have socat; then
+        printf '  %-9s %s\n' socat "OK"
+    elif have nc; then
+        printf '  %-9s %s\n' socat "OK (nc fallback)"
+        warn "socat not found — falling back to nc -U; install socat for the full transport"
+    else
+        printf '  %-9s %s\n' socat "MISSING"
+        warn "missing dependency: socat (and no nc fallback) — the daemon cannot receive commands or serve history"
+    fi
+    if have fzf; then
+        fzf_ver=$(fzf --version 2> /dev/null | awk 'NR == 1 { print $1 }')
+        if [ -n "$fzf_ver" ] && printf '%s\n' "$fzf_ver" | awk -F. 'NR == 1 { exit ($1 > 0 || $2 >= 54) ? 0 : 1 }'; then
+            printf '  %-9s %s\n' fzf "OK ($fzf_ver)"
+        else
+            printf '  %-9s %s\n' fzf "MISSING"
+            warn "missing dependency: fzf — found ${fzf_ver:-none}, needs >= 0.54; the Up/Ctrl+R picker stays disabled (history is still recorded)"
+        fi
+    else
+        printf '  %-9s %s\n' fzf "MISSING"
+        warn "missing dependency: fzf — no Up/Ctrl+R picker (history is still recorded)"
+    fi
+    say ""
+}
+
 # --- systemd --user integration --------------------------------------------
 
 systemd_usable() {
@@ -444,6 +495,7 @@ main() {
     fetch_and_verify
     unpack
     install_files
+    check_deps
     import_history
     setup_systemd
     record_revision
