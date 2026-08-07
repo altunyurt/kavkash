@@ -267,14 +267,19 @@ $line"
             db=$(sed -n 's/^[[:space:]]*db_path[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$cfg" | head -1)
             [ -n "$db" ] && f=$db
         fi
-        case "$f" in
-            "~/"*) f="$HOME/${f#"~/"}" ;;
-        esac
-        f=$(printf '%s' "$f" | sed "s/\$USER/$USER/g")
-        [ -f "$f" ] || return 0
     else
         # Explicit --atuin=PATH: read that file directly (plaintext schema).
-        [ -f "$f" ] || { echo "import.sh: atuin db not found: $f" >&2; return 0; }
+        :
+    fi
+    # Expand ~/ and $USER in whatever path we ended up with — an explicit
+    # --atuin=PATH may carry a literal tilde the shell won't expand.
+    case "$f" in
+        "~/"*) f="$HOME/${f#"~/"}" ;;
+    esac
+    f=$(printf '%s' "$f" | sed "s/\$USER/$USER/g")
+    if [ ! -f "$f" ]; then
+        [ -n "$1" ] && echo "import.sh: atuin db not found: $f" >&2
+        return 0
     fi
     echo "reading atuin history ($f)" >&2
     # schema variants: history_v2 (atuin v14-17) / history (v18+ and v1)
