@@ -158,17 +158,20 @@ import_atuin() {
     counter=0
     PSEUDO_BASE=2000000000
     f=${1:-}   # explicit --atuin=PATH (plaintext store); else infer
-    if [ -z "$f" ]; then
-        # Nothing to read? Skip silently: no atuin CLI, no default store,
-        # and no config that might point elsewhere. The plaintext path
-        # re-resolves db_path from config.toml later.
+    if [ -n "$f" ]; then
+        # Explicit --atuin=PATH: skip the guard, the atuin CLI and the
+        # config inference entirely — read PATH directly below.
+        :
+    else
+        # Infer mode only (--atuin with no path): the guard and the CLI
+        # below never run when an explicit path was given.
         cfg="${XDG_CONFIG_HOME:-$HOME/.config}/atuin/config.toml"
         if ! kav_have atuin && [ ! -f "${XDG_DATA_HOME:-$HOME/.local/share}/atuin/history.db" ] && [ ! -f "$cfg" ]; then
             return 0
         fi
         if kav_have atuin; then
             echo "reading atuin history" >&2
-        ATUINOUT=$(mktemp "$tmpdir/kavkash-atuin.XXXXXX")
+            ATUINOUT=$(mktemp "$tmpdir/kavkash-atuin.XXXXXX")
         if atuin history list -r false -f '{time}|{directory}|{duration}|{exit}|{command}' --print0 > "$ATUINOUT" 2> /dev/null && [ -s "$ATUINOUT" ]; then
             tr '\0' '\n' < "$ATUINOUT" \
                 | {
@@ -267,9 +270,6 @@ $line"
             db=$(sed -n 's/^[[:space:]]*db_path[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$cfg" | head -1)
             [ -n "$db" ] && f=$db
         fi
-    else
-        # Explicit --atuin=PATH: read that file directly (plaintext schema).
-        :
     fi
     # Expand ~/ and $USER in whatever path we ended up with — an explicit
     # --atuin=PATH may carry a literal tilde the shell won't expand.
