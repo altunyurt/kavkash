@@ -170,6 +170,27 @@ import_atuin() {
         if atuin history list -r false -f '{time}|{directory}|{duration}|{exit}|{command}' --print0 > "$ATUINOUT" 2> /dev/null && [ -s "$ATUINOUT" ]; then
             tr '\0' '\n' < "$ATUINOUT" \
                 | {
+                    # atuin durations come as "500ms", "1.2s", "45m", "3h" — and
+                    # occasionally sub-ms units ("329us") or fractions ("1.5s");
+                    # reduce to integer ms, anything unparsable -> 0.
+                    dur_ms() {
+                        case "$1" in
+                            *ms) n=${1%ms} ;;
+                            *us | *µs | *ns) echo 0; return ;;
+                            *s)  n=${1%s} ;;
+                            *m)  n=${1%m} ;;
+                            *h)  n=${1%h} ;;
+                            *)   echo 0; return ;;
+                        esac
+                        n=${n%%.*}
+                        case "$n" in *[!0-9]*) echo 0; return ;; esac
+                        case "$1" in
+                            *ms) echo "$n" ;;
+                            *s)  echo $(( n * 1000 )) ;;
+                            *m)  echo $(( n * 60000 )) ;;
+                            *h)  echo $(( n * 3600000 )) ;;
+                        esac
+                    }
                     pending=""
                     while IFS= read -r line || [ -n "$line" ]; do
                         case "$line" in
@@ -184,13 +205,7 @@ import_atuin() {
                                 p_exit=${rest%%|*}; pending=${rest#*|}
                                 # "2026-08-02 05:09:14" -> epoch ms (GNU date)
                                 p_ts=$(date -d "$t" +%s%3N 2> /dev/null || true)
-                                case "$dur" in
-                                    *ms) p_dur=${dur%ms} ;;
-                                    *s)  p_dur=$(( ${dur%s} * 1000 )) ;;
-                                    *m)  p_dur=$(( ${dur%m} * 60000 )) ;;
-                                    *h)  p_dur=$(( ${dur%h} * 3600000 )) ;;
-                                    *)   p_dur=0 ;;
-                                esac
+                                p_dur=$(dur_ms "$dur")
                                 ;;
                             *)
                                 # continuation line of a multiline command
