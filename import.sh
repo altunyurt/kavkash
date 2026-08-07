@@ -155,17 +155,19 @@ import_fish() {
 }
 
 import_atuin() {
-    # Nothing to read? Skip silently: no atuin CLI, no default store, and
-    # no config that might point elsewhere. The plaintext path re-resolves
-    # db_path from config.toml later.
-    cfg="${XDG_CONFIG_HOME:-$HOME/.config}/atuin/config.toml"
-    if ! kav_have atuin && [ ! -f "${XDG_DATA_HOME:-$HOME/.local/share}/atuin/history.db" ] && [ ! -f "$cfg" ]; then
-        return 0
-    fi
-    echo "reading atuin history" >&2
     counter=0
     PSEUDO_BASE=2000000000
-    if kav_have atuin; then
+    f=${1:-}   # explicit --atuin=PATH (plaintext store); else infer
+    if [ -z "$f" ]; then
+        # Nothing to read? Skip silently: no atuin CLI, no default store,
+        # and no config that might point elsewhere. The plaintext path
+        # re-resolves db_path from config.toml later.
+        cfg="${XDG_CONFIG_HOME:-$HOME/.config}/atuin/config.toml"
+        if ! kav_have atuin && [ ! -f "${XDG_DATA_HOME:-$HOME/.local/share}/atuin/history.db" ] && [ ! -f "$cfg" ]; then
+            return 0
+        fi
+        if kav_have atuin; then
+            echo "reading atuin history" >&2
         ATUINOUT=$(mktemp "$tmpdir/kavkash-atuin.XXXXXX")
         if atuin history list -r false -f '{time}|{directory}|{duration}|{exit}|{command}' --print0 > "$ATUINOUT" 2> /dev/null && [ -s "$ATUINOUT" ]; then
             tr '\0' '\n' < "$ATUINOUT" \
@@ -255,21 +257,26 @@ $line"
         fi
         rm -f "$ATUINOUT"
     fi
-    # No CLI (or nothing read): read plaintext SQLite directly. Resolve the
-    # DB path like atuin does (config.toml db_path, else the default). The
-    # IFS='|' read keeps command LAST: commands may contain '|' and read
-    # assigns the remainder to the final variable.
-    data_dir="${XDG_DATA_HOME:-$HOME/.local/share}/atuin"
-    f="$data_dir/history.db"
-    if [ -f "$cfg" ]; then
-        db=$(sed -n 's/^[[:space:]]*db_path[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$cfg" | head -1)
-        [ -n "$db" ] && f=$db
+        # No CLI (or nothing read): fall through to plaintext SQLite.
+        # Resolve the DB path like atuin does (config.toml db_path, else
+        # the default). The IFS='|' read keeps command LAST: commands may
+        # contain '|' and read assigns the remainder to the final variable.
+        data_dir="${XDG_DATA_HOME:-$HOME/.local/share}/atuin"
+        f="$data_dir/history.db"
+        if [ -f "$cfg" ]; then
+            db=$(sed -n 's/^[[:space:]]*db_path[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$cfg" | head -1)
+            [ -n "$db" ] && f=$db
+        fi
+        case "$f" in
+            "~/"*) f="$HOME/${f#"~/"}" ;;
+        esac
+        f=$(printf '%s' "$f" | sed "s/\$USER/$USER/g")
+        [ -f "$f" ] || return 0
+    else
+        # Explicit --atuin=PATH: read that file directly (plaintext schema).
+        [ -f "$f" ] || { echo "import.sh: atuin db not found: $f" >&2; return 0; }
     fi
-    case "$f" in
-        "~/"*) f="$HOME/${f#"~/"}" ;;
-    esac
-    f=$(printf '%s' "$f" | sed "s/\$USER/$USER/g")
-    [ -f "$f" ] || return 0
+    echo "reading atuin history ($f)" >&2
     # schema variants: history_v2 (atuin v14-17) / history (v18+ and v1)
     table=""
     for t in history_v2 history; do
@@ -315,10 +322,52 @@ $line"
         }
 }
 
-import_bash
-import_zsh
-import_fish
-import_atuin
+# --- source selection --------------------------------------------------------
+# Sources are selected explicitly; with no options the usage is printed
+# (no flags == --help). install.sh passes --all so a plain install import
+# keeps working.
+usage() {
+    cat <<'EOF'
+usage: import.sh [OPTION...]
+
+Import shell/atuin history into the kavkash database. Sources must be
+selected explicitly; with no options this help is printed.
+
+  -b, --bash          import bash history (${HISTFILE:-~/.bash_history})
+  -z, --zsh           import zsh history (${HISTFILE:-~/.zsh_history})
+  -f, --fish          import fish history (fish_history)
+      --atuin         import atuin history (store inferred: config.toml
+                      db_path, else the default; the atuin CLI is preferred
+                      because v18+ stores are PASETO-encrypted)
+      --atuin=PATH    import atuin from PATH directly (plaintext
+                      history/history_v2 sqlite store; no CLI, no config)
+      --all           shorthand for -b -z -f --atuin
+  -h, --help          show this help and exit
+
+The import is additive: every parsed command becomes a row, duplicates
+included.
+EOF
+}
+
+want_bash=0; want_zsh=0; want_fish=0; want_atuin=0; atuin_db=""
+for a in "$@"; do
+    case "$a" in
+        -b | --bash)        want_bash=1 ;;
+        -z | --zsh)         want_zsh=1 ;;
+        -f | --fish)        want_fish=1 ;;
+        --atuin)            want_atuin=1 ;;
+        --atuin=*)          want_atuin=1; atuin_db=${a#--atuin=} ;;
+        --all)              want_bash=1; want_zsh=1; want_fish=1; want_atuin=1 ;;
+        -h | --help)        usage; exit 0 ;;
+        *) echo "import.sh: unknown option: $a" >&2; usage >&2; exit 2 ;;
+    esac
+done
+[ "$want_bash$want_zsh$want_fish$want_atuin" = "0000" ] && { usage; exit 0; }
+
+[ "$want_bash" = 1 ] && import_bash
+[ "$want_zsh" = 1 ] && import_zsh
+[ "$want_fish" = 1 ] && import_fish
+[ "$want_atuin" = 1 ] && import_atuin "$atuin_db"
 
 [ -s "$ENTRIES" ] || { echo "nothing to import (no history found)"; exit 0; }
 total=$(tr -cd '\036' < "$ENTRIES" | wc -c)

@@ -395,7 +395,7 @@ import_history() {
 
     if [ "$answer" = "y" ]; then
         say "kavkash: importing history..."
-        "$KAV_DATA_HOME/import.sh" || warn "history import failed (see error above)"
+        "$KAV_DATA_HOME/import.sh" --all || warn "history import failed (see error above)"
     fi
 }
 
