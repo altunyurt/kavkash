@@ -313,7 +313,11 @@ BEGIN {
     printf "INSERT INTO history (id, command, cwd, exit_code, duration_ms) SELECT printf('%%08x-%%04x-%%04x-%%04x-%%012x', (%s >> 16) & 0xffffffff, %s & 0xffff, 0x7000 | (abs(random()) & 0x0fff), 0xa000 | (abs(random()) & 0x0fff), abs(random()) & 0xffffffffffff), '%s', '%s', %s, %s WHERE NOT EXISTS (SELECT 1 FROM history WHERE command = '%s' AND substr(id, 1, 13) = printf('%%08x-%%04x', (%s >> 16) & 0xffffffff, %s & 0xffff));\n", ts, ts, cmd, cwd, dur, exitc, cmd, ts, ts
 }
 EOF
-awk -f "$AWKPROG" "$ENTRIES" > "$SQLOUT"
+if kav_have pv; then
+    pv -N "sql" "$ENTRIES" | awk -f "$AWKPROG" > "$SQLOUT"
+else
+    awk -f "$AWKPROG" "$ENTRIES" > "$SQLOUT"
+fi
 
 echo "inserting $total commands" >&2
 n_before=$(sqlite3 "$DB" "SELECT count(*) FROM history;")
@@ -323,7 +327,11 @@ n_before=$(sqlite3 "$DB" "SELECT count(*) FROM history;")
     # speeds up the atuin enrichment UPDATE and the live picker's UPDATEs.
     echo "CREATE INDEX IF NOT EXISTS idx_import_dedup ON history(command, substr(id, 1, 13));"
     echo "BEGIN;"
-    cat "$SQLOUT"
+    if kav_have pv; then
+        pv -N "insert" "$SQLOUT"
+    else
+        cat "$SQLOUT"
+    fi
     echo "COMMIT;"
 } | sqlite3 "$DB"
 n_after=$(sqlite3 "$DB" "SELECT count(*) FROM history;")
