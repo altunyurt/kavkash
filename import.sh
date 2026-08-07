@@ -170,6 +170,33 @@ import_atuin() {
         if atuin history list -r false -f '{time}|{directory}|{duration}|{exit}|{command}' --print0 > "$ATUINOUT" 2> /dev/null && [ -s "$ATUINOUT" ]; then
             tr '\0' '\n' < "$ATUINOUT" \
                 | {
+                    # atuin {time} is local wall-clock "YYYY-MM-DD HH:MM:SS".
+                    # Convert to epoch ms with pure arithmetic (a GNU date
+                    # spawn per record cost ~52 s per 50k rows). Howard
+                    # Hinnant's days_from_civil (proleptic Gregorian). The
+                    # local-TZ offset is constant for ordering purposes;
+                    # rows within an hour of a DST switch may swap order,
+                    # invisible to the picker.
+                    epoch_ms() {
+                        s=$1
+                        e_y=${s%%-*}; e_r=${s#*-}
+                        e_mo=${e_r%%-*}; e_r=${e_r#*-}
+                        e_d=${e_r%% *}; e_r=${e_r#* }
+                        e_hh=${e_r%%:*}; e_r=${e_r#*:}
+                        e_mi=${e_r%%:*}; e_se=${e_r#*:}
+                        # strip leading zeros: "08" is invalid octal in $(( ))
+                        e_y=${e_y#${e_y%%[1-9]*}};  e_mo=${e_mo#${e_mo%%[1-9]*}}
+                        e_d=${e_d#${e_d%%[1-9]*}};  e_hh=${e_hh#${e_hh%%[1-9]*}}
+                        e_mi=${e_mi#${e_mi%%[1-9]*}}; e_se=${e_se#${e_se%%[1-9]*}}
+                        e_y=$(( e_y - (e_mo <= 2) ))
+                        e_era=$(( e_y / 400 ))
+                        e_yoe=$(( e_y - e_era * 400 ))
+                        e_mp=$(( e_mo + (e_mo > 2 ? -3 : 9) ))
+                        e_doy=$(( (153 * e_mp + 2) / 5 + e_d - 1 ))
+                        e_doe=$(( e_yoe * 365 + e_yoe / 4 - e_yoe / 100 + e_doy ))
+                        e_days=$(( e_era * 146097 + e_doe - 719468 ))
+                        e_ts=$(( (e_days * 86400 + e_hh * 3600 + e_mi * 60 + e_se) * 1000 ))
+                    }
                     # atuin durations come as "500ms", "1.2s", "45m", "3h" — and
                     # occasionally sub-ms units ("329us") or fractions ("1.5s");
                     # reduce to integer ms, anything unparsable -> 0.
@@ -203,8 +230,15 @@ import_atuin() {
                                 p_dir=${rest%%|*}; rest=${rest#*|}
                                 dur=${rest%%|*};  rest=${rest#*|}
                                 p_exit=${rest%%|*}; pending=${rest#*|}
-                                # "2026-08-02 05:09:14" -> epoch ms (GNU date)
-                                p_ts=$(date -d "$t" +%s%3N 2> /dev/null || true)
+                                # "2026-08-02 05:09:14" -> epoch ms, arithmetic
+                                # only (no date subprocess per record)
+                                case "$t" in
+                                    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' '[0-9][0-9]:[0-9][0-9]:[0-9][0-9])
+                                        epoch_ms "$t"
+                                        ;;
+                                    *) e_ts="" ;;
+                                esac
+                                p_ts=$e_ts
                                 p_dur=$(dur_ms "$dur")
                                 ;;
                             *)
