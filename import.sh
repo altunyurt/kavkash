@@ -1,33 +1,24 @@
 #!/bin/sh
-# import.sh — import existing history (bash/zsh/fish + atuin) into kavkash DB.
+# import.sh — import shell/atuin history into the kavkash DB.
+# Additive: every parsed command becomes a row, duplicates included; each
+# occurrence keeps its own timestamp-derived UUIDv7 id.
 #
-# Runs standalone any time (install.sh invokes it when the user opts in).
-# Every parsed command becomes a row, duplicates included: shell histories
-# legitimately hold the same command many times, and each occurrence keeps
-# its own timestamp-derived id (a UUIDv7 minted from the row's original
-# timestamp below), so no import step ever suppresses a command.
-#
-# Sources and their formats:
-#   bash  ~/.bash_history            plain lines, or "#<epoch>" + line pairs
-#                                    when HISTTIMEFORMAT was set
-#   zsh   ${HISTFILE:-~/.zsh_history} plain lines, or extended ": <epoch>:<dur>;<cmd>"
-#   fish  ${XDG_DATA_HOME}/fish/fish_history   YAML: "- cmd:", "  when:", "  paths:"
-#   atuin (v17-): records.db absent, plaintext SQLite (history / history_v2)
-#   atuin (v18+): records.db — history is PASETO-encrypted, so it is read via
-#                 the atuin CLI ("history list -f ... --print0") which decrypts
+# Sources:
+#   bash  ~/.bash_history             plain lines, or "#<epoch>" pairs (HISTTIMEFORMAT)
+#   zsh   ${HISTFILE:-~/.zsh_history} plain lines, or ": <epoch>:<dur>;<cmd>"
+#   fish  ${XDG_DATA_HOME}/fish/fish_history  YAML entries
+#   atuin v17-: plaintext SQLite (history / history_v2), read directly
+#   atuin v18+: PASETO-encrypted, read via the atuin CLI which decrypts
 
 set -eu
 
-# Paths from includes.sh (same dir as this script).
 . "$(dirname -- "$(realpath -- "$0")")/includes.sh"
 
 DB="$KAV_DB_FILE"
 
 kav_have sqlite3 || kav_die "sqlite3 required for history import"
 
-# Ensure the schema exists (same as server.sh) so import works before the
-# first server run. Imported rows get a UUIDv7 id minted from their original
-# timestamp in SQL below, so ordering survives.
+# Same schema as server.sh, so import works before the daemon's first run.
 sqlite3 "$DB" "CREATE TABLE IF NOT EXISTS history (
     id TEXT PRIMARY KEY,
     command TEXT NOT NULL,
@@ -42,18 +33,11 @@ SQLOUT=$(mktemp "$tmpdir/kavkash-import.XXXXXX")
 trap 'rm -f "$ENTRIES" "$SQLOUT"' EXIT
 
 # emit <epoch_ms> <cmd> [<cwd> [<dur_ms> <exit> <src>]]
-# src=A marks atuin-sourced rows: their cwd/duration enrich existing rows
-# (see INSERT loop). Commands without a real timestamp get a deterministic
-# pseudo-timestamp from a per-parser line counter, so un-timestamped files
-# keep their order (newest last = first Up). bash and zsh share counter/
-# base 0 because both read $HISTFILE — the same physical lines must get the
-# same pseudo-timestamps or the shared file would be imported twice; fish
-# and atuin use disjoint bases.
-#
-# ENTRIES records are framed with 0x1E (record) / 0x1F (field) separators
-# instead of base64: shell-history commands never carry those bytes (and
-# processor.sh strips them anyway), and it lets the whole parse phase run
-# without spawning a subprocess per line.
+# src=A marks atuin rows: their cwd/duration enrich existing rows.
+# Invalid timestamps get a per-parser pseudo-ts (bash+zsh share base 0 —
+# both read $HISTFILE; fish and atuin use disjoint bases).
+# ENTRIES framing: 0x1E record / 0x1F field — commands can't contain those
+# bytes, so parsing needs no per-line subprocesses.
 counter=0
 PSEUDO_BASE=0
 
@@ -83,8 +67,7 @@ import_bash() {
                 case "$prev_ts" in *[!0-9]*) prev_ts="" ;; esac
                 ;;
             ": "[0-9]*:[0-9]*\;*)
-                # zsh extended-format line — not ours, skip (and don't
-                # treat the next line as if a # timestamp preceded it)
+                # zsh extended-format line; not ours
                 prev_ts=""
                 ;;
             *)
@@ -103,10 +86,10 @@ import_zsh() {
     counter=0
     while IFS= read -r line || [ -n "$line" ]; do
         case "$line" in
-            "#"*) # bash HISTTIMEFORMAT marker — not ours, skip
+            "#"*) # bash marker; not ours
                 continue
                 ;;
-            ": "*) # extended: ": <epoch>:<duration>;<command>"
+            ": "*) # extended: ": <epoch>:<dur>;<cmd>"
                 rest=${line#": "}
                 ts=${rest%%:*}
                 cmd=${rest#*:}
@@ -159,12 +142,10 @@ import_atuin() {
     PSEUDO_BASE=2000000000
     f=${1:-}   # explicit --atuin=PATH (plaintext store); else infer
     if [ -n "$f" ]; then
-        # Explicit --atuin=PATH: skip the guard, the atuin CLI and the
-        # config inference entirely — read PATH directly below.
+        # Explicit --atuin=PATH: skip guard/CLI/config — read PATH directly.
         :
     else
-        # Infer mode only (--atuin with no path): the guard and the CLI
-        # below never run when an explicit path was given.
+        # Infer mode only — never reached for an explicit path.
         cfg="${XDG_CONFIG_HOME:-$HOME/.config}/atuin/config.toml"
         if ! kav_have atuin && [ ! -f "${XDG_DATA_HOME:-$HOME/.local/share}/atuin/history.db" ] && [ ! -f "$cfg" ]; then
             return 0
@@ -172,16 +153,13 @@ import_atuin() {
         if kav_have atuin; then
             echo "reading atuin history" >&2
             ATUINOUT=$(mktemp "$tmpdir/kavkash-atuin.XXXXXX")
-        if atuin history list -r false -f '{time}|{directory}|{duration}|{exit}|{command}' --print0 > "$ATUINOUT" 2> /dev/null && [ -s "$ATUINOUT" ]; then
+            if atuin history list -r false -f '{time}|{directory}|{duration}|{exit}|{command}' --print0 > "$ATUINOUT" 2> /dev/null && [ -s "$ATUINOUT" ]; then
             tr '\0' '\n' < "$ATUINOUT" \
                 | {
-                    # atuin {time} is local wall-clock "YYYY-MM-DD HH:MM:SS".
-                    # Convert to epoch ms with pure arithmetic (a GNU date
-                    # spawn per record cost ~52 s per 50k rows). Howard
-                    # Hinnant's days_from_civil (proleptic Gregorian). The
-                    # local-TZ offset is constant for ordering purposes;
-                    # rows within an hour of a DST switch may swap order,
-                    # invisible to the picker.
+                    # Wall-clock "YYYY-MM-DD HH:MM:SS" -> epoch ms by pure
+                    # arithmetic (no date subprocess per row). UTC-based:
+                    # a constant TZ offset preserves ordering; rows within
+                    # an hour of a DST switch may swap order (invisible).
                     epoch_ms() {
                         s=$1
                         e_y=${s%%-*}; e_r=${s#*-}
@@ -202,9 +180,8 @@ import_atuin() {
                         e_days=$(( e_era * 146097 + e_doe - 719468 ))
                         e_ts=$(( (e_days * 86400 + e_hh * 3600 + e_mi * 60 + e_se) * 1000 ))
                     }
-                    # atuin durations come as "500ms", "1.2s", "45m", "3h" — and
-                    # occasionally sub-ms units ("329us") or fractions ("1.5s");
-                    # reduce to integer ms, anything unparsable -> 0.
+                    # atuin durations ("500ms", "1.2s", "45m", "3h", "329us")
+                    # -> integer ms; anything unparsable -> 0.
                     dur_ms() {
                         case "$1" in
                             *ms) n=${1%ms} ;;
@@ -227,7 +204,7 @@ import_atuin() {
                     while IFS= read -r line || [ -n "$line" ]; do
                         case "$line" in
                             [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*)
-                                # start of a new record: flush the previous one
+                                # new record: flush previous
                                 if [ -n "$pending" ]; then
                                     emit "$p_ts" "$pending" "$p_dir" "$p_dur" "$p_exit" A
                                 fi
@@ -235,8 +212,7 @@ import_atuin() {
                                 p_dir=${rest%%|*}; rest=${rest#*|}
                                 dur=${rest%%|*};  rest=${rest#*|}
                                 p_exit=${rest%%|*}; pending=${rest#*|}
-                                # "2026-08-02 05:09:14" -> epoch ms, arithmetic
-                                # only (no date subprocess per record)
+                                # wall-clock string -> epoch ms; malformed -> pseudo-ts
                                 case "$t" in
                                     [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' '[0-9][0-9]:[0-9][0-9]:[0-9][0-9])
                                         epoch_ms "$t"
@@ -247,7 +223,7 @@ import_atuin() {
                                 p_dur=$(dur_ms "$dur")
                                 ;;
                             *)
-                                # continuation line of a multiline command
+                                # multiline continuation
                                 [ -n "$pending" ] && pending="$pending
 $line"
                                 ;;
@@ -260,10 +236,8 @@ $line"
         fi
         rm -f "$ATUINOUT"
     fi
-        # No CLI (or nothing read): fall through to plaintext SQLite.
-        # Resolve the DB path like atuin does (config.toml db_path, else
-        # the default). The IFS='|' read keeps command LAST: commands may
-        # contain '|' and read assigns the remainder to the final variable.
+        # Fallback: read plaintext SQLite directly (config.toml db_path,
+        # else the default).
         data_dir="${XDG_DATA_HOME:-$HOME/.local/share}/atuin"
         f="$data_dir/history.db"
         if [ -f "$cfg" ]; then
@@ -271,8 +245,7 @@ $line"
             [ -n "$db" ] && f=$db
         fi
     fi
-    # Expand ~/ and $USER in whatever path we ended up with — an explicit
-    # --atuin=PATH may carry a literal tilde the shell won't expand.
+    # Expand ~/ and $USER (an explicit path may carry a literal tilde).
     case "$f" in
         "~/"*) f="$HOME/${f#"~/"}" ;;
     esac
@@ -291,23 +264,19 @@ $line"
         fi
     done
     [ -n "$table" ] || return 0
-    # atuin v18+ stores ns timestamps; older versions use ms. Detect from data.
+    # v18+ stores ns timestamps, older ms — detect from data.
     ns=$(sqlite3 "$f" "SELECT max(timestamp) FROM $table;")
     div=1
     [ "${#ns}" -gt 16 ] && div=1000000
-    # cwd may be NULL in some versions. Order by timestamp so the import
-    # follows atuin's chronology even if the table's rowid order differs.
-    # exit/duration come before command — command must stay the LAST field so
-    # pipe-containing commands survive the IFS='|' read. Records start with
-    # the numeric ts; any line without it is a continuation of the previous
-    # command (multiline commands) and is re-attached like the CLI path does.
+    # cwd may be NULL. command stays LAST so pipes survive the IFS='|'
+    # read; lines without a leading ts are multiline continuations.
     sqlite3 -noheader "$f" "SELECT CAST(timestamp/$div AS INTEGER), COALESCE(cwd,''), exit, CAST(COALESCE(duration,0)/$div AS INTEGER), command FROM $table ORDER BY timestamp ASC;" \
         | {
             pending=""
             while IFS= read -r line || [ -n "$line" ]; do
                 case "$line" in
                     [0-9]*\|*)
-                        # start of a new record: flush the previous one
+                        # new record: flush previous
                         if [ -n "$pending" ]; then
                             emit "$p_ts" "$pending" "$p_cwd" "$p_dur" "$p_exit" A
                         fi
@@ -317,7 +286,7 @@ $line"
                         p_dur=${rest%%|*}; pending=${rest#*|}
                         ;;
                     *)
-                        # continuation line of a multiline command
+                        # multiline continuation
                         [ -n "$pending" ] && pending="$pending
 $line"
                         ;;
@@ -327,10 +296,7 @@ $line"
         }
 }
 
-# --- source selection --------------------------------------------------------
-# Sources are selected explicitly; with no options the usage is printed
-# (no flags == --help). install.sh passes --all so a plain install import
-# keeps working.
+# --- source selection (no flags == --help; install.sh passes --all) --------
 usage() {
     cat <<'EOF'
 usage: import.sh [OPTION...]
@@ -378,17 +344,11 @@ done
 total=$(tr -cd '\036' < "$ENTRIES" | wc -c)
 echo "parsed $total commands" >&2
 
-# Bulk insert in a single sqlite3 session. Every row is inserted as-is —
-# duplicates are deliberately NOT suppressed. atuin rows (src=A) first
-# enrich any existing cwd-less row (a bash/zsh/fish import may already hold
-# the same command without a path), then insert their own row with the
-# atuin metadata. The SQL is generated by ONE awk pass — it reads the
-# 0x1E/0x1F-framed ENTRIES directly (no per-row base64/sed spawns; a 50k-
-# command import now takes seconds) and emits the statements below. Each id
-# is a UUIDv7 minted from the row's own timestamp, so the imported
-# chronology maps onto the id ordering (ORDER BY id DESC == time order).
-# The SQL printf() format specifiers (%08x …) are escaped as %% for AWK's
-# printf; the ts arithmetic itself happens inside sqlite, not in awk.
+# Bulk insert in one sqlite3 session, via one awk pass over ENTRIES.
+# Every row is inserted as-is (additive, no dedup). atuin rows (src=A)
+# first enrich any existing cwd-less row. The id is a UUIDv7 minted from
+# the row's timestamp (ORDER BY id DESC == time order). SQL printf()
+# specifiers are %% for awk; ts arithmetic happens inside sqlite.
 AWKPROG=$(mktemp "$tmpdir/kavkash-awk.XXXXXX")
 trap 'rm -f "$ENTRIES" "$SQLOUT" "$AWKPROG"; [ -n "${KAV_TMP_IDX:-}" ] && sqlite3 "$DB" "DROP INDEX IF EXISTS idx_import_cmd;"' EXIT
 cat > "$AWKPROG" <<'EOF'
@@ -417,17 +377,11 @@ else
 fi
 
 echo "inserting $total commands" >&2
-# Index hygiene around the bulk load (matters more on re-imports of an
-# already-large table):
-#   - idx_import_dedup is a leftover from older imports — nothing queries
-#     that expression index anymore, but every INSERT still maintains it.
-#     Drop it once; it never comes back.
-#   - the atuin enrichment UPDATE probes WHERE command='...' — a plain
-#     index on command turns that from a full table scan per atuin row
-#     (5000 atuin rows against a 100k-row table: 72 s) into a lookup
-#     (~5 s). It is dropped again after the load so the live daemon never
-#     pays index maintenance on its per-command INSERTs. Built only when
-#     atuin rows are present (the generated SQL contains their UPDATEs).
+# Index hygiene: drop the legacy idx_import_dedup (unused, but every
+# INSERT maintains it). The atuin enrichment UPDATE probes WHERE
+# command='...' — a plain command index turns that from a full scan per
+# row into a lookup; dropped after the load so the live daemon pays no
+# maintenance, built only when atuin rows are present.
 sqlite3 "$DB" "DROP INDEX IF EXISTS idx_import_dedup;"
 if grep -q '^UPDATE history SET' "$SQLOUT"; then
     sqlite3 "$DB" "CREATE INDEX IF NOT EXISTS idx_import_cmd ON history(command);"
