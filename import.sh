@@ -287,7 +287,7 @@ echo "parsed $total commands" >&2
 # The SQL printf() format specifiers (%08x …) are escaped as %% for AWK's
 # printf; the ts arithmetic itself happens inside sqlite, not in awk.
 AWKPROG=$(mktemp "$tmpdir/kavkash-awk.XXXXXX")
-trap 'rm -f "$ENTRIES" "$SQLOUT" "$AWKPROG"' EXIT
+trap 'rm -f "$ENTRIES" "$SQLOUT" "$AWKPROG"; sqlite3 "$DB" "DROP INDEX IF EXISTS idx_import_cmd;"' EXIT
 cat > "$AWKPROG" <<'EOF'
 BEGIN {
     RS = "\036"   # 0x1E record separator (matches emit)
@@ -314,6 +314,17 @@ else
 fi
 
 echo "inserting $total commands" >&2
+# Index hygiene around the bulk load (matters more on re-imports of an
+# already-large table):
+#   - idx_import_dedup is a leftover from older imports — nothing queries
+#     that expression index anymore, but every INSERT still maintains it.
+#     Drop it once; it never comes back.
+#   - the atuin enrichment UPDATE probes WHERE command='...' — a plain
+#     index on command turns that from a full table scan per atuin row
+#     (5000 atuin rows against a 100k-row table: 72 s) into a lookup
+#     (~5 s). It is dropped again after the load so the live daemon never
+#     pays index maintenance on its per-command INSERTs.
+sqlite3 "$DB" "DROP INDEX IF EXISTS idx_import_dedup; CREATE INDEX IF NOT EXISTS idx_import_cmd ON history(command);"
 n_before=$(sqlite3 "$DB" "SELECT count(*) FROM history;")
 {
     echo "BEGIN;"
@@ -324,6 +335,7 @@ n_before=$(sqlite3 "$DB" "SELECT count(*) FROM history;")
     fi
     echo "COMMIT;"
 } | sqlite3 "$DB"
+sqlite3 "$DB" "DROP INDEX IF EXISTS idx_import_cmd;"
 n_after=$(sqlite3 "$DB" "SELECT count(*) FROM history;")
 new=$((n_after - n_before))
 printf 'imported %d commands into %s\n' "$new" "$DB"
