@@ -1,10 +1,10 @@
 #!/usr/bin/dash
 # hook.sh - Called by shell hooks to record commands.
-#   W CMD CWD            mint a UUIDv7 id, store the command, PRINT the id
+#   W CMD CWD            mint an ns-since-epoch id, store the command, PRINT the id
 #                        (correlation key for the later U)
 #   U ID EXIT DURATION   store the real exit code and duration
-# The id is the row's primary key AND timestamp (UUIDv7 sorts
-# chronologically).
+# The id is the row's primary key AND timestamp: ns since epoch, so
+# larger id == later command (ORDER BY id DESC == newest first).
 
 # Source includes.sh relative to THIS script, not CWD: hook.sh is launched
 # from interactive shells whose CWD is arbitrary.
@@ -24,7 +24,7 @@ case "$MODE" in
         CWD="$3"
         # Skip empty commands (defensive — shouldn't happen but harmless).
         [ -z "$CMD" ] && exit 0
-        ID=$(kav_uuidv7)
+        ID=$(kav_new_id)
         MSG=$(printf '1:W,%s:%s,%s:%s,%s:%s,' \
             "$(_ns_len "$CMD")" "$CMD" \
             "$(_ns_len "$CWD")" "$CWD" \

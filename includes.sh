@@ -22,25 +22,52 @@ kav_have() { command -v "$1" > /dev/null 2>&1; }
 kav_say() { printf '%s\n' "$*"; }
 kav_warn() { printf 'warning: %s\n' "$*" >&2; }
 
-# RFC 9562 UUIDv7: 48-bit ms timestamp (id order == time order), version 7,
-# variant 10, 72 random bits. /dev/urandom, falling back to date+pid.
-kav_uuidv7() {
-    ts=$(printf '%012x' "$(date +%s%3N 2> /dev/null || echo "$(date +%s)000")")
-    rand=$(od -An -N9 -tx1 /dev/urandom 2> /dev/null | tr -d ' \n')
-    [ "${#rand}" -ge 18 ] || rand=$(printf '%06x%06x%06x' "$$" "$(date +%s)" "$$")
-    # dash has no ${var:off:len}; cut does the same slicing
-    printf '%s-%s-7%s-a%s-%s\n' \
-        "$(printf '%s' "$ts" | cut -c1-8)" \
-        "$(printf '%s' "$ts" | cut -c9-12)" \
-        "$(printf '%s' "$rand" | cut -c1-3)" \
-        "$(printf '%s' "$rand" | cut -c4-6)" \
-        "$(printf '%s' "$rand" | cut -c7-18)"
+# Nanosecond epoch — the id doubles as the row's timestamp. INTEGER
+# PRIMARY KEY aliases the rowid, so the table itself is stored in id
+# (== time) order: ORDER BY id DESC is a pure reverse leaf scan.
+# GNU date's %N (19 digits, int64-safe past year 2200); fallbacks keep
+# ms/seconds precision (id uniqueness then relies on command spacing).
+kav_new_id() {
+    date +%s%N 2> /dev/null \
+        || printf '%s000000' "$(date +%s%3N 2> /dev/null || date +%s)"
 }
 
-# kav_uuidv7_decode ID — human-readable time from a UUIDv7 id (debug helper).
-kav_uuidv7_decode() {
-    hex_ts=$(printf '%s' "$1" | tr -d '-' | cut -c1-12)
-    ms_ts=$((0x$hex_ts))
-    date -d "@$((ms_ts / 1000))" +"%Y-%m-%d %H:%M:%S" 2> /dev/null || printf '%s\n' "$ms_ts"
+# kav_new_id_to_time ID — human-readable time from an ns-since-epoch id.
+kav_new_id_to_time() {
+    date -d "@$(( $1 / 1000000000 ))" +"%Y-%m-%d %H:%M:%S" 2> /dev/null || printf '%s\n' "$1"
+}
+
+# Create/migrate the history table. v0.2.x stored id as a TEXT UUIDv7
+# (ms timestamp in hex); the id is now ns-since-epoch. Migration: the old
+# id's first 12 hex chars decode to ms, re-expressed as ns. SQL can't
+# parse '0x...' text (CAST gives 0), so each row's id is converted in dash
+# ($((0x...)) is exact 64-bit) from a hex(quote()) dump — hex keeps
+# multiline commands on one line. The history_old check makes the carry-
+# over rerunnable after a crash between the rename and the inserts.
+kav_ensure_history_schema() {
+    if sqlite3 "$KAV_DB_FILE" "SELECT 1 FROM sqlite_master WHERE type='table' AND name='history' AND sql LIKE '%id TEXT%';" | grep -q 1; then
+        sqlite3 "$KAV_DB_FILE" "BEGIN; ALTER TABLE history RENAME TO history_old; CREATE TABLE history (id INTEGER PRIMARY KEY, command TEXT NOT NULL, cwd TEXT NOT NULL, exit_code INTEGER NOT NULL, duration_ms INTEGER NOT NULL); COMMIT;"
+    fi
+    if sqlite3 "$KAV_DB_FILE" "SELECT 1 FROM sqlite_master WHERE type='table' AND name='history_old';" | grep -q 1; then
+        # old id is xxxxxxxx-xxxx-...: chars 1-8 + 10-13 are the ms in hex.
+        # hex() of the raw command keeps multiline commands on one line;
+        # CAST(unhex(...) AS TEXT) restores them (no quote() wrapper, so no
+        # unescaping). The 48-bit ms value needs dash $((0x...)) — mawk and
+        # sqlite's CAST can't parse '0x' text, and mawk %d is 32-bit.
+        prev=0
+        sqlite3 -noheader "$KAV_DB_FILE" "SELECT id, hex(command), hex(COALESCE(cwd,'')), exit_code, duration_ms FROM history_old ORDER BY substr(replace(id, '-', ''), 1, 12);" |
+        while IFS='|' read -r oldid hcmd hcwd exitc dur; do
+            mshex=$(printf '%s' "$oldid" | cut -c1-8,10-13)  # ms in hex
+            ns=$((0x$mshex * 1000000))
+            # old ids carried a random suffix: two rows can share the same
+            # ms (second-resolution atuin, bash+zsh pseudo range); bump
+            # monotonic so the PK never collides.
+            [ "$ns" -le "$prev" ] && ns=$((prev + 1))
+            prev=$ns
+            printf "INSERT INTO history VALUES (%s, CAST(unhex('%s') AS TEXT), CAST(unhex('%s') AS TEXT), %s, %s);\n" "$ns" "$hcmd" "$hcwd" "$exitc" "$dur"
+        done | sqlite3 "$KAV_DB_FILE"
+        sqlite3 "$KAV_DB_FILE" "DROP TABLE history_old;"
+    fi
+    sqlite3 "$KAV_DB_FILE" "CREATE TABLE IF NOT EXISTS history (id INTEGER PRIMARY KEY, command TEXT NOT NULL, cwd TEXT NOT NULL, exit_code INTEGER NOT NULL, duration_ms INTEGER NOT NULL);"
 }
 

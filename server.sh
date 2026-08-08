@@ -20,15 +20,9 @@ fi
 # Path to processor.sh (resolved here, relative to this script)
 KAV_PROC_SCRIPT="${_SCRIPT_DIR}/processor.sh"
 
-# Create the schema (id is a UUIDv7: it doubles as the write timestamp, so
-# there is no separate timestamp/corr column).
-sqlite3 "$KAV_DB_FILE" "CREATE TABLE IF NOT EXISTS history (
-    id TEXT PRIMARY KEY,
-    command TEXT NOT NULL,
-    cwd TEXT NOT NULL,
-    exit_code INTEGER NOT NULL,
-    duration_ms INTEGER NOT NULL
-);"
+# Schema: id is ns-since-epoch (INTEGER PRIMARY KEY = rowid alias, so the
+# table is stored in time order); created/migrated by includes.sh.
+kav_ensure_history_schema
 
 # Remove stale socket file from a previous crash
 rm -f "$KAV_SOCK_FILE"

@@ -2,7 +2,8 @@
 # import.sh — import shell/atuin history into the kavkash DB.
 # Idempotent: re-running imports nothing new — rows deduplicate on
 # (command, cwd, timestamp), while the same command at different times
-# keeps every occurrence. Each row gets a timestamp-derived UUIDv7 id.
+# keeps every occurrence. Each row's id is the ns-since-epoch timestamp
+# (INTEGER PRIMARY KEY, so the table itself is stored in time order).
 #
 # Sources:
 #   bash  ~/.bash_history             plain lines, or "#<epoch>" pairs (HISTTIMEFORMAT)
@@ -19,14 +20,9 @@ DB="$KAV_DB_FILE"
 
 kav_have sqlite3 || kav_die "sqlite3 required for history import"
 
-# Same schema as server.sh, so import works before the daemon's first run.
-sqlite3 "$DB" "CREATE TABLE IF NOT EXISTS history (
-    id TEXT PRIMARY KEY,
-    command TEXT NOT NULL,
-    cwd TEXT NOT NULL,
-    exit_code INTEGER NOT NULL,
-    duration_ms INTEGER NOT NULL
-);"
+# Same schema as server.sh, so import works before the daemon's first
+# run (also migrates a pre-ns TEXT-id table).
+kav_ensure_history_schema
 
 tmpdir=${TMPDIR:-/tmp}
 ENTRIES=$(mktemp "$tmpdir/kavkash-import.XXXXXX")
@@ -59,7 +55,7 @@ function off_min(s,   sign, hh, mm) {
 # flush the pending record; invalid timestamps get a pseudo-ts
 function flush(   ts) {
     if (pending == "") return
-    if (p_ts !~ /^[0-9]+$/) ts = PSEUDO + n; else ts = p_ts
+    if (p_ts !~ /^[0-9]+$/) ts = (PSEUDO + n) "000000"; else ts = p_ts
     printf "%s\037%s\037%s\037%s\037%s\037A\036", ts, pending, p_cwd, p_dur, p_exit
     n++
     pending = ""
@@ -69,7 +65,8 @@ function flush(   ts) {
 # (proleptic Gregorian). atuin {time} is LOCAL wall-clock: the caller
 # passes per-day UTC offsets, which are subtracted here, so the result
 # is the real epoch on any host (constant offsets, and ±1h for a few
-# hours on the two DST-transition days per year).
+# hours on the two DST-transition days per year). The caller appends
+# "000000" to make the ns id.
 function epoch_ms(s,   y, mo, d, hh, mi, se, era, yoe, mp, doy, doe, days) {
     y  = substr(s, 1, 4) + 0
     mo = substr(s, 6, 2) + 0
@@ -104,7 +101,8 @@ function dur_ms(d,   u, x) {
     start = 0
     if (MODE == "cli") {
         if ($0 ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] /) start = 1
-    } else if ($0 ~ /^[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]\|/) {
+    } else if ($0 ~ /^[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]\|/) {
+        # 19-digit ns id (the row's timestamp)
         start = 1
     }
     if (start) {
@@ -118,7 +116,9 @@ function dur_ms(d,   u, x) {
         for (i = 6; i <= nf; i++) pending = pending "|" F[i]
         if (MODE == "cli") {
             if (p_ts ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9]$/)
-                p_ts = epoch_ms(p_ts) - offmap[substr(F[1], 1, 10)] * 60000
+                # epoch_ms yields ms; append 6 digits for ns. String
+                # concat, not arithmetic: 19 digits exceed awk's double.
+                p_ts = (epoch_ms(p_ts) - offmap[substr(F[1], 1, 10)] * 60000) "000000"
             else
                 p_ts = ""
         } else if (p_ts !~ /^[0-9]+$/) {
@@ -134,10 +134,11 @@ EOF
 
 
 
-# emit <epoch_ms> <cmd> [<cwd> [<dur_ms> <exit> <src>]]
-# src=A marks atuin rows: their cwd/duration enrich existing rows.
-# Invalid timestamps get a per-parser pseudo-ts (bash+zsh share base 0 —
-# both read $HISTFILE; fish and atuin use disjoint bases).
+# emit <ts_ns> <cmd> [<cwd> [<dur_ms> <exit> <src>]]
+# ts is the ns-since-epoch id (= timestamp). Invalid timestamps get a
+# per-parser pseudo-ts, scaled to ns like the migration does (old rows
+# were ms-scale counters): bash 0, zsh 3e9, fish 1e9, atuin 2e9 — disjoint
+# ranges, so equal counters across parsers can't collide on the PK.
 # ENTRIES framing: 0x1E record / 0x1F field — commands can't contain those
 # bytes, so parsing needs no per-line subprocesses.
 counter=0
@@ -153,7 +154,7 @@ emit() {
     exit=${5:-}
     src=${6:-}
     [ -n "$cmd" ] || return 0
-    case "$ts" in '' | *[!0-9]*) ts=$((PSEUDO_BASE + counter)) ;; esac
+    case "$ts" in '' | *[!0-9]*) ts=$(((PSEUDO_BASE + counter) * 1000000)) ;; esac
     printf '%s\037%s\037%s\037%s\037%s\037%s\036' "$ts" "$cmd" "$cwd" "$dur" "$exit" "$src" >&3
 }
 
@@ -168,6 +169,7 @@ import_bash() {
             \#*)
                 prev_ts=${line#\#}
                 case "$prev_ts" in *[!0-9]*) prev_ts="" ;; esac
+                [ -n "$prev_ts" ] && prev_ts=$((prev_ts * 1000000000)) # s -> ns
                 ;;
             *)
                 [ -z "$line" ] && { prev_ts=""; continue; }
@@ -183,6 +185,7 @@ import_zsh() {
     [ -f "$f" ] || return 0
     echo "reading $f ($(wc -l < "$f") lines)" >&2
     counter=0
+    PSEUDO_BASE=3000000000
     while IFS= read -r line || [ -n "$line" ]; do
         case "$line" in
             "#"*) # bash marker; not ours
@@ -193,6 +196,7 @@ import_zsh() {
                 ts=${rest%%:*}
                 cmd=${rest#*:}
                 cmd=${cmd#*;}
+                [ -n "$ts" ] && ts=$((ts * 1000000000)) # s -> ns
                 ;;
             *)
                 ts=""
@@ -222,7 +226,7 @@ import_fish() {
             "  when: "*)
                 ts=${line#"  when: "}
                 case "$ts" in *[!0-9]*) ts="" ;; esac
-                [ -n "$ts" ] && ts=$((ts * 1000)) # fish stores epoch seconds
+                [ -n "$ts" ] && ts=$((ts * 1000000000)) # fish stores epoch seconds
                 ;;
             "  paths:"*)
                 : # ignore path lists
@@ -304,13 +308,13 @@ import_atuin() {
         fi
     done
     [ -n "$table" ] || return 0
-    # v18+ stores ns timestamps, older ms — detect from data.
+    # v18+ stores ns timestamps, older ms — detect from data; both become
+    # ns ids. cwd may be NULL. command stays LAST so pipes survive the
+    # IFS='|' read; lines without a leading ts are multiline continuations.
     ns=$(sqlite3 "$f" "SELECT max(timestamp) FROM $table;")
-    div=1
-    [ "${#ns}" -gt 16 ] && div=1000000
-    # cwd may be NULL. command stays LAST so pipes survive the IFS='|'
-    # read; lines without a leading ts are multiline continuations.
-    sqlite3 -noheader "$f" "SELECT CAST(timestamp/$div AS INTEGER), COALESCE(cwd,''), exit, CAST(COALESCE(duration,0)/$div AS INTEGER), command FROM $table ORDER BY timestamp ASC;" \
+    mult=1
+    [ "${#ns}" -le 16 ] && mult=1000000
+    sqlite3 -noheader "$f" "SELECT CAST(timestamp*$mult AS INTEGER), COALESCE(cwd,''), exit, CAST(COALESCE(duration,0)*$mult AS INTEGER), command FROM $table ORDER BY timestamp ASC;" \
         | awk -v MODE=plain -v PSEUDO="$PSEUDO_BASE" -f "$ATUINPARSE" >> "$ENTRIES"
 }
 
@@ -364,10 +368,10 @@ echo "parsed $total commands" >&2
 
 # Bulk insert in one sqlite3 session, via one awk pass over ENTRIES.
 # atuin rows (src=A) first enrich any existing cwd-less row. Rows dedup
-# on (command, cwd, timestamp) — the timestamp is the id's UUIDv7 prefix
-# (ORDER BY id DESC == time order), so re-runs insert nothing while the
-# same command at different times keeps every occurrence. SQL printf()
-# specifiers are %% for awk; ts arithmetic happens inside sqlite.
+# on (command, cwd, id) — id IS the ns timestamp, so re-runs insert
+# nothing while the same command at different times keeps every
+# occurrence. ORDER BY id DESC == time order (INTEGER PRIMARY KEY = the
+# table's rowid).
 AWKPROG=$(mktemp "$tmpdir/kavkash-awk.XXXXXX")
 trap 'rm -f "$ENTRIES" "$SQLOUT" "$AWKPROG" "$ATUINPARSE" "$DAYS" "$OFFS"; [ -n "${KAV_TMP_IDX:-}" ] && sqlite3 "$DB" "DROP INDEX IF EXISTS idx_import_cmd;"' EXIT
 cat > "$AWKPROG" <<'EOF'
@@ -375,6 +379,25 @@ BEGIN {
     RS = "\036"   # 0x1E record separator (matches emit)
     FS = "\037"   # 0x1F field separator
 }
+
+# +1 on a decimal string (19-digit ns exceeds awk's double precision, so
+# the bump is done as text; digits-only input, carry handled).
+function inc(s,   i, d, c, out) {
+    c = 1
+    out = ""
+    for (i = length(s); i >= 1; i--) {
+        d = substr(s, i, 1) + c
+        if (d > 9) { d = 0; c = 1 } else c = 0
+        out = d out
+    }
+    if (c) out = "1" out
+    return out
+}
+function incs(s, k,   i) {
+    for (i = 1; i <= k; i++) s = inc(s)
+    return s
+}
+
 {
     cmd = $2
     if (cmd == "") next
@@ -384,13 +407,22 @@ BEGIN {
     ts = $1
     dur = $4 + 0
     exitc = $5 + 0
+    # Same ts from different rows — same-second atuin records, or equal
+    # pseudo counters from different files — would collide on the integer
+    # PK (the old UUIDs absorbed this with their random suffix). Bump per
+    # equal-ts group (deterministic: the stream is stable per source, so
+    # re-runs compute the same ids). The stream may be newest-first (real
+    # atuin CLI), so only EQUAL values bump — never smaller ones.
+    cnt[ts]++
+    if (cnt[ts] > 1) ts = incs(ts, cnt[ts] - 1)
     if ($6 == "A")
         printf "UPDATE history SET cwd='%s', duration_ms=%s, exit_code=%s WHERE command='%s' AND cwd='';\n", cwd, dur, exitc, cmd
-    # Idempotent: skip when (command, cwd, timestamp) already exists. The
-    # timestamp is the UUIDv7 id's first 13 chars (ts>>16 and ts&0xffff),
-    # so no extra column is needed; a re-import produces identical
-    # (command, cwd, ts) rows and inserts nothing.
-    printf "INSERT INTO history (id, command, cwd, exit_code, duration_ms) SELECT printf('%%08x-%%04x-%%04x-%%04x-%%012x', (%s >> 16) & 0xffffffff, %s & 0xffff, 0x7000 | (abs(random()) & 0x0fff), 0xa000 | (abs(random()) & 0x0fff), abs(random()) & 0xffffffffffff), '%s', '%s', %s, %s WHERE NOT EXISTS (SELECT 1 FROM history WHERE substr(id, 1, 13) = printf('%%08x-%%04x', (%s >> 16) & 0xffffffff, %s & 0xffff) AND command='%s' AND cwd='%s');\n", ts, ts, cmd, cwd, dur, exitc, ts, ts, cmd, cwd
+    # Idempotent: skip when (command, cwd, id) already exists — id IS the
+    # timestamp, so this is the (command, cwd, ts) dedup. A re-import
+    # produces identical ids and inserts nothing. The ts field is passed
+    # through as text: it is 19-digit ns and would lose precision in awk
+    # arithmetic (%s prints the string as-is).
+    printf "INSERT INTO history (id, command, cwd, exit_code, duration_ms) SELECT %s, '%s', '%s', %s, %s WHERE NOT EXISTS (SELECT 1 FROM history WHERE id=%s AND command='%s' AND cwd='%s');\n", ts, cmd, cwd, dur, exitc, ts, cmd, cwd
 }
 EOF
 

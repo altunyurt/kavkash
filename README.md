@@ -14,7 +14,7 @@ shell Up/Ctrl+R fzf picker ← picker.sh → query.sh ←───────�
 
 ## Components
 
-- **includes.sh** — shared XDG paths and the UUIDv7 id builder
+- **includes.sh** — shared XDG paths, the ns-since-epoch id builder, schema creation/migration
 - **hook.sh** — mints ids, sends `W`/`U` messages from shell hooks
 - **server.sh** — socat daemon on the Unix socket
 - **processor.sh** — netstring parser, message routing, SQLite
@@ -41,8 +41,9 @@ natively.
 
 Netstrings (`len:payload,`), one field per netstring, over the Unix socket.
 
-- **W** `cmd,cwd,id` — command started. `id` is a UUIDv7: the row's primary
-  key *and* timestamp (id order == time order). fish/zsh fire this in
+- **W** `cmd,cwd,id` — command started. `id` is ns-since-epoch: the row's
+  primary key *and* timestamp (INTEGER PRIMARY KEY = rowid, so the table
+  is stored in time order). fish/zsh fire this in
   preexec; bash synthesizes one with a DEBUG trap, plus a fire on the
   prompt itself that catches lines the trap can't see directly (function
   definitions are recorded there, with exit code and duration). `exit` is
@@ -57,7 +58,7 @@ Netstrings (`len:payload,`), one field per netstring, over the Unix socket.
   query and fzf filters in-memory — the server-side subsequence matcher
   was removed; the query field is ignored.
 
-Example: `1:W,2:ls,10:/home/user,36:018f2a3b-1c2d-7000-8000-9a8b7c6d5e4f,`
+Example: `1:W,2:ls,10:/home/user,19:1786230239695766534,`
 
 ## Installation
 

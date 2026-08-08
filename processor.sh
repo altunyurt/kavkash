@@ -5,7 +5,7 @@
 
 #
 # Wire protocol: concatenated netstrings ("len:payload,").
-#   W cmd cwd id            write (preexec; id is a UUIDv7 = row timestamp)
+#   W cmd cwd id            write (preexec; id = ns-since-epoch row timestamp)
 #   U id exit_code dur_ms   update (precmd)
 #   Q search query count    query -> NUL-separated rows
 # Response rows: raw command text — multi-line commands pass through intact
@@ -73,22 +73,24 @@ shift
 
 case "$TYPE" in
     W)
-        # Write: W cmd cwd id — preexec hook. The UUIDv7 id IS the row's
-        # timestamp (lexicographic id order == chronological). Exit and
+        # Write: W cmd cwd id — preexec hook. The id is ns-since-epoch:
+        # the row's timestamp, so id order == chronological. Exit and
         # duration are unknown until the precmd hook sends a U for id.
         cmd="$1"
         cwd="$2"
         id="$3"
-        [ -n "$id" ] || exit 0
+        # id must be an integer (INTEGER PRIMARY KEY); drop anything else
+        # (garbage on the wire — a hook/daemon version mismatch).
+        case "$id" in '' | *[!0-9]*) exit 0 ;; esac
 
         safe_cmd=$(printf '%s' "$cmd" | sed "s/'/''/g")
         safe_cwd=$(printf '%s' "$cwd" | sed "s/'/''/g")
-        safe_id=$(printf '%s' "$id" | sed "s/'/''/g")
-        # Plain INSERT: a fresh UUIDv7 cannot collide. A shell that dies
-        # mid-command leaves exit 0 / duration 0; ids are never reused.
+        # Plain INSERT: two commands in the same nanosecond cannot happen
+        # (each hook call itself takes µs-ms). A shell that dies mid-
+        # command leaves exit 0 / duration 0; ids are never reused.
         # busy_timeout makes concurrent writers (several terminals at once)
         # wait for the lock instead of failing with SQLITE_BUSY.
-        sqlite3 "$db_file" "PRAGMA busy_timeout = 3000; INSERT INTO history (id, command, cwd, exit_code, duration_ms) VALUES ('$safe_id', '$safe_cmd', '$safe_cwd', 0, 0);"
+        sqlite3 "$db_file" "PRAGMA busy_timeout = 3000; INSERT INTO history (id, command, cwd, exit_code, duration_ms) VALUES ($id, '$safe_cmd', '$safe_cwd', 0, 0);"
         ;;
     U)
         # Update: precmd reports $? and shell-measured duration for the id.
@@ -130,7 +132,9 @@ case "$TYPE" in
         # those hazards, so no embedded separator can tear a row. Rows are
         # rejoined with 0x1E via ORS and one tr converts to NUL (mawk printf
         # eats a literal \0 in formats).
-        sqlite3 -ascii "$db_file" "PRAGMA busy_timeout = 3000; $sql" | LC_ALL=C awk '
+        # Read-only SELECT: no busy_timeout (a PRAGMA assignment would make
+        # the sqlite3 CLI echo "3000" into the picker stream).
+        sqlite3 -ascii "$db_file" "$sql" | LC_ALL=C awk '
         BEGIN { RS = "\036"; ORS = "\036" }
         {
             row = $0
