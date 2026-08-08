@@ -30,7 +30,87 @@ sqlite3 "$DB" "CREATE TABLE IF NOT EXISTS history (
 tmpdir=${TMPDIR:-/tmp}
 ENTRIES=$(mktemp "$tmpdir/kavkash-import.XXXXXX")
 SQLOUT=$(mktemp "$tmpdir/kavkash-import.XXXXXX")
-trap 'rm -f "$ENTRIES" "$SQLOUT"' EXIT
+ATUINPARSE=$(mktemp "$tmpdir/kavkash-atuin-parse.XXXXXX")
+trap 'rm -f "$ENTRIES" "$SQLOUT" "$ATUINPARSE"' EXIT
+
+cat > "$ATUINPARSE" <<'EOF'
+BEGIN { RS = "\n" }
+
+# flush the pending record; invalid timestamps get a pseudo-ts
+function flush(   ts) {
+    if (pending == "") return
+    if (p_ts !~ /^[0-9]+$/) ts = PSEUDO + n; else ts = p_ts
+    printf "%s\037%s\037%s\037%s\037%s\037A\036", ts, pending, p_cwd, p_dur, p_exit
+    n++
+    pending = ""
+}
+
+# wall-clock "YYYY-MM-DD HH:MM:SS" -> epoch ms, pure arithmetic
+# (proleptic Gregorian; UTC keeps a constant TZ offset so ordering is
+# preserved — rows within an hour of a DST switch may swap, invisible)
+function epoch_ms(s,   y, mo, d, hh, mi, se, era, yoe, mp, doy, doe, days) {
+    y  = substr(s, 1, 4) + 0
+    mo = substr(s, 6, 2) + 0
+    d  = substr(s, 9, 2) + 0
+    hh = substr(s, 12, 2) + 0
+    mi = substr(s, 15, 2) + 0
+    se = substr(s, 18, 2) + 0
+    y -= (mo <= 2)
+    era = int(y / 400)
+    yoe = y - era * 400
+    mp = mo + (mo > 2 ? -3 : 9)
+    doy = int((153 * mp + 2) / 5) + d - 1
+    doe = yoe * 365 + int(yoe / 4) - int(yoe / 100) + doy
+    days = era * 146097 + doe - 719468
+    return (days * 86400 + hh * 3600 + mi * 60 + se) * 1000
+}
+
+# atuin durations ("500ms", "1.2s", "45m", "3h", "329us") -> integer ms
+function dur_ms(d,   u, x) {
+    if (d ~ /ms$/)              { u = 1;       x = d; sub(/ms$/, "", x) }
+    else if (d ~ /us$|µs$|ns$/) return 0
+    else if (d ~ /s$/)          { u = 1000;    x = d; sub(/s$/, "", x) }
+    else if (d ~ /m$/)          { u = 60000;   x = d; sub(/m$/, "", x) }
+    else if (d ~ /h$/)          { u = 3600000; x = d; sub(/h$/, "", x) }
+    else return 0
+    x = int(x)
+    if (x !~ /^[0-9]+$/) return 0
+    return x * u
+}
+
+{
+    start = 0
+    if (MODE == "cli") {
+        if ($0 ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] /) start = 1
+    } else if ($0 ~ /^[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]\|/) {
+        start = 1
+    }
+    if (start) {
+        flush()
+        nf = split($0, F, "|")
+        p_ts = F[1]
+        p_cwd = F[2]
+        if (MODE == "cli") { p_dur = dur_ms(F[3]); p_exit = F[4] }
+        else               { p_exit = F[3]; p_dur = F[4] + 0 }
+        pending = F[5]
+        for (i = 6; i <= nf; i++) pending = pending "|" F[i]
+        if (MODE == "cli") {
+            if (p_ts ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9]$/)
+                p_ts = epoch_ms(p_ts)
+            else
+                p_ts = ""
+        } else if (p_ts !~ /^[0-9]+$/) {
+            p_ts = ""
+        }
+    } else if (pending != "") {
+        pending = pending "\n" $0
+    }
+}
+
+END { flush() }
+EOF
+
+
 
 # emit <epoch_ms> <cmd> [<cwd> [<dur_ms> <exit> <src>]]
 # src=A marks atuin rows: their cwd/duration enrich existing rows.
@@ -41,6 +121,7 @@ trap 'rm -f "$ENTRIES" "$SQLOUT"' EXIT
 counter=0
 PSEUDO_BASE=0
 
+exec 3>> "$ENTRIES"   # emit's output fd — open once, not per record
 emit() {
     counter=$((counter + 1))
     ts=$1
@@ -51,7 +132,7 @@ emit() {
     src=${6:-}
     [ -n "$cmd" ] || return 0
     case "$ts" in '' | *[!0-9]*) ts=$((PSEUDO_BASE + counter)) ;; esac
-    printf '%s\037%s\037%s\037%s\037%s\037%s\036' "$ts" "$cmd" "$cwd" "$dur" "$exit" "$src" >> "$ENTRIES"
+    printf '%s\037%s\037%s\037%s\037%s\037%s\036' "$ts" "$cmd" "$cwd" "$dur" "$exit" "$src" >&3
 }
 
 import_bash() {
@@ -154,83 +235,10 @@ import_atuin() {
             echo "reading atuin history" >&2
             ATUINOUT=$(mktemp "$tmpdir/kavkash-atuin.XXXXXX")
             if atuin history list -r false -f '{time}|{directory}|{duration}|{exit}|{command}' --print0 > "$ATUINOUT" 2> /dev/null && [ -s "$ATUINOUT" ]; then
+                        # Parse with one awk process (the old shell loop forked a
+            # subshell per duration: ~16 s per 40k records).
             tr '\0' '\n' < "$ATUINOUT" \
-                | {
-                    # Wall-clock "YYYY-MM-DD HH:MM:SS" -> epoch ms by pure
-                    # arithmetic (no date subprocess per row). UTC-based:
-                    # a constant TZ offset preserves ordering; rows within
-                    # an hour of a DST switch may swap order (invisible).
-                    epoch_ms() {
-                        s=$1
-                        e_y=${s%%-*}; e_r=${s#*-}
-                        e_mo=${e_r%%-*}; e_r=${e_r#*-}
-                        e_d=${e_r%% *}; e_r=${e_r#* }
-                        e_hh=${e_r%%:*}; e_r=${e_r#*:}
-                        e_mi=${e_r%%:*}; e_se=${e_r#*:}
-                        # strip leading zeros: "08" is invalid octal in $(( ))
-                        e_y=${e_y#${e_y%%[1-9]*}};  e_mo=${e_mo#${e_mo%%[1-9]*}}
-                        e_d=${e_d#${e_d%%[1-9]*}};  e_hh=${e_hh#${e_hh%%[1-9]*}}
-                        e_mi=${e_mi#${e_mi%%[1-9]*}}; e_se=${e_se#${e_se%%[1-9]*}}
-                        e_y=$(( e_y - (e_mo <= 2) ))
-                        e_era=$(( e_y / 400 ))
-                        e_yoe=$(( e_y - e_era * 400 ))
-                        e_mp=$(( e_mo + (e_mo > 2 ? -3 : 9) ))
-                        e_doy=$(( (153 * e_mp + 2) / 5 + e_d - 1 ))
-                        e_doe=$(( e_yoe * 365 + e_yoe / 4 - e_yoe / 100 + e_doy ))
-                        e_days=$(( e_era * 146097 + e_doe - 719468 ))
-                        e_ts=$(( (e_days * 86400 + e_hh * 3600 + e_mi * 60 + e_se) * 1000 ))
-                    }
-                    # atuin durations ("500ms", "1.2s", "45m", "3h", "329us")
-                    # -> integer ms; anything unparsable -> 0.
-                    dur_ms() {
-                        case "$1" in
-                            *ms) n=${1%ms} ;;
-                            *us | *µs | *ns) echo 0; return ;;
-                            *s)  n=${1%s} ;;
-                            *m)  n=${1%m} ;;
-                            *h)  n=${1%h} ;;
-                            *)   echo 0; return ;;
-                        esac
-                        n=${n%%.*}
-                        case "$n" in *[!0-9]*) echo 0; return ;; esac
-                        case "$1" in
-                            *ms) echo "$n" ;;
-                            *s)  echo $(( n * 1000 )) ;;
-                            *m)  echo $(( n * 60000 )) ;;
-                            *h)  echo $(( n * 3600000 )) ;;
-                        esac
-                    }
-                    pending=""
-                    while IFS= read -r line || [ -n "$line" ]; do
-                        case "$line" in
-                            [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*)
-                                # new record: flush previous
-                                if [ -n "$pending" ]; then
-                                    emit "$p_ts" "$pending" "$p_dir" "$p_dur" "$p_exit" A
-                                fi
-                                t=${line%%|*};   rest=${line#*|}
-                                p_dir=${rest%%|*}; rest=${rest#*|}
-                                dur=${rest%%|*};  rest=${rest#*|}
-                                p_exit=${rest%%|*}; pending=${rest#*|}
-                                # wall-clock string -> epoch ms; malformed -> pseudo-ts
-                                case "$t" in
-                                    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' '[0-9][0-9]:[0-9][0-9]:[0-9][0-9])
-                                        epoch_ms "$t"
-                                        ;;
-                                    *) e_ts="" ;;
-                                esac
-                                p_ts=$e_ts
-                                p_dur=$(dur_ms "$dur")
-                                ;;
-                            *)
-                                # multiline continuation
-                                [ -n "$pending" ] && pending="$pending
-$line"
-                                ;;
-                        esac
-                    done
-                    [ -n "$pending" ] && emit "$p_ts" "$pending" "$p_dir" "$p_dur" "$p_exit" A || true
-                }
+                | awk -v MODE=cli -v PSEUDO="$PSEUDO_BASE" -f "$ATUINPARSE" >> "$ENTRIES"
             rm -f "$ATUINOUT"
             return 0
         fi
@@ -271,29 +279,7 @@ $line"
     # cwd may be NULL. command stays LAST so pipes survive the IFS='|'
     # read; lines without a leading ts are multiline continuations.
     sqlite3 -noheader "$f" "SELECT CAST(timestamp/$div AS INTEGER), COALESCE(cwd,''), exit, CAST(COALESCE(duration,0)/$div AS INTEGER), command FROM $table ORDER BY timestamp ASC;" \
-        | {
-            pending=""
-            while IFS= read -r line || [ -n "$line" ]; do
-                case "$line" in
-                    [0-9]*\|*)
-                        # new record: flush previous
-                        if [ -n "$pending" ]; then
-                            emit "$p_ts" "$pending" "$p_cwd" "$p_dur" "$p_exit" A
-                        fi
-                        p_ts=${line%%|*}; rest=${line#*|}
-                        p_cwd=${rest%%|*}; rest=${rest#*|}
-                        p_exit=${rest%%|*}; rest=${rest#*|}
-                        p_dur=${rest%%|*}; pending=${rest#*|}
-                        ;;
-                    *)
-                        # multiline continuation
-                        [ -n "$pending" ] && pending="$pending
-$line"
-                        ;;
-                esac
-            done
-            [ -n "$pending" ] && emit "$p_ts" "$pending" "$p_cwd" "$p_dur" "$p_exit" A || true
-        }
+        | awk -v MODE=plain -v PSEUDO="$PSEUDO_BASE" -f "$ATUINPARSE" >> "$ENTRIES"
 }
 
 # --- source selection (no flags == --help; install.sh passes --all) --------
@@ -350,7 +336,7 @@ echo "parsed $total commands" >&2
 # the row's timestamp (ORDER BY id DESC == time order). SQL printf()
 # specifiers are %% for awk; ts arithmetic happens inside sqlite.
 AWKPROG=$(mktemp "$tmpdir/kavkash-awk.XXXXXX")
-trap 'rm -f "$ENTRIES" "$SQLOUT" "$AWKPROG"; [ -n "${KAV_TMP_IDX:-}" ] && sqlite3 "$DB" "DROP INDEX IF EXISTS idx_import_cmd;"' EXIT
+trap 'rm -f "$ENTRIES" "$SQLOUT" "$AWKPROG" "$ATUINPARSE"; [ -n "${KAV_TMP_IDX:-}" ] && sqlite3 "$DB" "DROP INDEX IF EXISTS idx_import_cmd;"' EXIT
 cat > "$AWKPROG" <<'EOF'
 BEGIN {
     RS = "\036"   # 0x1E record separator (matches emit)
@@ -370,6 +356,12 @@ BEGIN {
     printf "INSERT INTO history (id, command, cwd, exit_code, duration_ms) VALUES (printf('%%08x-%%04x-%%04x-%%04x-%%012x', (%s >> 16) & 0xffffffff, %s & 0xffff, 0x7000 | (abs(random()) & 0x0fff), 0xa000 | (abs(random()) & 0x0fff), abs(random()) & 0xffffffffffff), '%s', '%s', %s, %s);\n", ts, ts, cmd, cwd, dur, exitc
 }
 EOF
+
+# atuin parse: atuin CLI output (MODE=cli) or direct sqlite rows
+# (MODE=plain) -> ENTRIES frames (0x1E record / 0x1F field). A record
+# starts with a timestamp line; other lines continue the previous record
+# (multiline commands). The command field is everything after the 4th
+# '|' — commands may contain '|'.
 if kav_have pv; then
     pv -N "sql" "$ENTRIES" | awk -f "$AWKPROG" > "$SQLOUT"
 else
