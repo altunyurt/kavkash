@@ -1,7 +1,8 @@
 #!/bin/sh
 # import.sh — import shell/atuin history into the kavkash DB.
-# Additive: every parsed command becomes a row, duplicates included; each
-# occurrence keeps its own timestamp-derived UUIDv7 id.
+# Idempotent: re-running imports nothing new — rows deduplicate on
+# (command, cwd, timestamp), while the same command at different times
+# keeps every occurrence. Each row gets a timestamp-derived UUIDv7 id.
 #
 # Sources:
 #   bash  ~/.bash_history             plain lines, or "#<epoch>" pairs (HISTTIMEFORMAT)
@@ -31,10 +32,29 @@ tmpdir=${TMPDIR:-/tmp}
 ENTRIES=$(mktemp "$tmpdir/kavkash-import.XXXXXX")
 SQLOUT=$(mktemp "$tmpdir/kavkash-import.XXXXXX")
 ATUINPARSE=$(mktemp "$tmpdir/kavkash-atuin-parse.XXXXXX")
-trap 'rm -f "$ENTRIES" "$SQLOUT" "$ATUINPARSE"' EXIT
+DAYS=""; OFFS=""   # per-day TZ offset map (CLI path only)
+trap 'rm -f "$ENTRIES" "$SQLOUT" "$ATUINPARSE" "$DAYS" "$OFFS"' EXIT
 
 cat > "$ATUINPARSE" <<'EOF'
-BEGIN { RS = "\n" }
+BEGIN {
+    RS = "\n"
+    if (OFFMAP != "") {
+        # per-day local-UTC offsets ("YYYY-MM-DD +HHMM"); missing -> 0.
+        # Parse "+HHMM" as minutes: +0300 = 180, not 300.
+        while ((getline l < OFFMAP) > 0) {
+            split(l, m, " ")
+            offmap[m[1]] = off_min(m[2])
+        }
+        close(OFFMAP)
+    }
+}
+
+function off_min(s,   sign, hh, mm) {
+    sign = (substr(s, 1, 1) == "-") ? -1 : 1
+    hh = substr(s, 2, 2) + 0
+    mm = substr(s, 4, 2) + 0
+    return sign * (hh * 60 + mm)
+}
 
 # flush the pending record; invalid timestamps get a pseudo-ts
 function flush(   ts) {
@@ -46,8 +66,10 @@ function flush(   ts) {
 }
 
 # wall-clock "YYYY-MM-DD HH:MM:SS" -> epoch ms, pure arithmetic
-# (proleptic Gregorian; UTC keeps a constant TZ offset so ordering is
-# preserved — rows within an hour of a DST switch may swap, invisible)
+# (proleptic Gregorian). atuin {time} is LOCAL wall-clock: the caller
+# passes per-day UTC offsets, which are subtracted here, so the result
+# is the real epoch on any host (constant offsets, and ±1h for a few
+# hours on the two DST-transition days per year).
 function epoch_ms(s,   y, mo, d, hh, mi, se, era, yoe, mp, doy, doe, days) {
     y  = substr(s, 1, 4) + 0
     mo = substr(s, 6, 2) + 0
@@ -96,7 +118,7 @@ function dur_ms(d,   u, x) {
         for (i = 6; i <= nf; i++) pending = pending "|" F[i]
         if (MODE == "cli") {
             if (p_ts ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9]$/)
-                p_ts = epoch_ms(p_ts)
+                p_ts = epoch_ms(p_ts) - offmap[substr(F[1], 1, 10)] * 60000
             else
                 p_ts = ""
         } else if (p_ts !~ /^[0-9]+$/) {
@@ -147,10 +169,6 @@ import_bash() {
                 prev_ts=${line#\#}
                 case "$prev_ts" in *[!0-9]*) prev_ts="" ;; esac
                 ;;
-            ": "[0-9]*:[0-9]*\;*)
-                # zsh extended-format line; not ours
-                prev_ts=""
-                ;;
             *)
                 [ -z "$line" ] && { prev_ts=""; continue; }
                 emit "$prev_ts" "$line"
@@ -194,14 +212,10 @@ import_fish() {
     cmd=""
     counter=0
     PSEUDO_BASE=1000000000
-    flush() {
-        [ -n "$cmd" ] || return 0
-        emit "$ts" "$cmd"
-    }
     while IFS= read -r line || [ -n "$line" ]; do
         case "$line" in
             "- cmd: "*)
-                flush
+                [ -n "$cmd" ] && emit "$ts" "$cmd"
                 cmd=${line#"- cmd: "}
                 ts=""
                 ;;
@@ -215,7 +229,7 @@ import_fish() {
                 ;;
         esac
     done < "$f"
-    flush
+    [ -n "$cmd" ] && emit "$ts" "$cmd"
 }
 
 import_atuin() {
@@ -235,10 +249,28 @@ import_atuin() {
             echo "reading atuin history" >&2
             ATUINOUT=$(mktemp "$tmpdir/kavkash-atuin.XXXXXX")
             if atuin history list -r false -f '{time}|{directory}|{duration}|{exit}|{command}' --print0 > "$ATUINOUT" 2> /dev/null && [ -s "$ATUINOUT" ]; then
-                        # Parse with one awk process (the old shell loop forked a
-            # subshell per duration: ~16 s per 40k records).
-            tr '\0' '\n' < "$ATUINOUT" \
-                | awk -v MODE=cli -v PSEUDO="$PSEUDO_BASE" -f "$ATUINPARSE" >> "$ENTRIES"
+                # atuin {time} is LOCAL wall-clock; subtract the local UTC
+                # offset from the UTC-interpreted epoch (per unique day, one
+                # date call — exact except a few hours on DST-transition
+                # days). Without GNU date, fall back to one constant offset.
+                DAYS=$(mktemp "$tmpdir/kavkash-atuin-days.XXXXXX")
+                OFFS=$(mktemp "$tmpdir/kavkash-atuin-offs.XXXXXX")
+                tr '\0' '\n' < "$ATUINOUT" | grep -o '^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' | sort -u > "$DAYS"
+                if [ -s "$DAYS" ]; then
+                    ok=1
+                    while IFS= read -r d; do
+                        off=$(date -d "$d 12:00:00" +%z 2>/dev/null) || { ok=0; break; }
+                        printf '%s %s\n' "$d" "$off"
+                    done < "$DAYS" > "$OFFS"
+                    if [ "$ok" = 0 ]; then
+                        off=$(date +%z 2>/dev/null)
+                        while IFS= read -r d; do printf '%s %s\n' "$d" "$off"; done < "$DAYS" > "$OFFS"
+                    fi
+                fi
+                # One awk process (the old shell loop forked a subshell per
+                # record: ~16 s per 40k).
+                tr '\0' '\n' < "$ATUINOUT" \
+                    | awk -v MODE=cli -v PSEUDO="$PSEUDO_BASE" -v OFFMAP="$OFFS" -f "$ATUINPARSE" >> "$ENTRIES"
             rm -f "$ATUINOUT"
             return 0
         fi
@@ -301,8 +333,8 @@ selected explicitly; with no options this help is printed.
       --all           shorthand for -b -z -f --atuin
   -h, --help          show this help and exit
 
-The import is additive: every parsed command becomes a row, duplicates
-included.
+Idempotent: re-running imports nothing new. Rows deduplicate on
+(command, cwd, timestamp) — the same command at different times is kept.
 EOF
 }
 
@@ -331,12 +363,13 @@ total=$(tr -cd '\036' < "$ENTRIES" | wc -c)
 echo "parsed $total commands" >&2
 
 # Bulk insert in one sqlite3 session, via one awk pass over ENTRIES.
-# Every row is inserted as-is (additive, no dedup). atuin rows (src=A)
-# first enrich any existing cwd-less row. The id is a UUIDv7 minted from
-# the row's timestamp (ORDER BY id DESC == time order). SQL printf()
+# atuin rows (src=A) first enrich any existing cwd-less row. Rows dedup
+# on (command, cwd, timestamp) — the timestamp is the id's UUIDv7 prefix
+# (ORDER BY id DESC == time order), so re-runs insert nothing while the
+# same command at different times keeps every occurrence. SQL printf()
 # specifiers are %% for awk; ts arithmetic happens inside sqlite.
 AWKPROG=$(mktemp "$tmpdir/kavkash-awk.XXXXXX")
-trap 'rm -f "$ENTRIES" "$SQLOUT" "$AWKPROG" "$ATUINPARSE"; [ -n "${KAV_TMP_IDX:-}" ] && sqlite3 "$DB" "DROP INDEX IF EXISTS idx_import_cmd;"' EXIT
+trap 'rm -f "$ENTRIES" "$SQLOUT" "$AWKPROG" "$ATUINPARSE" "$DAYS" "$OFFS"; [ -n "${KAV_TMP_IDX:-}" ] && sqlite3 "$DB" "DROP INDEX IF EXISTS idx_import_cmd;"' EXIT
 cat > "$AWKPROG" <<'EOF'
 BEGIN {
     RS = "\036"   # 0x1E record separator (matches emit)
@@ -353,7 +386,11 @@ BEGIN {
     exitc = $5 + 0
     if ($6 == "A")
         printf "UPDATE history SET cwd='%s', duration_ms=%s, exit_code=%s WHERE command='%s' AND cwd='';\n", cwd, dur, exitc, cmd
-    printf "INSERT INTO history (id, command, cwd, exit_code, duration_ms) VALUES (printf('%%08x-%%04x-%%04x-%%04x-%%012x', (%s >> 16) & 0xffffffff, %s & 0xffff, 0x7000 | (abs(random()) & 0x0fff), 0xa000 | (abs(random()) & 0x0fff), abs(random()) & 0xffffffffffff), '%s', '%s', %s, %s);\n", ts, ts, cmd, cwd, dur, exitc
+    # Idempotent: skip when (command, cwd, timestamp) already exists. The
+    # timestamp is the UUIDv7 id's first 13 chars (ts>>16 and ts&0xffff),
+    # so no extra column is needed; a re-import produces identical
+    # (command, cwd, ts) rows and inserts nothing.
+    printf "INSERT INTO history (id, command, cwd, exit_code, duration_ms) SELECT printf('%%08x-%%04x-%%04x-%%04x-%%012x', (%s >> 16) & 0xffffffff, %s & 0xffff, 0x7000 | (abs(random()) & 0x0fff), 0xa000 | (abs(random()) & 0x0fff), abs(random()) & 0xffffffffffff), '%s', '%s', %s, %s WHERE NOT EXISTS (SELECT 1 FROM history WHERE substr(id, 1, 13) = printf('%%08x-%%04x', (%s >> 16) & 0xffffffff, %s & 0xffff) AND command='%s' AND cwd='%s');\n", ts, ts, cmd, cwd, dur, exitc, ts, ts, cmd, cwd
 }
 EOF
 

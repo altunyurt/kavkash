@@ -68,9 +68,9 @@ curl -fsSL https://raw.githubusercontent.com/altunyurt/kavkash/main/install.sh |
 Installs to `${XDG_DATA_HOME:-~/.local/share}/kavkash` (socket under
 `XDG_RUNTIME_DIR`); no config file. The installer offers to import existing
 history (bash/zsh/fish, atuin ≥ v18 via its CLI) — `KAVKASH_IMPORT=0|1`
-skips/forces. Import is additive — every history line becomes a row,
-re-running it appends the same commands again; fine for a one-shot
-migration or a periodic resync.
+skips/forces. Import is idempotent — safe to re-run: rows deduplicate
+on (command, cwd, timestamp), while the same command at different times
+is kept.
 
 1. Start the daemon once (login shell, service manager, …):
    ```sh
