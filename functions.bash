@@ -5,6 +5,11 @@
 _SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 . "$_SCRIPT_DIR/includes.sh"
 
+# Interactive tty settings at shell start (before readline engages). fzf
+# leaves readline's raw mode behind; an eval'd command that reads the tty
+# needs echo/line editing/signals back — restore this before running it.
+_hist_stty=$(stty -g 2> /dev/null || true)
+
 # _hist_picker — the single fzf widget behind Up, Ctrl+R and the scope
 # keys (F6 all / F7 dir / F8 session — search mode with a scope).
 #   count:    DB result cap (Up=500, Ctrl+R=10000)
@@ -81,16 +86,38 @@ _hist_picker() {
         if [[ -n "$cmd" ]]; then
             if [[ -z "$key" ]]; then
                 # Enter: paste and run. readline can't accept the line from
-                # a widget, so record it (history -s, so Up-arrow still
-                # sees it) and eval it directly. The DEBUG preexec is
-                # disarmed for this whole widget, so the eval'd command
-                # doesn't self-record; hook.sh does W here and U right
-                # after with the real exit code.
+                # a widget, so print the prompt + command (as if typed —
+                # what atuin does), record it (history -s) and eval it
+                # directly. fzf ran in readline's raw mode; a command that
+                # reads the tty needs echo/line editing back, so restore
+                # the interactive settings around the eval. The DEBUG
+                # preexec is disarmed for this whole widget, so the eval'd
+                # command doesn't self-record; hook.sh does W here and U
+                # right after with the real exit code.
+                local prompt_repr
+                if ((BASH_VERSINFO[0] > 4 || BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4)); then
+                    prompt_repr=${PS1@P}
+                else
+                    prompt_repr='$ '
+                fi
+                # strip bash's \[ \] markers (/) from the prompt
+                prompt_repr=${prompt_repr//[$'\001\002']}
+                printf '%s\n' "$prompt_repr$cmd"
                 history -s "$cmd"
                 READLINE_LINE=""
+                # don't leak the widget vars into a child bash
+                export -n READLINE_LINE READLINE_POINT 2> /dev/null || true
+                local stty_backup
+                stty_backup=$(stty -g 2> /dev/null || true)
+                if [[ -n "$_hist_stty" ]]; then
+                    stty "$_hist_stty" 2> /dev/null
+                fi
                 local _hist_exit
                 eval "$cmd"
                 _hist_exit=$?
+                if [[ -n "$stty_backup" ]]; then
+                    stty "$stty_backup" 2> /dev/null
+                fi
                 local id
                 id=$("$_SCRIPT_DIR/hook.sh" W "$cmd" "$PWD" "$_hist_sess")
                 if [[ -n "$id" ]]; then
