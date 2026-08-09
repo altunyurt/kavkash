@@ -4,18 +4,17 @@
 . "$(dirname -- "$(realpath -- "$0")")/includes.sh"
 #
 # Wire protocol: concatenated netstrings ("len:payload,").
-#   W cmd cwd id session    write (preexec; id = ns-since-epoch, session =
-#                           per-shell token, '' when absent)
+#   W cmd cwd id session    write (preexec; id = ns-since-epoch = row
+#                           timestamp, session = per-shell token, '' = none)
 #   U id exit_code dur_ms   update (precmd)
 #   Q search query count cwd session
 #                           query -> NUL-separated rows; cwd/session scope
-#                           the result BEFORE the LIMIT (a dir/session
-#                           filter applied client-side would miss rows past
-#                           the window cut). cwd matches the dir and its
-#                           subtree; "/" is a no-op filter (everything).
-# Response rows: raw command text — multi-line commands pass through intact
+#                           BEFORE the LIMIT (client-side filtering would
+#                           miss old rows past the window cut). cwd matches
+#                           the dir + subtree; "/" is a no-op.
+# Rows carry raw command text — multi-line commands pass through intact
 # (fzf >= 0.53 renders them natively); only 0x1E/0x1F (sqlite3 -ascii
-# hazards) and \r are stripped. NUL framing is safe — command text can
+# hazards) and \r are stripped. NUL framing is safe: command text can
 # never contain NUL.
 db_file="${KAV_DB_FILE:-$1}" # computed by includes.sh (sourced above); $1 fallback for manual invocation
 
@@ -124,12 +123,11 @@ case "$TYPE" in
     Q)
         # Query: newest `count` commands matching the scope, NUL-framed raw
         # rows. The picker always sends an empty query — fzf filters the
-        # loaded window in-memory — and the server-side subsequence matcher
-        # was removed (dead, untested code). The query field is still
-        # accepted on the wire for protocol stability and ignored. cwd/
-        # session scope (empty = no filter) applies BEFORE the LIMIT: the
-        # picker's window is "newest N matching the scope". Only
-        # 0x1E/0x1F and \r are stripped; multi-line commands pass through.
+        # loaded window in-memory — so the query field is accepted for
+        # protocol stability and ignored (the server-side subsequence
+        # matcher is long gone). cwd/session scope (empty = no filter)
+        # applies BEFORE the LIMIT: the picker's window is "newest N
+        # matching the scope".
         action="$1"
         count="$3"
         cwd="$4"

@@ -26,13 +26,12 @@ _hist_picker() {
     printf '%s\n' "$win" > "$win_file"
     printf '%s\n%s\n' "$cwd" "$session" > "$scope_file"
     picker="$_SCRIPT_DIR/picker.sh"
-    # NOTE: fzf's stderr must stay on the terminal (a 2>/dev/null here
-    # renders a blank UI); </dev/null keeps the tty out of its stdin —
-    # start:reload drives the list. print()+accept NUL-frames
-    # "key\0<cmd>\0"; the awk turns that into "key\n<cmd>".
-    # Scope lives in SCOPE_FILE; every reload goes through picker.sh load
-    # (start, growth, F5, F6-F8), so win and scope never diverge. F6/F7/F8
-    # switch scope inside the picker via picker.sh switch.
+    # fzf stderr must stay on the terminal (2>/dev/null blanks the UI);
+    # </dev/null keeps the tty out of its stdin — start:reload drives the
+    # list. print()+accept NUL-frames "key\0<cmd>\0"; awk turns that into
+    # "key\n<cmd>". Scope lives in SCOPE_FILE; every reload goes through
+    # picker.sh load (start, growth, F5, F6-F8), so win and scope never
+    # diverge; F6-F8 switch scope via picker.sh switch.
     picked=$(fzf --height 15 --no-sort --track --sync --highlight-line \
         --prompt "$prompt" --query "$init_q" --read0 --print0 \
         --header "$mode · $count newest · $label · F6 all F7 dir F8 sess · f5 older · tab paste · enter run" \

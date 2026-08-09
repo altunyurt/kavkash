@@ -11,25 +11,20 @@ _SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 _hist_stty=$(stty -g 2> /dev/null || true)
 
 # --- atuin-borrowed: readline macro-chain for native accept-line ---
-# (from atuin's bash integration, crates/atuin/src/shell/atuin.bash:
-#  __atuin_bind_impl / __atuin_widget_run / __atuin_macro_chain)
-# bash can't call accept-line from a bind -x widget, so atuin dispatches
-# through a two-step macro chain: the user key is bound as a *string macro*
-# that queues a sentinel chain (e.g. \C-r -> "\C-x\C-_A1\a\C-x\C-_A0\a");
-# the chain's head (\C-x\C-_A1\a) is bind -x'd to the widget; on Enter the
-# widget swaps the tail (\C-x\C-_A0\a) between its default no-op "" and the
-# readline function accept-line — so when the widget returns, readline
-# accepts the line *natively* and the command runs exactly as if typed
-# (history, prompt, $?, the DEBUG-trap preexec and PROMPT_COMMAND precmd
-# all fire natively — no print+eval emulation). On paste (tab) or cancel the
-# tail stays "" and the line is just left on the buffer.
-# Deviation from atuin: atuin re-binds the tail only in the keymap the
-# widget was triggered from; we rebind all three standard keymaps — the
-# sentinel chain is never typed by humans, so a stale accept-line binding is
-# unreachable, and it avoids tracking the active keymap.
-# bash >= 4.3 is required for multi-byte bind -x keyseqs; ble.sh can't
-# handle the sentinel chain — both fall back to the print+eval Enter in
-# _hist_picker (which is atuin's __atuin_accept_line fallback).
+# (atuin: crates/atuin/src/shell/atuin.bash, __atuin_bind_impl / __atuin_widget_run)
+# bind -x widgets can't call accept-line, so atuin dispatches via a two-step
+# macro chain: the user key is a string macro queuing a sentinel chain
+# (\C-r -> "\C-x\C-_A1\a\C-x\C-_A0\a"); the head is bind -x'd to the widget,
+# and on Enter the widget swaps the tail between its default no-op "" and
+# accept-line. Readline then accepts the line natively — history, prompt,
+# $?, the DEBUG-trap preexec and PROMPT_COMMAND precmd all fire exactly as
+# for a typed command (real exit code + duration). Tab/cancel leave the tail
+# "" and the line on the buffer.
+# Deviation: atuin re-binds only the triggering keymap; we rebind all three
+# standard keymaps — the sentinel chain is never typed by humans, so a stale
+# accept-line binding is unreachable. bash >= 4.3 (multi-byte bind -x
+# keyseqs) and non-ble.sh required; both fall back to atuin's
+# __atuin_accept_line print+eval in _hist_picker.
 _hist_macro_bash=0
 if (( BASH_VERSINFO[0] >= 5 || BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 3 )) \
         && [[ -z ${BLE_ATTACHED-} ]]; then
@@ -57,35 +52,31 @@ _hist_bind_widget() {
     unset _hist_km
 }
 
-# _hist_picker — the single fzf widget behind Up, Ctrl+R and the scope
-# keys (F6 all / F7 dir / F8 session — search mode with a scope).
-#   count:    DB result cap (Up=500, Ctrl+R=10000)
-#   init_q:   initial query — Ctrl+R seeds it with the current line, Up empty
-#   mode:     "walk" (Up) or "search" (Ctrl+R) — shown in the fzf prompt/header
-#   cwd:      dir scope (empty = global) — matches the dir and its subtree
-#   session:  per-shell token scope (empty = global)
-#
-# Design (fzf >= 0.54): the picker loads a *window* of the newest commands —
-# start:reload-sync, one code path, no initial pipe — and fzf filters it
-# in-memory as the user types: no per-keystroke DB round trips, and the full
-# fzf search syntax works. picker.sh (this dir) drives pagination from fzf
-# events: a `result`-event transform doubles the window when it's exhausted
-# (every loaded command matches, or none do); f5 forces the next page. --sync
-# resolves the cascade before the first paint, so a seeded query reaches full
-# coverage in a few log2-sized round trips; --track keeps the cursor on the
-# current command across reloads. The server sends raw commands — multi-line
-# ones display natively (fzf >= 0.53), no escaping. Scope filters are
-# server-side (before the LIMIT), so a dir/session command from long ago
-# isn't cut off by the window; fzf still does the keyword filtering.
+# _hist_picker — the fzf widget behind Up, Ctrl+R and F6/F7/F8.
+#   count:     DB cap (Up=500, Ctrl+R=10000)
+#   init_q:    search seed — Ctrl+R uses the current line, Up empty
+#   mode:      "walk" (Up) or "search" (Ctrl+R), shown in the fzf header
+#   cwd/session: scope (empty = global); filtered server-side BEFORE the
+#               LIMIT, so a scoped command from long ago survives the
+#               window cut; fzf filters keywords in-memory.
+# Design: loads a *window* of newest commands via start:reload-sync, fzf
+# filters in-memory (no per-keystroke DB trips, full fzf syntax). picker.sh
+# grows the window from fzf events: a result-transform doubles it when
+# exhausted (0 matches, or all match); f5 forces the next page. --sync
+# resolves the cascade before first paint; --track keeps the cursor across
+# reloads. Commands go over the wire raw — multi-line rows display natively
+# (fzf >= 0.53).
 _hist_picker() {
     local count="$1" init_q="${2:-}" mode="${3:-walk}" cwd="${4:-}" session="${5:-}"
     local picked key cmd win win_file scope_file label prompt picker
-    _hist_armed=0   # the trap fires for the bind -x widget invocation itself
-                    # and for the eval'd Enter command — both must not record
+    _hist_armed=0   # disarm during the widget: the trap must not record the
+                    # widget's own commands (incl. the fallback's eval'd
+                    # command); the native-accept path re-arms at the end so
+                    # the accepted line records normally
     if (( _hist_macro_bash )); then
-        # atuin-borrowed: reset the sentinel tail to no-op for this run — a
-        # previous Enter run left it bound to accept-line, and the queued
-        # sentinel after this widget would otherwise execute instead of paste.
+        # reset the sentinel tail to no-op for this run — a previous Enter
+        # run left it bound to accept-line, and the queued sentinel after
+        # this widget would otherwise execute instead of paste
         for _hist_km in emacs vi-insert vi-command; do
             bind -m "$_hist_km" "\"$_hist_macro_sentinel\": \"\""
         done
@@ -112,12 +103,11 @@ _hist_picker() {
     printf '%s\n' "$win" > "$win_file"
     printf '%s\n%s\n' "$cwd" "$session" > "$scope_file"
     picker="$_SCRIPT_DIR/picker.sh"
-    # NOTE: fzf's stderr must stay on the terminal (a 2>/dev/null here
-    # renders a blank UI); </dev/null keeps the tty out of its stdin —
-    # start:reload drives the list. print()+accept NUL-frames
-    # "key\0<cmd>\0"; the awk turns that into "key\n<cmd>".
-    # Scope lives in SCOPE_FILE; every reload (start, growth, F5, F6-F8)
-    # goes through picker.sh load so win and scope never diverge.
+    # fzf stderr must stay on the terminal (2>/dev/null blanks the UI);
+    # </dev/null keeps the tty out of its stdin — start:reload drives the
+    # list. print()+accept NUL-frames "key\0<cmd>\0"; awk turns that into
+    # "key\n<cmd>". Scope lives in SCOPE_FILE; every reload (start, growth,
+    # F5, F6-F8) goes through picker.sh load, so win and scope never diverge.
     # F6/F7/F8 switch scope inside the picker via picker.sh switch, which
     # rewrites the scope file and prints the reload action for transform.
     picked=$(fzf --height 15 --no-sort --track --sync --highlight-line \
@@ -142,13 +132,10 @@ _hist_picker() {
         if [[ -n "$cmd" ]]; then
             if [[ -z "$key" ]]; then
                 if (( _hist_macro_bash )); then
-                    # Enter: paste and run *natively* via the atuin-borrowed
-                    # macro chain (machinery near the top of this file): set
-                    # the buffer and swap the queued sentinel tail to
-                    # accept-line. After this widget returns, readline
-                    # accepts the line — the command displays as typed and
-                    # runs through the shell's own machinery (history,
-                    # prompt, $?); the DEBUG-trap preexec and PROMPT_COMMAND
+                    # Enter: native accept via the macro chain (machinery
+                    # above) — set the buffer, swap the queued sentinel to
+                    # accept-line. Readline accepts after this widget
+                    # returns; the command displays as typed and preexec/
                     # precmd record it with the real exit code and duration.
                     # No eval, no stty juggling, no manual hook calls.
                     READLINE_LINE="$cmd"
@@ -160,13 +147,12 @@ _hist_picker() {
                 else
                     # Enter fallback (bash < 4.3 / ble.sh): atuin's
                     # __atuin_accept_line — print the prompt + command (as
-                    # if typed), record it (history -s) and eval it
-                    # directly. fzf ran in readline's raw mode; a command
-                    # that reads the tty needs echo/line editing back, so
-                    # restore the interactive settings around the eval. The
-                    # DEBUG preexec is disarmed for this whole widget, so
-                    # the eval'd command doesn't self-record; hook.sh does W
-                    # here and U right after with the real exit code.
+                    # if typed), record it (history -s) and eval it. fzf
+                    # left readline's raw mode behind, so restore the
+                    # interactive stty around the eval. The DEBUG preexec is
+                    # disarmed for this widget, so the eval'd command can't
+                    # self-record; hook.sh does W here and U after with the
+                    # real exit code.
                     local prompt_repr
                     if ((BASH_VERSINFO[0] > 4 || BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4)); then
                         prompt_repr=${PS1@P}
@@ -228,7 +214,7 @@ _hist_scope_sess() { _hist_picker 10000 "$READLINE_LINE" search "" "$_hist_sess"
 # bash has no preexec event, so kavkash synthesizes one with a DEBUG trap
 # (the same trick bash-preexec uses). Empirically, in interactive bash:
 #   - the trap fires before EVERY simple command, but NOT recursively (no
-#     re-entry for commands inside the trap body) and NOT in subshells
+#     re-entry inside the trap body) and NOT in subshells
 #   - it fires once per simple command of a line (`a && b` twice) and for
 #     commands in PROMPT_COMMAND — filtered by the history-index check
 #   - it fires for bind -x widget invocations (e.g. the picker) — filtered
@@ -243,11 +229,11 @@ _hist_scope_sess() { _hist_picker 10000 "$READLINE_LINE" search "" "$_hist_sess"
 #
 # Two guards:
 #   _hist_armed — set ONLY at the end of PROMPT_COMMAND, so startup files
-#                 (where history is not even loaded yet) and the first
-#                 prompt can't fire. After the first prompt it stays armed
-#                 across prompt redraws; a real command consumes it.
-#   index check — a fire only records when history has actually grown past
-#                 the last recorded entry. That kills bind -x widgets,
+#                 (history not even loaded yet) and the first prompt can't
+#                 fire; a real command consumes it. Widgets disarm it for
+#                 their duration.
+#   index check — a fire only records when history actually grew past the
+#                 last recorded entry. That kills bind -x widgets,
 #                 PROMPT_COMMAND's own commands, and blank Enters without
 #                 needing to know which command is which.
 _hist_armed=0
@@ -288,11 +274,11 @@ kav_precmd_record() {
         "$_SCRIPT_DIR/hook.sh" U "$_hist_corr" "$_hist_exit" "$((_now - _hist_t0))"
         _hist_corr=""
     fi
-    # Baseline the history index on the first prompt: history is loaded
-    # only after the rc files, so entries that predate sourcing must not
-    # be treated as new. After that, the prompt's own DEBUG fire already
-    # consumed any growth (function definitions); this fallback records
-    # whatever slipped through, exit code included, duration unknown (0).
+    # Baseline the history index on the first prompt: history loads only
+    # after the rc files, so pre-sourcing entries must not count as new.
+    # After that, the prompt's own DEBUG fire already consumed any growth
+    # (function definitions); this fallback records what slipped through,
+    # exit code included, duration unknown (0).
     local line idx cmd
     line=$(HISTTIMEFORMAT='' builtin history 1)
     idx=$(_kav_hist_idx)
@@ -312,10 +298,8 @@ kav_precmd_record() {
 }
 
 # Session token: one per interactive shell, minted at source time (rc files
-# re-run on `exec`, so the new shell gets a fresh token — never inherit).
-# Subshells inherit the env var but are excluded by the recording guards
-# (the DEBUG trap doesn't recurse in subshells). Carried on every W;
-# session scope in the picker matches on it.
+# re-run on `exec`, so the new shell gets a fresh token — never inherited).
+# Carried on every W; session scope in the picker matches on it.
 _hist_sess=$(cat /proc/sys/kernel/random/uuid 2> /dev/null) || _hist_sess=$(od -An -N16 -tx1 /dev/urandom 2> /dev/null | tr -d ' \n')
 
 # Run the recorder on every primary prompt via bash's PROMPT_COMMAND (array
@@ -340,8 +324,7 @@ trap kav_preexec_record DEBUG
 # fzf >= 0.54 required: multi-line display (0.53), print() (0.53), transform +
 # FZF_* env + result event (0.45/0.46), start:reload without an initial reader
 # and the --sync render guarantee (0.54). Older fzf can't render the raw
-# multi-line rows the server now sends, so the picker is disabled, not
-# degraded.
+# multi-line rows the server sends, so the picker is disabled, not degraded.
 _kav_fzf_ver=$(fzf --version 2>/dev/null | awk 'NR == 1 { print $1 }')
 if [ -n "$_kav_fzf_ver" ] && printf '%s\n' "$_kav_fzf_ver" | \
         awk -F. 'NR == 1 { exit ($1 > 0 || $2 >= 54) ? 0 : 1 }'; then

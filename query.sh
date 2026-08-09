@@ -3,14 +3,12 @@
 #
 # Asks the daemon for the newest COUNT commands. QUERY is accepted for wire
 # compatibility and ignored — the picker passes an empty query and fzf
-# filters the loaded window in-memory (the server-side subsequence matcher
-# was removed). CWD/SESSION scope the server-side query (empty = global):
-# cwd matches the directory and its subtree, session matches a per-shell
-# token.
+# filters the loaded window in-memory. CWD/SESSION scope the server-side
+# query (empty = global): cwd matches the dir + subtree, session a
+# per-shell token.
 #
-# Output: NUL-separated raw command rows for fzf --read0. Multi-line commands
-# pass through verbatim (fzf >= 0.53 renders them natively); nothing is
-# escaped. Passed through as-is.
+# Output: NUL-separated raw command rows for fzf --read0 (multi-line
+# commands pass through verbatim — fzf >= 0.53 renders them natively).
 
 . "$(dirname -- "$(realpath -- "$0")")/includes.sh"
 
@@ -20,7 +18,7 @@ cwd="${3:-}"
 session="${4:-}"
 case "$count" in '' | *[!0-9]*) count=10000 ;; esac
 
-# netstring field: "len:payload,"
+# netstring field: "len:payload," (len in BYTES — LC_ALL=C wc -c, not ${#x})
 _ns() {
     printf '%s' "$1" | {
         len=$(LC_ALL=C wc -c | tr -d ' ')

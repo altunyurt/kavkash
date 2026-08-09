@@ -270,15 +270,16 @@ import_atuin() {
                         while IFS= read -r d; do printf '%s %s\n' "$d" "$off"; done < "$DAYS" > "$OFFS"
                     fi
                 fi
-                # One awk process (the old shell loop forked a subshell per
-                # record: ~16 s per 40k).
+                # Single awk pass (a per-record shell loop took ~16 s per 40k).
                 tr '\0' '\n' < "$ATUINOUT" \
                     | awk -v MODE=cli -v PSEUDO="$PSEUDO_BASE" -v OFFMAP="$OFFS" -f "$ATUINPARSE" >> "$ENTRIES"
+                rm -f "$ATUINOUT"
+                return 0
+            fi
+            # atuin present but the CLI failed — clean up and fall through
+            # to reading the plaintext store directly.
             rm -f "$ATUINOUT"
-            return 0
         fi
-        rm -f "$ATUINOUT"
-    fi
         # Fallback: read plaintext SQLite directly (config.toml db_path,
         # else the default).
         data_dir="${XDG_DATA_HOME:-$HOME/.local/share}/atuin"

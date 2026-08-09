@@ -1,32 +1,26 @@
 #!/bin/sh
 # picker.sh - pagination + scope helper for the fzf history picker.
-#
 # Three roles (the widget builds the right argv for each):
 #
 #   picker.sh load WIN_FILE COUNT [SCOPE_FILE]
 #       run query.sh with the current window (target of start:reload-sync
-#       and of every scope switch / growth reload). CWD/SESSION come from
-#       SCOPE_FILE (two lines: cwd, session; missing = global) so that a
-#       scope switch and a growth-triggered reload always agree.
+#       and of every growth / scope-switch reload). CWD/SESSION come from
+#       SCOPE_FILE (two lines: cwd, session; missing = global), so a scope
+#       switch and a growth-triggered reload always agree.
 #
 #   picker.sh decide WIN_FILE COUNT [SCOPE_FILE] [force]
-#       decide whether the picker's window should grow; if so, record the
-#       new size in WIN_FILE and print a reload-sync action for fzf's
-#       transform to run. The action reloads through picker.sh load, which
-#       re-reads WIN_FILE and SCOPE_FILE — the growth path can't diverge
-#       from the scope the user is currently looking at.
+#       grow the window when it's exhausted (0 matches, or all rows match);
+#       record the new size in WIN_FILE and print a reload-sync action for
+#       fzf's transform. [force] (F5) always grows.
 #
 #   picker.sh switch SCOPE_FILE CWD SESSION PROMPT WIN_FILE COUNT
-#       F6/F7/F8 target: rewrite SCOPE_FILE to the new scope and print a
-#       change-prompt+reload-sync action so fzf re-queries with it.
+#       F6/F7/F8 target: rewrite SCOPE_FILE to the new scope, then print
+#       change-prompt+reload-sync so fzf re-queries with it.
 #
-# The window size lives in a temp file because fzf's transform action runs
-# its command in a subshell - the widget shell can't see mutated state.
-# Same for the scope: transform runs picker.sh in a subshell, so the scope
-# switch writes a file and the reload reads it back.
-#
+# Win size + scope live in temp files because fzf's transform runs its
+# command in a subshell — the widget shell can't see mutated state.
 # Exit codes are not part of the protocol (socat EXEC and fzf transform
-# both discard them); the printed action string is the contract.
+# discard them); the printed action string is the contract.
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
