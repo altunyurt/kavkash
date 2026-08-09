@@ -100,8 +100,8 @@ function dur_ms(d,   u, x) {
 {
     start = 0
     if (MODE == "cli") {
-        if ($0 ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] /) start = 1
-    } else if ($0 ~ /^[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]\|/) {
+        if ($0 ~ /^[0-9]{4}-[0-9]{2}-[0-9]{2} /) start = 1
+    } else if ($0 ~ /^[0-9]{19}\|/) {
         # 19-digit ns id (the row's timestamp)
         start = 1
     }
@@ -115,7 +115,7 @@ function dur_ms(d,   u, x) {
         pending = F[5]
         for (i = 6; i <= nf; i++) pending = pending "|" F[i]
         if (MODE == "cli") {
-            if (p_ts ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9]$/)
+            if (p_ts ~ /^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}$/)
                 # epoch_ms yields ms; append 6 digits for ns. String
                 # concat, not arithmetic: 19 digits exceed awk's double.
                 p_ts = (epoch_ms(p_ts) - offmap[substr(F[1], 1, 10)] * 60000) "000000"
@@ -259,7 +259,7 @@ import_atuin() {
                 # days). Without GNU date, fall back to one constant offset.
                 DAYS=$(mktemp "$tmpdir/kavkash-atuin-days.XXXXXX")
                 OFFS=$(mktemp "$tmpdir/kavkash-atuin-offs.XXXXXX")
-                tr '\0' '\n' < "$ATUINOUT" | grep -o '^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' | sort -u > "$DAYS"
+                tr '\0' '\n' < "$ATUINOUT" | grep -oE '^[0-9]{4}-[0-9]{2}-[0-9]{2}' | sort -u > "$DAYS"
                 if [ -s "$DAYS" ]; then
                     ok=1
                     while IFS= read -r d; do
