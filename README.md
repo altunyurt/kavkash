@@ -15,7 +15,9 @@ Installs to `${XDG_DATA_HOME:-~/.local/share}/kavkash` (Unix socket under
 installer's header):
 
 - `KAVKASH_IMPORT=1` — import existing bash/zsh/fish history and atuin
-  (v18+ PASETO stores via the atuin CLI); re-running the import is
+  (atuin v18+ stores are PASETO-encrypted, so import goes through the
+  `atuin` CLI, which decrypts with your key; v17-and-older stores are
+  plaintext SQLite and are read directly); re-running the import is
   idempotent and safe
 - `KAVKASH_NO_SYSTEMD=1` — don't install the systemd unit
 - `KAVKASH_REPO` / `KAVKASH_TARBALL_URL` / `KAVKASH_TARBALL_SHA256` — install from elsewhere
@@ -125,7 +127,9 @@ shell Up/Ctrl+R fzf picker ← picker.sh → query.sh ←───────�
   size and scope live in temp files because fzf transforms run in a
   subshell.
 - `import.sh` — idempotent import from bash/zsh/fish history files and
-  atuin (v18+ PASETO stores via the atuin CLI).
+  atuin (v18+ stores are PASETO-encrypted — each row is a PASETO token
+  the atuin CLI decrypts with your key; older stores are plaintext
+  SQLite, read directly).
 
 ## Pruning
 
