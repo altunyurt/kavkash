@@ -1,10 +1,107 @@
 # kavkash
 
-Minimal shell history daemon. Commands are captured through shell hooks into
-SQLite and served back via an fzf picker — **Up** browses the recent ones,
-**Ctrl+R** searches everything.
+Minimal shell-history daemon: shell hooks capture every command into
+SQLite, an fzf picker serves them back. **Up** browses the recent
+commands, **Ctrl+R** searches everything, **F6/F7/F8** scope the search.
 
-## Architecture
+## Install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/altunyurt/kavkash/main/install.sh | dash
+```
+
+Installs to `${XDG_DATA_HOME:-~/.local/share}/kavkash` (Unix socket under
+`XDG_RUNTIME_DIR`). No config file. Useful overrides (full list in the
+installer's header):
+
+- `KAVKASH_IMPORT=1` — import existing bash/zsh/fish history and atuin
+  (v18+ PASETO stores via the atuin CLI); re-running the import is
+  idempotent and safe
+- `KAVKASH_NO_SYSTEMD=1` — don't install the systemd unit
+- `KAVKASH_REPO` / `KAVKASH_TARBALL_URL` / `KAVKASH_TARBALL_SHA256` — install from elsewhere
+
+## Run
+
+The installer starts the daemon and prints the exact `source` line for
+your shell — it never edits your rc files.
+
+**With systemd** (default when available): a `kavkash.service` user unit
+is enabled and started (`Restart=on-failure`, starts at login). Manage
+it like any user service:
+
+```sh
+systemctl --user status kavkash.service     # is it running?
+systemctl --user restart kavkash.service    # after an update
+journalctl --user -u kavkash.service -f     # logs
+```
+
+Note: without `loginctl enable-linger <user>`, the service stops when
+you log out of every session.
+
+**Without systemd** (`KAVKASH_NO_SYSTEMD=1`, containers, …): start the
+daemon once per login session:
+
+```sh
+~/.local/share/kavkash/server.sh &
+```
+
+**Hook your shell** — add one line to your rc file, then start a new
+shell:
+
+```sh
+# ~/.bashrc
+source ~/.local/share/kavkash/functions.bash
+# ~/.zshrc
+source ~/.local/share/kavkash/functions.zsh
+# ~/.config/fish/config.fish
+source ~/.local/share/kavkash/functions.fish
+```
+
+## Uninstall
+
+Run `uninstall.sh` from the kavkash repo (it isn't copied into the
+install dir):
+
+```sh
+./uninstall.sh              # interactive
+./uninstall.sh -y           # non-interactive
+./uninstall.sh -y --purge   # also delete stored history
+```
+
+It stops the daemon (systemd unit or pid-file), removes runtime files
+and the install dir. Stored history is kept unless `--purge`; your rc
+files are never touched — remove the `source` line yourself.
+
+## Usage
+
+- **Up** (`walk> `) — browse the 500 newest commands.
+- **Ctrl+R** (`search> `) — search everything, seeded with the current
+  line (cap 10k).
+- **F6** (`all> `) · **F7** (`dir> `) · **F8** (`sess> `) — scope the
+  search: global, current dir + subdirs, or this shell session. They
+  switch scope inside the open picker (prompt updates, list reloads,
+  query kept).
+- **Enter** runs the picked command; **Tab** pastes it onto the line for
+  editing.
+- The picker loads a window of the newest commands and filters it
+  in-memory — full fzf syntax (`!`, `'exact'`, `a|b`), no per-keystroke
+  DB hits. The window doubles automatically when exhausted; **F5**
+  forces the next page. Multi-line commands display natively.
+- On bash ≥ 4.3, Enter runs through readline's native `accept-line`
+  (atuin's macro-chain trick), so the command behaves exactly as typed —
+  real exit code and duration are recorded. Older bash and ble.sh use a
+  print+eval fallback.
+
+## Requirements
+
+- **fzf ≥ 0.54** — older versions disable the picker (warning printed,
+  history still records)
+- **socat** (Unix-socket transport; `nc -U` works as fallback),
+  **sqlite3**, **awk** — everything else is plain POSIX sh
+
+Developed and tested on Debian trixie (dash, bash 5.2, zsh, fish 4).
+
+## How it works
 
 ```
 shell hooks → hook.sh → Unix socket → server.sh → processor.sh → SQLite
@@ -12,115 +109,28 @@ shell hooks → hook.sh → Unix socket → server.sh → processor.sh → SQLit
 shell Up/Ctrl+R fzf picker ← picker.sh → query.sh ←──────────────────┘
 ```
 
-## Components
-
-- **includes.sh** — shared XDG paths, the ns-since-epoch id builder, schema creation
-- **hook.sh** — mints ids, sends `W`/`U` messages from shell hooks
-- **server.sh** — socat daemon on the Unix socket
-- **processor.sh** — netstring parser, message routing, SQLite
-- **query.sh** — serves NUL-framed result rows to the picker
-- **picker.sh** — paginates the picker's window (grows on exhaustion, F5 forces)
-- **import.sh** — imports bash/zsh/fish/atuin history
-- **install.sh**, **uninstall.sh** — install and remove
-- **functions.{bash,zsh,fish}** — the Up/Ctrl+R picker per shell
-
-## Navigation
-
-- **Up** (`walk> `) — browse the 500 newest commands.
-- **Ctrl+R** (`search> `) — search everything, seeded with the current line
-  (cap 10k).
-- **F6** (`all> `) · **F7** (`dir> `) · **F8** (`sess> `) — search scoped to
-  global, the current directory (and subdirectories), or this shell session.
-  They switch scope inside the open picker (prompt updates, list reloads,
-  your query is kept); at the shell prompt they open a fresh scoped picker.
-  Scopes filter server-side before the window cut, so an old command still
-  shows up; the fzf query keeps filtering in-memory.
-
-The picker shows a window of the newest commands and filters it in-memory as
-you type — full fzf syntax (`!`, `'exact'`, `a|b`), no per-keystroke DB
-queries. When the loaded window is exhausted it doubles automatically (up to
-the cap); **F5** forces the next page. **Enter** runs the picked command,
-**Tab** pastes it onto the line for editing. Multi-line commands display
-natively.
-
-On bash ≥ 4.3, Enter runs the command **natively**: the widget hands it to
-readline's own `accept-line` via the two-step macro-chain trick borrowed
-from atuin's bash integration (sentinel key dispatch — see the comments in
-`functions.bash`), so history, prompt, `$?` and the preexec/precmd
-recording all fire exactly as if the command were typed, with the real exit
-code and duration. Older bash and ble.sh fall back to atuin's
-`__atuin_accept_line` style print+eval.
-
-## Protocol
-
-Netstrings (`len:payload,`), one field per netstring, over the Unix socket.
-
-- **W** `cmd,cwd,id,session` — command started. `id` is ns-since-epoch: the
-  row's primary key *and* timestamp (INTEGER PRIMARY KEY = rowid, so the table
-  is stored in time order). fish/zsh fire this in
-  preexec; bash synthesizes one with a DEBUG trap, plus a fire on the
-  prompt itself that catches lines the trap can't see directly (function
-  definitions are recorded there, with exit code and duration). `exit` is
-  delivered synchronously so the last command isn't lost. Leading-space
-  commands never reach bash history (HISTCONTROL=ignorespace) and are
-  missed.
-- **U** `id,exit_code,duration_ms` — command finished; fills in exit code
-  and duration (real in all shells; 0 only when the completion update is
-  lost to a race or the line was fallback-captured).
-- **Q** `search,query,count,cwd,session` — newest `count` commands matching
-  the scope, NUL-framed raw rows (multi-line safe; 0x1E/0x1F/`\r` stripped).
-  `cwd` matches the directory and its subtree (`/` = everything), `session`
-  matches a per-shell token; empty = global. The scope applies before the
-  count cut. The picker sends an empty query and fzf filters in-memory —
-  the server-side subsequence matcher was removed; the query field is
-  ignored.
-
-Example: `1:W,2:ls,10:/home/user,19:1786230239695766534,36:5a41fe03-6f2c-4f7e-9b8a-0d1e2f3a4b5c,`
-
-## Installation
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/altunyurt/kavkash/main/install.sh | dash
-```
-
-Installs to `${XDG_DATA_HOME:-~/.local/share}/kavkash` (socket under
-`XDG_RUNTIME_DIR`); no config file. The installer offers to import existing
-history (bash/zsh/fish, atuin ≥ v18 via its CLI) — `KAVKASH_IMPORT=0|1`
-skips/forces. Import is idempotent — safe to re-run: rows deduplicate
-on (command, cwd, timestamp), while the same command at different times
-is kept.
-
-1. Start the daemon once (login shell, service manager, …):
-   ```sh
-   ~/.local/share/kavkash/server.sh &
-   ```
-2. Source the integration in your rc file:
-   ```sh
-   source ~/.local/share/kavkash/functions.bash
-   source ~/.local/share/kavkash/functions.fish
-   source ~/.local/share/kavkash/functions.zsh
-   ```
-
-## Requirements
-
-| dependency  | minimum      | notes                                        |
-|-------------|--------------|----------------------------------------------|
-| fzf         | 0.54         | enforced — older versions disable the picker (warning printed, shell defaults kept) |
-| socat       | 1.7          | Unix-socket transport; `nc -U` works as fallback |
-| sqlite3     | 3.x          | storage                                      |
-| awk         | mawk 1.3.4 / gawk | netstring parsing, query building       |
-| dash        | any          | scripts are plain POSIX sh                   |
-
-## Compatibility
-
-Developed and tested on **Debian GNU/Linux 13 (trixie)** with dash 0.5.12,
-socat 1.8.0.3, sqlite3 3.46.1, mawk 1.3.4, fzf 0.60, bash 5.2, zsh 5.9 and
-fish 4.0.2. Any Linux with the dependencies above should work.
+- Shells call `hook.sh` on preexec/precmd (bash synthesizes preexec with
+  a DEBUG trap; the precmd fire catches lines the trap can't see, e.g.
+  function definitions). Messages are netstrings (`len:payload,`) over a
+  Unix socket; `server.sh` (socat) hands each connection to
+  `processor.sh`.
+- Each row stores the raw command (multi-line safe), cwd, exit code,
+  duration, and a per-shell session token. The row id is ns-since-epoch:
+  INTEGER PRIMARY KEY aliases the rowid, so the table is stored in time
+  order and `ORDER BY id DESC` is a reverse leaf scan.
+- The picker (`functions.*`) loads a *window* of the newest commands via
+  `query.sh` and fzf filters it in-memory. Dir/session scope is filtered
+  server-side **before** the LIMIT, so an old scoped command isn't cut
+  off by the window. `picker.sh` drives pagination from fzf events; win
+  size and scope live in temp files because fzf transforms run in a
+  subshell.
+- `import.sh` — idempotent import from bash/zsh/fish history files and
+  atuin (v18+ PASETO stores via the atuin CLI).
 
 ## Pruning
 
-History grows without bound. Keep the newest N commands (id order == time
-order) and reclaim the space:
+History grows without bound. Keep the newest N commands and reclaim the
+space:
 
 ```sh
 sqlite3 ~/.local/share/kavkash/history.db \
@@ -128,7 +138,7 @@ sqlite3 ~/.local/share/kavkash/history.db \
 ```
 
 `rm -f ~/.local/share/kavkash/history.db` wipes everything; the daemon
-recreates the schema on next start.
+recreates the schema on its next start.
 
 ## License
 
