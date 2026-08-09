@@ -10,6 +10,53 @@ _SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # needs echo/line editing/signals back — restore this before running it.
 _hist_stty=$(stty -g 2> /dev/null || true)
 
+# --- atuin-borrowed: readline macro-chain for native accept-line ---
+# (from atuin's bash integration, crates/atuin/src/shell/atuin.bash:
+#  __atuin_bind_impl / __atuin_widget_run / __atuin_macro_chain)
+# bash can't call accept-line from a bind -x widget, so atuin dispatches
+# through a two-step macro chain: the user key is bound as a *string macro*
+# that queues a sentinel chain (e.g. \C-r -> "\C-x\C-_A1\a\C-x\C-_A0\a");
+# the chain's head (\C-x\C-_A1\a) is bind -x'd to the widget; on Enter the
+# widget swaps the tail (\C-x\C-_A0\a) between its default no-op "" and the
+# readline function accept-line — so when the widget returns, readline
+# accepts the line *natively* and the command runs exactly as if typed
+# (history, prompt, $?, the DEBUG-trap preexec and PROMPT_COMMAND precmd
+# all fire natively — no print+eval emulation). On paste (tab) or cancel the
+# tail stays "" and the line is just left on the buffer.
+# Deviation from atuin: atuin re-binds the tail only in the keymap the
+# widget was triggered from; we rebind all three standard keymaps — the
+# sentinel chain is never typed by humans, so a stale accept-line binding is
+# unreachable, and it avoids tracking the active keymap.
+# bash >= 4.3 is required for multi-byte bind -x keyseqs; ble.sh can't
+# handle the sentinel chain — both fall back to the print+eval Enter in
+# _hist_picker (which is atuin's __atuin_accept_line fallback).
+_hist_macro_bash=0
+if (( BASH_VERSINFO[0] >= 5 || BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 3 )) \
+        && [[ -z ${BLE_ATTACHED-} ]]; then
+    _hist_macro_bash=1
+    _hist_macro_sentinel='\C-x\C-_A0\a'   # tail: no-op "", or accept-line on Enter
+    _hist_macro_n=0
+    for _hist_km in emacs vi-insert vi-command; do
+        bind -m "$_hist_km" "\"$_hist_macro_sentinel\": \"\""
+    done
+    unset _hist_km
+fi
+
+# Bind KEYSEQ to widget FN through the macro chain (only used when the macro
+# path is active, above).
+_hist_bind_widget() {
+    local keyseq=$1 fn=$2
+    _hist_macro_n=$((_hist_macro_n + 1))
+    local chain="\\C-x\\C-_A${_hist_macro_n}\\a"
+    for _hist_km in emacs vi-insert vi-command; do
+        # the user key queues BOTH chains: the widget chain (head, bind -x)
+        # and the sentinel (tail, swapped to accept-line on Enter)
+        bind -m "$_hist_km" "\"$keyseq\": \"$chain$_hist_macro_sentinel\""
+        bind -m "$_hist_km" -x "\"$chain\": $fn"
+    done
+    unset _hist_km
+}
+
 # _hist_picker — the single fzf widget behind Up, Ctrl+R and the scope
 # keys (F6 all / F7 dir / F8 session — search mode with a scope).
 #   count:    DB result cap (Up=500, Ctrl+R=10000)
@@ -35,6 +82,15 @@ _hist_picker() {
     local picked key cmd win win_file scope_file label prompt picker
     _hist_armed=0   # the trap fires for the bind -x widget invocation itself
                     # and for the eval'd Enter command — both must not record
+    if (( _hist_macro_bash )); then
+        # atuin-borrowed: reset the sentinel tail to no-op for this run — a
+        # previous Enter run left it bound to accept-line, and the queued
+        # sentinel after this widget would otherwise execute instead of paste.
+        for _hist_km in emacs vi-insert vi-command; do
+            bind -m "$_hist_km" "\"$_hist_macro_sentinel\": \"\""
+        done
+        unset _hist_km
+    fi
     if [[ -n "$cwd" ]]; then
         label="dir $cwd"; prompt="dir> "
     elif [[ -n "$session" ]]; then
@@ -85,47 +141,66 @@ _hist_picker() {
         cmd="${picked#*$'\n'}"
         if [[ -n "$cmd" ]]; then
             if [[ -z "$key" ]]; then
-                # Enter: paste and run. readline can't accept the line from
-                # a widget, so print the prompt + command (as if typed —
-                # what atuin does), record it (history -s) and eval it
-                # directly. fzf ran in readline's raw mode; a command that
-                # reads the tty needs echo/line editing back, so restore
-                # the interactive settings around the eval. The DEBUG
-                # preexec is disarmed for this whole widget, so the eval'd
-                # command doesn't self-record; hook.sh does W here and U
-                # right after with the real exit code.
-                local prompt_repr
-                if ((BASH_VERSINFO[0] > 4 || BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4)); then
-                    prompt_repr=${PS1@P}
+                if (( _hist_macro_bash )); then
+                    # Enter: paste and run *natively* via the atuin-borrowed
+                    # macro chain (machinery near the top of this file): set
+                    # the buffer and swap the queued sentinel tail to
+                    # accept-line. After this widget returns, readline
+                    # accepts the line — the command displays as typed and
+                    # runs through the shell's own machinery (history,
+                    # prompt, $?); the DEBUG-trap preexec and PROMPT_COMMAND
+                    # precmd record it with the real exit code and duration.
+                    # No eval, no stty juggling, no manual hook calls.
+                    READLINE_LINE="$cmd"
+                    READLINE_POINT=${#READLINE_LINE}
+                    for _hist_km in emacs vi-insert vi-command; do
+                        bind -m "$_hist_km" "\"$_hist_macro_sentinel\": accept-line"
+                    done
+                    unset _hist_km
                 else
-                    prompt_repr='$ '
+                    # Enter fallback (bash < 4.3 / ble.sh): atuin's
+                    # __atuin_accept_line — print the prompt + command (as
+                    # if typed), record it (history -s) and eval it
+                    # directly. fzf ran in readline's raw mode; a command
+                    # that reads the tty needs echo/line editing back, so
+                    # restore the interactive settings around the eval. The
+                    # DEBUG preexec is disarmed for this whole widget, so
+                    # the eval'd command doesn't self-record; hook.sh does W
+                    # here and U right after with the real exit code.
+                    local prompt_repr
+                    if ((BASH_VERSINFO[0] > 4 || BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4)); then
+                        prompt_repr=${PS1@P}
+                    else
+                        prompt_repr='$ '
+                    fi
+                    # strip bash's \[ \] markers (/) from the prompt
+                    prompt_repr=${prompt_repr//[$'\001\002']}
+                    printf '%s\n' "$prompt_repr$cmd"
+                    history -s "$cmd"
+                    READLINE_LINE=""
+                    # don't leak the widget vars into a child bash
+                    export -n READLINE_LINE READLINE_POINT 2> /dev/null || true
+                    local stty_backup
+                    stty_backup=$(stty -g 2> /dev/null || true)
+                    if [[ -n "$_hist_stty" ]]; then
+                        stty "$_hist_stty" 2> /dev/null
+                    fi
+                    local _hist_exit
+                    eval "$cmd"
+                    _hist_exit=$?
+                    if [[ -n "$stty_backup" ]]; then
+                        stty "$stty_backup" 2> /dev/null
+                    fi
+                    local id
+                    id=$("$_SCRIPT_DIR/hook.sh" W "$cmd" "$PWD" "$_hist_sess")
+                    if [[ -n "$id" ]]; then
+                        "$_SCRIPT_DIR/hook.sh" U "$id" "$_hist_exit" 0
+                    fi
+                    # precmd won't run for this line (bind -x callbacks
+                    # don't re-display the prompt), so sync the index
+                    # baseline.
+                    _hist_last_idx=$(_kav_hist_idx)
                 fi
-                # strip bash's \[ \] markers (/) from the prompt
-                prompt_repr=${prompt_repr//[$'\001\002']}
-                printf '%s\n' "$prompt_repr$cmd"
-                history -s "$cmd"
-                READLINE_LINE=""
-                # don't leak the widget vars into a child bash
-                export -n READLINE_LINE READLINE_POINT 2> /dev/null || true
-                local stty_backup
-                stty_backup=$(stty -g 2> /dev/null || true)
-                if [[ -n "$_hist_stty" ]]; then
-                    stty "$_hist_stty" 2> /dev/null
-                fi
-                local _hist_exit
-                eval "$cmd"
-                _hist_exit=$?
-                if [[ -n "$stty_backup" ]]; then
-                    stty "$stty_backup" 2> /dev/null
-                fi
-                local id
-                id=$("$_SCRIPT_DIR/hook.sh" W "$cmd" "$PWD" "$_hist_sess")
-                if [[ -n "$id" ]]; then
-                    "$_SCRIPT_DIR/hook.sh" U "$id" "$_hist_exit" 0
-                fi
-                # precmd won't run for this line (bind -x callbacks don't
-                # re-display the prompt), so sync the index baseline.
-                _hist_last_idx=$(_kav_hist_idx)
             else
                 # Tab: paste onto the line; Enter will run it (and precmd
                 # records).
@@ -256,8 +331,11 @@ fi
 # bash-preexec does); the guards above keep it inert outside commands.
 trap kav_preexec_record DEBUG
 
-# bind -x runs the function directly (not just inserts text).
-# Enter and Ctrl+C are NOT bound — readline's defaults execute/cancel.
+# The widgets are bound below (readline can't call accept-line from a
+# bind -x widget, so bash >= 4.3 routes them through atuin's macro chain,
+# machinery above; older bash / ble.sh use plain bind -x and the print+eval
+# Enter fallback). Enter and Ctrl+C are NOT bound — readline's defaults
+# execute/cancel.
 #
 # fzf >= 0.54 required: multi-line display (0.53), print() (0.53), transform +
 # FZF_* env + result event (0.45/0.46), start:reload without an initial reader
@@ -267,11 +345,24 @@ trap kav_preexec_record DEBUG
 _kav_fzf_ver=$(fzf --version 2>/dev/null | awk 'NR == 1 { print $1 }')
 if [ -n "$_kav_fzf_ver" ] && printf '%s\n' "$_kav_fzf_ver" | \
         awk -F. 'NR == 1 { exit ($1 > 0 || $2 >= 54) ? 0 : 1 }'; then
-    bind -x '"\C-r": _hist_search'
-    bind -x '"\e[A": _hist_up'
-    bind -x '"\e[17~": _hist_scope_all'   # F6
-    bind -x '"\e[18~": _hist_scope_dir'   # F7
-    bind -x '"\e[19~": _hist_scope_sess'  # F8
+    if (( _hist_macro_bash )); then
+        # Macro-chain dispatch (atuin-borrowed, machinery above): the key
+        # queues the sentinel chain; on Enter the widget swaps the tail to
+        # accept-line and the command runs natively.
+        _hist_bind_widget '\C-r' _hist_search
+        _hist_bind_widget '\e[A' _hist_up
+        _hist_bind_widget '\e[17~' _hist_scope_all   # F6
+        _hist_bind_widget '\e[18~' _hist_scope_dir   # F7
+        _hist_bind_widget '\e[19~' _hist_scope_sess  # F8
+    else
+        # bash < 4.3 or ble.sh: direct bind -x + the print+eval Enter
+        # fallback in _hist_picker (atuin's __atuin_accept_line).
+        bind -x '"\C-r": _hist_search'
+        bind -x '"\e[A": _hist_up'
+        bind -x '"\e[17~": _hist_scope_all'   # F6
+        bind -x '"\e[18~": _hist_scope_dir'   # F7
+        bind -x '"\e[19~": _hist_scope_sess'  # F8
+    fi
 else
     printf 'kavkash: fzf >= 0.54 required (found %s) — picker disabled; Up/Ctrl-R keep shell defaults\n' \
         "${_kav_fzf_ver:-not installed}" >&2

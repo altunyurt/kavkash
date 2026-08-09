@@ -43,6 +43,14 @@ the cap); **F5** forces the next page. **Enter** runs the picked command,
 **Tab** pastes it onto the line for editing. Multi-line commands display
 natively.
 
+On bash ≥ 4.3, Enter runs the command **natively**: the widget hands it to
+readline's own `accept-line` via the two-step macro-chain trick borrowed
+from atuin's bash integration (sentinel key dispatch — see the comments in
+`functions.bash`), so history, prompt, `$?` and the preexec/precmd
+recording all fire exactly as if the command were typed, with the real exit
+code and duration. Older bash and ble.sh fall back to atuin's
+`__atuin_accept_line` style print+eval.
+
 ## Protocol
 
 Netstrings (`len:payload,`), one field per netstring, over the Unix socket.
