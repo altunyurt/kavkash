@@ -20,8 +20,7 @@ DB="$KAV_DB_FILE"
 
 kav_have sqlite3 || kav_die "sqlite3 required for history import"
 
-# Same schema as server.sh, so import works before the daemon's first
-# run (also migrates a pre-ns TEXT-id table).
+# Same schema as server.sh, so import works before the daemon's first run.
 kav_ensure_history_schema
 
 tmpdir=${TMPDIR:-/tmp}
@@ -136,9 +135,9 @@ EOF
 
 # emit <ts_ns> <cmd> [<cwd> [<dur_ms> <exit> <src>]]
 # ts is the ns-since-epoch id (= timestamp). Invalid timestamps get a
-# per-parser pseudo-ts, scaled to ns like the migration does (old rows
-# were ms-scale counters): bash 0, zsh 3e9, fish 1e9, atuin 2e9 — disjoint
-# ranges, so equal counters across parsers can't collide on the PK.
+# per-parser pseudo-ts, scaled to ns: bash 0, zsh 3e9, fish 1e9, atuin
+# 2e9 — disjoint bases, so equal counters across parsers can't collide
+# on the PK.
 # ENTRIES framing: 0x1E record / 0x1F field — commands can't contain those
 # bytes, so parsing needs no per-line subprocesses.
 counter=0
@@ -438,8 +437,8 @@ else
 fi
 
 echo "inserting $total commands" >&2
-# Index hygiene: drop the legacy idx_import_dedup (unused, but every
-# INSERT maintains it). The atuin enrichment UPDATE probes WHERE
+# Index hygiene: drop the unused idx_import_dedup (every INSERT would
+# maintain it). The atuin enrichment UPDATE probes WHERE
 # command='...' — a plain command index turns that from a full scan per
 # row into a lookup; dropped after the load so the live daemon pays no
 # maintenance, built only when atuin rows are present.

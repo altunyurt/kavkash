@@ -37,42 +37,10 @@ kav_new_id_to_time() {
     date -d "@$(( $1 / 1000000000 ))" +"%Y-%m-%d %H:%M:%S" 2> /dev/null || printf '%s\n' "$1"
 }
 
-# Create/migrate the history table. v0.2.x stored id as a TEXT UUIDv7
-# (ms timestamp in hex); the id is now ns-since-epoch. Migration: the old
-# id's first 12 hex chars decode to ms, re-expressed as ns. SQL can't
-# parse '0x...' text (CAST gives 0), so each row's id is converted in dash
-# ($((0x...)) is exact 64-bit) from a hex(quote()) dump — hex keeps
-# multiline commands on one line. The history_old check makes the carry-
-# over rerunnable after a crash between the rename and the inserts.
+# Create the history table if missing. Idempotent — existing databases
+# are left untouched.
 kav_ensure_history_schema() {
-    if sqlite3 "$KAV_DB_FILE" "SELECT 1 FROM sqlite_master WHERE type='table' AND name='history' AND sql LIKE '%id TEXT%';" | grep -q 1; then
-        sqlite3 "$KAV_DB_FILE" "BEGIN; ALTER TABLE history RENAME TO history_old; CREATE TABLE history (id INTEGER PRIMARY KEY, command TEXT NOT NULL, cwd TEXT NOT NULL, exit_code INTEGER NOT NULL, duration_ms INTEGER NOT NULL, session TEXT); COMMIT;"
-    fi
-    if sqlite3 "$KAV_DB_FILE" "SELECT 1 FROM sqlite_master WHERE type='table' AND name='history_old';" | grep -q 1; then
-        # old id is xxxxxxxx-xxxx-...: chars 1-8 + 10-13 are the ms in hex.
-        # hex() of the raw command keeps multiline commands on one line;
-        # CAST(unhex(...) AS TEXT) restores them (no quote() wrapper, so no
-        # unescaping). The 48-bit ms value needs dash $((0x...)) — mawk and
-        # sqlite's CAST can't parse '0x' text, and mawk %d is 32-bit.
-        prev=0
-        sqlite3 -noheader "$KAV_DB_FILE" "SELECT id, hex(command), hex(COALESCE(cwd,'')), exit_code, duration_ms FROM history_old ORDER BY substr(replace(id, '-', ''), 1, 12);" |
-        while IFS='|' read -r oldid hcmd hcwd exitc dur; do
-            mshex=$(printf '%s' "$oldid" | cut -c1-8,10-13)  # ms in hex
-            ns=$((0x$mshex * 1000000))
-            # old ids carried a random suffix: two rows can share the same
-            # ms (second-resolution atuin, bash+zsh pseudo range); bump
-            # monotonic so the PK never collides.
-            [ "$ns" -le "$prev" ] && ns=$((prev + 1))
-            prev=$ns
-            printf "INSERT INTO history (id, command, cwd, exit_code, duration_ms) VALUES (%s, CAST(unhex('%s') AS TEXT), CAST(unhex('%s') AS TEXT), %s, %s);\n" "$ns" "$hcmd" "$hcwd" "$exitc" "$dur"
-        done | sqlite3 "$KAV_DB_FILE"
-        sqlite3 "$KAV_DB_FILE" "DROP TABLE history_old;"
-    fi
     sqlite3 "$KAV_DB_FILE" "CREATE TABLE IF NOT EXISTS history (id INTEGER PRIMARY KEY, command TEXT NOT NULL, cwd TEXT NOT NULL, exit_code INTEGER NOT NULL, duration_ms INTEGER NOT NULL, session TEXT);"
-    # v0.3.x tables lack the session column (additive; pre-session rows are
-    # NULL, which session scoping naturally excludes).
-    if ! sqlite3 "$KAV_DB_FILE" "PRAGMA table_info(history);" | grep -q '|session|'; then
-        sqlite3 "$KAV_DB_FILE" "ALTER TABLE history ADD COLUMN session TEXT;"
-    fi
 }
+
 

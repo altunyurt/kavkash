@@ -1,14 +1,12 @@
 #!/usr/bin/dash
 # processor.sh - Netstring protocol handler
 # Source includes.sh relative to THIS script (socat EXEC may have any CWD).
-_SCRIPT_DIR="$(dirname -- "$(realpath -- "$0")")"
-. "$_SCRIPT_DIR/includes.sh"
+. "$(dirname -- "$(realpath -- "$0")")/includes.sh"
 #
 # Wire protocol: concatenated netstrings ("len:payload,").
 #   W cmd cwd id session    write (preexec; id = ns-since-epoch, session =
 #                           per-shell token, '' when absent)
 #   U id exit_code dur_ms   update (precmd)
-#   Q v                     version probe ("x.y.z", for scope-capability)
 #   Q search query count cwd session
 #                           query -> NUL-separated rows; cwd/session scope
 #                           the result BEFORE the LIMIT (a dir/session
@@ -88,7 +86,7 @@ case "$TYPE" in
         id="$3"
         session="$4"
         # id must be an integer (INTEGER PRIMARY KEY); drop anything else
-        # (garbage on the wire — a hook/daemon version mismatch).
+        # (garbage on the wire).
         case "$id" in '' | *[!0-9]*) exit 0 ;; esac
 
         safe_cmd=$(printf '%s' "$cmd" | sed "s/'/''/g")
@@ -139,13 +137,6 @@ case "$TYPE" in
         case "$count" in '' | *[!0-9]*) count=10000 ;; esac
         case "$action" in
             search) ;;
-            v)
-                # Capability probe for scoped queries. Installed copies put
-                # VERSION in KAV_DATA_HOME; dev runs read the repo file.
-                ver=$(cat "$KAV_DATA_HOME/VERSION" 2> /dev/null || cat "$_SCRIPT_DIR/VERSION" 2> /dev/null || echo 0)
-                printf '%s\n' "$ver"
-                exit 0
-                ;;
             *) exit 0 ;;
         esac
         where=""

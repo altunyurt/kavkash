@@ -21,7 +21,7 @@ fi
 KAV_PROC_SCRIPT="${_SCRIPT_DIR}/processor.sh"
 
 # Schema: id is ns-since-epoch (INTEGER PRIMARY KEY = rowid alias, so the
-# table is stored in time order); created/migrated by includes.sh.
+# table is stored in time order); created by includes.sh.
 kav_ensure_history_schema
 
 # Remove stale socket file from a previous crash

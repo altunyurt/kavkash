@@ -14,7 +14,7 @@ shell Up/Ctrl+R fzf picker ← picker.sh → query.sh ←───────�
 
 ## Components
 
-- **includes.sh** — shared XDG paths, the ns-since-epoch id builder, schema creation/migration
+- **includes.sh** — shared XDG paths, the ns-since-epoch id builder, schema creation
 - **hook.sh** — mints ids, sends `W`/`U` messages from shell hooks
 - **server.sh** — socat daemon on the Unix socket
 - **processor.sh** — netstring parser, message routing, SQLite
@@ -57,12 +57,15 @@ Netstrings (`len:payload,`), one field per netstring, over the Unix socket.
 - **U** `id,exit_code,duration_ms` — command finished; fills in exit code
   and duration (real in all shells; 0 only when the completion update is
   lost to a race or the line was fallback-captured).
-- **Q** `search,query,count` — newest `count` commands, NUL-framed raw rows
-  (multi-line safe; 0x1E/0x1F/`\r` stripped). The picker sends an empty
-  query and fzf filters in-memory — the server-side subsequence matcher
-  was removed; the query field is ignored.
+- **Q** `search,query,count,cwd,session` — newest `count` commands matching
+  the scope, NUL-framed raw rows (multi-line safe; 0x1E/0x1F/`\r` stripped).
+  `cwd` matches the directory and its subtree (`/` = everything), `session`
+  matches a per-shell token; empty = global. The scope applies before the
+  count cut. The picker sends an empty query and fzf filters in-memory —
+  the server-side subsequence matcher was removed; the query field is
+  ignored.
 
-Example: `1:W,2:ls,10:/home/user,19:1786230239695766534,`
+Example: `1:W,2:ls,10:/home/user,19:1786230239695766534,36:5a41fe03-6f2c-4f7e-9b8a-0d1e2f3a4b5c,`
 
 ## Installation
 

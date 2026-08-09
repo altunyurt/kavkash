@@ -6,9 +6,7 @@
 # filters the loaded window in-memory (the server-side subsequence matcher
 # was removed). CWD/SESSION scope the server-side query (empty = global):
 # cwd matches the directory and its subtree, session matches a per-shell
-# token. Scoped queries first probe the server's version (Q v): a pre-
-# v0.4.0 daemon ignores the scope fields and would silently return global
-# rows, so the probe bails out to an empty picker instead.
+# token.
 #
 # Output: NUL-separated raw command rows for fzf --read0. Multi-line commands
 # pass through verbatim (fzf >= 0.53 renders them natively); nothing is
@@ -29,19 +27,6 @@ _ns() {
         printf '%s:%s,' "$len" "$1"
     }
 }
-
-if [ -n "$cwd" ] || [ -n "$session" ]; then
-    v=""
-    if command -v socat > /dev/null 2>&1; then
-        v=$(printf '1:Q,1:v,' | socat - UNIX-CONNECT:"$KAV_SOCK_FILE" 2> /dev/null)
-    elif command -v nc > /dev/null 2>&1; then
-        v=$(printf '1:Q,1:v,' | nc -U "$KAV_SOCK_FILE" 2> /dev/null)
-    else
-        exit 0
-    fi
-    # require the scope protocol (>= 0.4.0); empty reply = old daemon
-    printf '%s\n' "$v" | awk -F. 'NR == 1 { exit ($1 > 0 || ($1 == 0 && $2 >= 4)) ? 0 : 1 }' || exit 0
-fi
 
 payload=$(printf '1:Q,%s%s%s%s%s%s%s%s' "$(_ns search)" "$(_ns "$query")" "$(_ns "$count")" "$(_ns "$cwd")" "$(_ns "$session")")
 
