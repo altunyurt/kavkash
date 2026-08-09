@@ -34,34 +34,44 @@ function _hist_picker
         set label "session"
         set prompt "sess> "
     end
-    # fzf parses action command lines; single quotes keep a space-containing
-    # $PWD out of the tokenizer (a literal ' in a path is not scoped).
-    set -l scope_arg "'$cwd' '$session'"
     set -l win $count
     if test $win -gt 1000
         set win 1000
     end
     set -l win_file (mktemp)
     or return 0
+    set -l scope_file (mktemp)
+    or begin
+        rm -f "$win_file"
+        return 0
+    end
     printf '%s\n' "$win" > "$win_file"
+    printf '%s\n%s\n' "$cwd" "$session" > "$scope_file"
+    set -l picker $_HIST_PICKER
     # NOTE: fzf's stderr must stay on the terminal (a 2>/dev/null here
     # renders a blank UI); </dev/null keeps the tty out of its stdin —
     # start:reload drives the list. read -z: NUL-delimited capture — fish
     # variables can't hold NUL, so no command substitution. print()+accept
     # NUL-frames "key\0<cmd>\0"; the awk turns that into "key\n<cmd>".
+    # Scope lives in SCOPE_FILE; every reload goes through picker.sh load
+    # (start, growth, F5, F6-F8) so win and scope never diverge. F6/F7/F8
+    # switch scope inside the picker via picker.sh switch.
     set -l picked
     fzf --height 15 --no-sort --track --sync --highlight-line \
         --prompt "$prompt" --query "$init_q" --read0 --print0 \
         --header "$mode · $count newest · $label · F6 all F7 dir F8 sess · f5 older · tab paste · enter run" \
-        --bind "start:reload-sync:$_HIST_PICKER $win_file $count load $scope_arg" \
-        --bind "result:transform:$_HIST_PICKER $win_file $count $scope_arg" \
-        --bind "f5:transform:$_HIST_PICKER $win_file $count force $scope_arg" \
+        --bind "start:reload-sync:$picker load $win_file $count $scope_file" \
+        --bind "result:transform:$picker decide $win_file $count $scope_file" \
+        --bind "f5:transform:$picker decide $win_file $count $scope_file force" \
+        --bind "f6:transform:$picker switch $scope_file '' '' all $win_file $count" \
+        --bind "f7:transform:$picker switch $scope_file '$PWD' '' dir $win_file $count" \
+        --bind "f8:transform:$picker switch $scope_file '' '$_hist_sess' sess $win_file $count" \
         --bind 'enter:print()+accept,tab:print(tab)+accept' \
         < /dev/null \
         | awk 'BEGIN { RS = "\0" }
             NR == 1 { key = $0; next }
             NR == 2 { printf "%s\n%s", key, $0 }' | read -z picked
-    rm -f "$win_file"
+    rm -f "$win_file" "$scope_file"
 
     # fzf ran as a full-screen app inside this binding; fish's deferred
     # redraw won't repaint the prompt it clobbered. Force a repaint.

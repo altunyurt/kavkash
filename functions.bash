@@ -27,7 +27,7 @@ _SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # isn't cut off by the window; fzf still does the keyword filtering.
 _hist_picker() {
     local count="$1" init_q="${2:-}" mode="${3:-walk}" cwd="${4:-}" session="${5:-}"
-    local picked key cmd win win_file label prompt scope_arg
+    local picked key cmd win win_file scope_file label prompt picker
     _hist_armed=0   # the trap fires for the bind -x widget invocation itself
                     # and for the eval'd Enter command — both must not record
     if [[ -n "$cwd" ]]; then
@@ -37,32 +37,43 @@ _hist_picker() {
     else
         label="all"; prompt="$mode> "
     fi
-    # fzf parses action command lines; single quotes keep a space-containing
-    # $PWD out of the tokenizer (a literal ' in a path is not scoped).
-    scope_arg="'$cwd' '$session'"
     win=$count
     (( win > 1000 )) && win=1000
     win_file=$(mktemp) || {
         _hist_armed=1
         return 0
     }
+    scope_file=$(mktemp) || {
+        rm -f "$win_file"
+        _hist_armed=1
+        return 0
+    }
     printf '%s\n' "$win" > "$win_file"
+    printf '%s\n%s\n' "$cwd" "$session" > "$scope_file"
+    picker="$_SCRIPT_DIR/picker.sh"
     # NOTE: fzf's stderr must stay on the terminal (a 2>/dev/null here
     # renders a blank UI); </dev/null keeps the tty out of its stdin —
     # start:reload drives the list. print()+accept NUL-frames
     # "key\0<cmd>\0"; the awk turns that into "key\n<cmd>".
+    # Scope lives in SCOPE_FILE; every reload (start, growth, F5, F6-F8)
+    # goes through picker.sh load so win and scope never diverge.
+    # F6/F7/F8 switch scope inside the picker via picker.sh switch, which
+    # rewrites the scope file and prints the reload action for transform.
     picked=$(fzf --height 15 --no-sort --track --sync --highlight-line \
         --prompt "$prompt" --query "$init_q" --read0 --print0 \
         --header "$mode · $count newest · $label · F6 all F7 dir F8 sess · f5 older · tab paste · enter run" \
-        --bind "start:reload-sync:$_SCRIPT_DIR/picker.sh $win_file $count load $scope_arg" \
-        --bind "result:transform:$_SCRIPT_DIR/picker.sh $win_file $count $scope_arg" \
-        --bind "f5:transform:$_SCRIPT_DIR/picker.sh $win_file $count force $scope_arg" \
+        --bind "start:reload-sync:$picker load $win_file $count $scope_file" \
+        --bind "result:transform:$picker decide $win_file $count $scope_file" \
+        --bind "f5:transform:$picker decide $win_file $count $scope_file force" \
+        --bind "f6:transform:$picker switch $scope_file '' '' all $win_file $count" \
+        --bind "f7:transform:$picker switch $scope_file '$PWD' '' dir $win_file $count" \
+        --bind "f8:transform:$picker switch $scope_file '' '$_hist_sess' sess $win_file $count" \
         --bind 'enter:print()+accept,tab:print(tab)+accept' \
         < /dev/null \
         | awk 'BEGIN { RS = "\0" }
             NR == 1 { key = $0; next }
             NR == 2 { printf "%s\n%s\n", key, $0 }')
-    rm -f "$win_file"
+    rm -f "$win_file" "$scope_file"
 
     if [[ -n "$picked" ]]; then
         key="${picked%%$'\n'*}"

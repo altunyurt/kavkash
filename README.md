@@ -31,6 +31,8 @@ shell Up/Ctrl+R fzf picker ← picker.sh → query.sh ←───────�
   (cap 10k).
 - **F6** (`all> `) · **F7** (`dir> `) · **F8** (`sess> `) — search scoped to
   global, the current directory (and subdirectories), or this shell session.
+  They switch scope inside the open picker (prompt updates, list reloads,
+  your query is kept); at the shell prompt they open a fresh scoped picker.
   Scopes filter server-side before the window cut, so an old command still
   shows up; the fzf query keeps filtering in-memory.
 
