@@ -7,7 +7,18 @@ _SCRIPT_DIR=${0:A:h}      # kavkash root, where hook.sh/query.sh/picker.sh live
 # functions.bash for the design rationale; zsh mirrors it, except accept
 # RUNS the picked command — zsh can from a widget).
 _hist_picker() {
-    local count="$1" init_q="${2:-}" mode="${3:-walk}" picked key cmd win win_file
+    local count="$1" init_q="${2:-}" mode="${3:-walk}" cwd="${4:-}" session="${5:-}"
+    local picked key cmd win win_file label prompt scope_arg
+    if [[ -n "$cwd" ]]; then
+        label="dir $cwd"; prompt="dir> "
+    elif [[ -n "$session" ]]; then
+        label="session"; prompt="sess> "
+    else
+        label="all"; prompt="$mode> "
+    fi
+    # fzf parses action command lines; single quotes keep a space-containing
+    # $PWD out of the tokenizer (a literal ' in a path is not scoped).
+    scope_arg="'$cwd' '$session'"
     win=$count
     (( win > 1000 )) && win=1000
     win_file=$(mktemp) || return 0
@@ -17,11 +28,11 @@ _hist_picker() {
     # start:reload drives the list. print()+accept NUL-frames
     # "key\0<cmd>\0"; the awk turns that into "key\n<cmd>".
     picked=$(fzf --height 15 --no-sort --track --sync --highlight-line \
-        --prompt "$mode> " --query "$init_q" --read0 --print0 \
-        --header "$mode · $count newest · f5: older · tab: paste · enter: run" \
-        --bind "start:reload-sync:$_SCRIPT_DIR/picker.sh $win_file $count load" \
-        --bind "result:transform:$_SCRIPT_DIR/picker.sh $win_file $count" \
-        --bind "f5:transform:$_SCRIPT_DIR/picker.sh $win_file $count force" \
+        --prompt "$prompt" --query "$init_q" --read0 --print0 \
+        --header "$mode · $count newest · $label · F6 all F7 dir F8 sess · f5 older · tab paste · enter run" \
+        --bind "start:reload-sync:$_SCRIPT_DIR/picker.sh $win_file $count load $scope_arg" \
+        --bind "result:transform:$_SCRIPT_DIR/picker.sh $win_file $count $scope_arg" \
+        --bind "f5:transform:$_SCRIPT_DIR/picker.sh $win_file $count force $scope_arg" \
         --bind 'enter:print()+accept,tab:print(tab)+accept' \
         < /dev/null \
         | awk 'BEGIN { RS = "\0" }
@@ -53,6 +64,11 @@ _hist_up() { _hist_picker 500 "" walk; }
 # Ctrl+R: picker seeded with the current line (search mode), 10k cap.
 _hist_search() { _hist_picker 10000 "$BUFFER" search; }
 
+# Scope variants: F6 all, F7 current dir (+subtree), F8 this shell session.
+_hist_scope_all() { _hist_picker 10000 "$BUFFER" search "" ""; }
+_hist_scope_dir() { _hist_picker 10000 "$BUFFER" search "$PWD" ""; }
+_hist_scope_sess() { _hist_picker 10000 "$BUFFER" search "" "$_hist_sess"; }
+
 # Register widgets and bindings. Enter/Ctrl+C are NOT bound — zsh defaults
 # handle them.
 #
@@ -65,9 +81,15 @@ if [ -n "$_kav_fzf_ver" ] && printf '%s\n' "$_kav_fzf_ver" | \
         awk -F. 'NR == 1 { exit ($1 > 0 || $2 >= 54) ? 0 : 1 }'; then
     zle -N kavkash-search _hist_search
     zle -N kavkash-up _hist_up
+    zle -N kavkash-scope-all _hist_scope_all
+    zle -N kavkash-scope-dir _hist_scope_dir
+    zle -N kavkash-scope-sess _hist_scope_sess
 
     bindkey '^R' kavkash-search
     bindkey '^[[A' kavkash-up
+    bindkey '^[[17~' kavkash-scope-all   # F6
+    bindkey '^[[18~' kavkash-scope-dir   # F7
+    bindkey '^[[19~' kavkash-scope-sess  # F8
 else
     printf 'kavkash: fzf >= 0.54 required (found %s) — picker disabled; Up/Ctrl-R keep shell defaults\n' \
         "${_kav_fzf_ver:-not installed}" >&2
@@ -84,9 +106,14 @@ autoload -Uz add-zsh-hook
 typeset -g _hist_corr=""
 typeset -g _hist_t0=0
 
+# Session token: one per interactive shell, minted at source time (rc files
+# re-run on `exec`, so the new shell gets a fresh token — never inherit).
+# Carried on every W; session scope in the picker matches on it.
+typeset -g _hist_sess=$(cat /proc/sys/kernel/random/uuid 2> /dev/null) || _hist_sess=$(od -An -N16 -tx1 /dev/urandom 2> /dev/null | tr -d ' \n')
+
 _hist_preexec() {
     _hist_t0=$(date +%s%3N 2>/dev/null || echo "$(date +%s)000")
-    _hist_corr=$("$_SCRIPT_DIR/hook.sh" W "$1" "$PWD")
+    _hist_corr=$("$_SCRIPT_DIR/hook.sh" W "$1" "$PWD" "$_hist_sess")
 }
 
 _hist_precmd() {

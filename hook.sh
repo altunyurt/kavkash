@@ -1,8 +1,11 @@
 #!/usr/bin/dash
 # hook.sh - Called by shell hooks to record commands.
-#   W CMD CWD            mint an ns-since-epoch id, store the command, PRINT the id
-#                        (correlation key for the later U)
-#   U ID EXIT DURATION   store the real exit code and duration
+#   W CMD CWD SESSION            mint an ns-since-epoch id, store the command
+#                                (+ the caller's session token), PRINT the id
+#                                (correlation key for the later U)
+#   U ID EXIT DURATION           store the real exit code and duration
+# A 5th W argument "sync" delivers in the foreground (bash's `exit` would
+# kill the backgrounded socat before it connects).
 # The id is the row's primary key AND timestamp: ns since epoch, so
 # larger id == later command (ORDER BY id DESC == newest first).
 
@@ -22,18 +25,22 @@ case "$MODE" in
     W)
         CMD="$2"
         CWD="$3"
+        SESSION="${4:-}"
         # Skip empty commands (defensive — shouldn't happen but harmless).
         [ -z "$CMD" ] && exit 0
         ID=$(kav_new_id)
-        MSG=$(printf '1:W,%s:%s,%s:%s,%s:%s,' \
+        # Wire: cmd, cwd, id, session — id stays 3rd so a pre-session hook
+        # (no session field) still decodes correctly on this server.
+        MSG=$(printf '1:W,%s:%s,%s:%s,%s:%s,%s:%s,' \
             "$(_ns_len "$CMD")" "$CMD" \
             "$(_ns_len "$CWD")" "$CWD" \
-            "$(_ns_len "$ID")" "$ID")
+            "$(_ns_len "$ID")" "$ID" \
+            "$(_ns_len "$SESSION")" "$SESSION")
         # Print the id before backgrounding delivery (the shell captures it
         # for the U). The backgrounded socat's stdout is /dev/null, so it
-        # never holds this pipe. Only the 3-arg form prints — an extra
-        # argument means the caller isn't capturing stdout.
-        [ "$#" -eq 3 ] && printf '%s\n' "$ID"
+        # never holds this pipe. Only the 4-arg form prints — a 5th
+        # argument ("sync") means the caller isn't capturing stdout.
+        [ "$#" -eq 4 ] && printf '%s\n' "$ID"
         ;;
     U)
         ID="$2"
@@ -53,16 +60,16 @@ case "$MODE" in
 esac
 
 # Fire-and-forget: backgrounded (&), stdout/stderr silenced, errors ignored.
-# A 4th argument "sync" delivers in the foreground instead — bash's `exit`
+# A 5th argument "sync" delivers in the foreground instead — bash's `exit`
 # would kill the backgrounded socat before it connects, losing the row.
 if command -v socat > /dev/null 2>&1; then
-    if [ "$4" = sync ]; then
+    if [ "$5" = sync ]; then
         printf '%s' "$MSG" | socat - UNIX-CONNECT:"$KAV_SOCK_FILE" > /dev/null 2>&1
     else
         printf '%s' "$MSG" | socat - UNIX-CONNECT:"$KAV_SOCK_FILE" > /dev/null 2>&1 &
     fi
 elif command -v nc > /dev/null 2>&1; then
-    if [ "$4" = sync ]; then
+    if [ "$5" = sync ]; then
         printf '%s' "$MSG" | nc -U "$KAV_SOCK_FILE" > /dev/null 2>&1
     else
         printf '%s' "$MSG" | nc -U "$KAV_SOCK_FILE" > /dev/null 2>&1 &

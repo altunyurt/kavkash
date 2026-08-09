@@ -1,13 +1,20 @@
 #!/usr/bin/dash
 # processor.sh - Netstring protocol handler
 # Source includes.sh relative to THIS script (socat EXEC may have any CWD).
-. "$(dirname -- "$(realpath -- "$0")")/includes.sh"
-
+_SCRIPT_DIR="$(dirname -- "$(realpath -- "$0")")"
+. "$_SCRIPT_DIR/includes.sh"
 #
 # Wire protocol: concatenated netstrings ("len:payload,").
-#   W cmd cwd id            write (preexec; id = ns-since-epoch row timestamp)
+#   W cmd cwd id session    write (preexec; id = ns-since-epoch, session =
+#                           per-shell token, '' when absent)
 #   U id exit_code dur_ms   update (precmd)
-#   Q search query count    query -> NUL-separated rows
+#   Q v                     version probe ("x.y.z", for scope-capability)
+#   Q search query count cwd session
+#                           query -> NUL-separated rows; cwd/session scope
+#                           the result BEFORE the LIMIT (a dir/session
+#                           filter applied client-side would miss rows past
+#                           the window cut). cwd matches the dir and its
+#                           subtree; "/" is a no-op filter (everything).
 # Response rows: raw command text — multi-line commands pass through intact
 # (fzf >= 0.53 renders them natively); only 0x1E/0x1F (sqlite3 -ascii
 # hazards) and \r are stripped. NUL framing is safe — command text can
@@ -73,24 +80,28 @@ shift
 
 case "$TYPE" in
     W)
-        # Write: W cmd cwd id — preexec hook. The id is ns-since-epoch:
-        # the row's timestamp, so id order == chronological. Exit and
+        # Write: W cmd cwd id session — preexec hook. The id is ns-since-
+        # epoch: the row's timestamp, so id order == chronological. Exit and
         # duration are unknown until the precmd hook sends a U for id.
         cmd="$1"
         cwd="$2"
         id="$3"
+        session="$4"
         # id must be an integer (INTEGER PRIMARY KEY); drop anything else
         # (garbage on the wire — a hook/daemon version mismatch).
         case "$id" in '' | *[!0-9]*) exit 0 ;; esac
 
         safe_cmd=$(printf '%s' "$cmd" | sed "s/'/''/g")
         safe_cwd=$(printf '%s' "$cwd" | sed "s/'/''/g")
+        safe_session=$(printf '%s' "$session" | sed "s/'/''/g")
         # Plain INSERT: two commands in the same nanosecond cannot happen
         # (each hook call itself takes µs-ms). A shell that dies mid-
         # command leaves exit 0 / duration 0; ids are never reused.
         # busy_timeout makes concurrent writers (several terminals at once)
-        # wait for the lock instead of failing with SQLITE_BUSY.
-        sqlite3 "$db_file" "PRAGMA busy_timeout = 3000; INSERT INTO history (id, command, cwd, exit_code, duration_ms) VALUES ($id, '$safe_cmd', '$safe_cwd', 0, 0);"
+        # wait for the lock instead of failing with SQLITE_BUSY. Empty
+        # session -> NULL (pre-session rows are NULL too; session scope
+        # matches non-NULL tokens only).
+        sqlite3 "$db_file" "PRAGMA busy_timeout = 3000; INSERT INTO history (id, command, cwd, exit_code, duration_ms, session) VALUES ($id, '$safe_cmd', '$safe_cwd', 0, 0, NULLIF('$safe_session', ''));"
         ;;
     U)
         # Update: precmd reports $? and shell-measured duration for the id.
@@ -113,20 +124,41 @@ case "$TYPE" in
         done
         ;;
     Q)
-        # Query: newest `count` commands, NUL-framed raw rows. The picker
-        # always sends an empty query — fzf filters the loaded window
-        # in-memory — and the server-side subsequence matcher was removed
-        # (dead, untested code). The query field is still accepted on the
-        # wire for protocol stability and ignored. Only 0x1E/0x1F and \r
-        # are stripped; multi-line commands pass through verbatim.
+        # Query: newest `count` commands matching the scope, NUL-framed raw
+        # rows. The picker always sends an empty query — fzf filters the
+        # loaded window in-memory — and the server-side subsequence matcher
+        # was removed (dead, untested code). The query field is still
+        # accepted on the wire for protocol stability and ignored. cwd/
+        # session scope (empty = no filter) applies BEFORE the LIMIT: the
+        # picker's window is "newest N matching the scope". Only
+        # 0x1E/0x1F and \r are stripped; multi-line commands pass through.
         action="$1"
         count="$3"
+        cwd="$4"
+        session="$5"
         case "$count" in '' | *[!0-9]*) count=10000 ;; esac
         case "$action" in
             search) ;;
+            v)
+                # Capability probe for scoped queries. Installed copies put
+                # VERSION in KAV_DATA_HOME; dev runs read the repo file.
+                ver=$(cat "$KAV_DATA_HOME/VERSION" 2> /dev/null || cat "$_SCRIPT_DIR/VERSION" 2> /dev/null || echo 0)
+                printf '%s\n' "$ver"
+                exit 0
+                ;;
             *) exit 0 ;;
         esac
-        sql="SELECT REPLACE(REPLACE(REPLACE(command, char(30), ''), char(31), ''), char(13), '') FROM history ORDER BY id DESC LIMIT $count;"
+        where=""
+        if [ -n "$cwd" ] && [ "$cwd" != "/" ]; then
+            sc=$(printf '%s' "$cwd" | sed "s/'/''/g")
+            # the dir itself + subtree; "/" (everything) is a no-op above
+            where="(cwd = '$sc' OR cwd LIKE '$sc/%')"
+        fi
+        if [ -n "$session" ]; then
+            ss=$(printf '%s' "$session" | sed "s/'/''/g")
+            where="${where:+$where AND }session = '$ss'"
+        fi
+        sql="SELECT REPLACE(REPLACE(REPLACE(command, char(30), ''), char(31), ''), char(13), '') FROM history${where:+ WHERE $where} ORDER BY id DESC LIMIT $count;"
 
         # sqlite3 -ascii (0x1E rows / 0x1F cols); the SELECT already stripped
         # those hazards, so no embedded separator can tear a row. Rows are

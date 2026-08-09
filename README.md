@@ -29,6 +29,10 @@ shell Up/Ctrl+R fzf picker ← picker.sh → query.sh ←───────�
 - **Up** (`walk> `) — browse the 500 newest commands.
 - **Ctrl+R** (`search> `) — search everything, seeded with the current line
   (cap 10k).
+- **F6** (`all> `) · **F7** (`dir> `) · **F8** (`sess> `) — search scoped to
+  global, the current directory (and subdirectories), or this shell session.
+  Scopes filter server-side before the window cut, so an old command still
+  shows up; the fzf query keeps filtering in-memory.
 
 The picker shows a window of the newest commands and filters it in-memory as
 you type — full fzf syntax (`!`, `'exact'`, `a|b`), no per-keystroke DB
@@ -41,8 +45,8 @@ natively.
 
 Netstrings (`len:payload,`), one field per netstring, over the Unix socket.
 
-- **W** `cmd,cwd,id` — command started. `id` is ns-since-epoch: the row's
-  primary key *and* timestamp (INTEGER PRIMARY KEY = rowid, so the table
+- **W** `cmd,cwd,id,session` — command started. `id` is ns-since-epoch: the
+  row's primary key *and* timestamp (INTEGER PRIMARY KEY = rowid, so the table
   is stored in time order). fish/zsh fire this in
   preexec; bash synthesizes one with a DEBUG trap, plus a fire on the
   prompt itself that catches lines the trap can't see directly (function

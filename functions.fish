@@ -23,6 +23,20 @@ function _hist_picker
     set -l init_q $argv[2]
     set -l mode walk
     test -n "$argv[3]"; and set mode $argv[3]
+    set -l cwd $argv[4]
+    set -l session $argv[5]
+    set -l label all
+    set -l prompt "$mode> "
+    if test -n "$cwd"
+        set label "dir $cwd"
+        set prompt "dir> "
+    else if test -n "$session"
+        set label "session"
+        set prompt "sess> "
+    end
+    # fzf parses action command lines; single quotes keep a space-containing
+    # $PWD out of the tokenizer (a literal ' in a path is not scoped).
+    set -l scope_arg "'$cwd' '$session'"
     set -l win $count
     if test $win -gt 1000
         set win 1000
@@ -37,11 +51,11 @@ function _hist_picker
     # NUL-frames "key\0<cmd>\0"; the awk turns that into "key\n<cmd>".
     set -l picked
     fzf --height 15 --no-sort --track --sync --highlight-line \
-        --prompt "$mode> " --query "$init_q" --read0 --print0 \
-        --header "$mode · $count newest · f5: older · tab: paste · enter: run" \
-        --bind "start:reload-sync:$_HIST_PICKER $win_file $count load" \
-        --bind "result:transform:$_HIST_PICKER $win_file $count" \
-        --bind "f5:transform:$_HIST_PICKER $win_file $count force" \
+        --prompt "$prompt" --query "$init_q" --read0 --print0 \
+        --header "$mode · $count newest · $label · F6 all F7 dir F8 sess · f5 older · tab paste · enter run" \
+        --bind "start:reload-sync:$_HIST_PICKER $win_file $count load $scope_arg" \
+        --bind "result:transform:$_HIST_PICKER $win_file $count $scope_arg" \
+        --bind "f5:transform:$_HIST_PICKER $win_file $count force $scope_arg" \
         --bind 'enter:print()+accept,tab:print(tab)+accept' \
         < /dev/null \
         | awk 'BEGIN { RS = "\0" }
@@ -79,11 +93,31 @@ function _hist_search
     _hist_picker 10000 (commandline -b) search
 end
 
+# Scope variants: F6 all, F7 current dir (+subtree), F8 this shell session.
+function _hist_scope_all
+    _hist_picker 10000 (commandline -b) search "" ""
+end
+function _hist_scope_dir
+    _hist_picker 10000 (commandline -b) search "$PWD" ""
+end
+function _hist_scope_sess
+    _hist_picker 10000 (commandline -b) search "" "$_hist_sess"
+end
+
 # preexec mints the correlation id + start time; postexec reports exit +
 # duration for that id (see processor.sh U). Skip command-substitution
 # spawns (e.g. fzf inside _hist_picker) so only typed commands are stored.
 set -g __hist_corr ""
 set -g __hist_t0 0
+
+# Session token: one per interactive shell, minted at source time (rc files
+# re-run on `exec`, so the new shell gets a fresh token — never inherit).
+# Carried on every W; session scope in the picker matches on it.
+if test -r /proc/sys/kernel/random/uuid
+    set -g _hist_sess (cat /proc/sys/kernel/random/uuid)
+else
+    set -g _hist_sess (od -An -N16 -tx1 /dev/urandom 2>/dev/null | string replace -ra '[[:space:]]' '')
+end
 
 function _hist_preexec --on-event fish_preexec
     status is-command-substitution; and return 0
@@ -92,7 +126,7 @@ function _hist_preexec --on-event fish_preexec
     set -l t0 (date +%s%3N 2>/dev/null)
     [ -n "$t0" ]; or set t0 (date +%s)000
     set -g __hist_t0 $t0
-    set -g __hist_corr ("$_HIST_HOOK" W "$argv[1]" "$PWD")
+    set -g __hist_corr ("$_HIST_HOOK" W "$argv[1]" "$PWD" "$_hist_sess")
 end
 
 # fish_postexec fires after a command line finishes; $status is the line's
@@ -124,6 +158,9 @@ if test -n "$_kav_fzf_ver"; and printf '%s\n' "$_kav_fzf_ver" | awk -F. 'NR == 1
         bind --user --erase up 2>/dev/null
         bind --user --erase down 2>/dev/null
         bind --user --erase \cr 2>/dev/null
+        bind --user --erase \e\[17~ 2>/dev/null
+        bind --user --erase \e\[18~ 2>/dev/null
+        bind --user --erase \e\[19~ 2>/dev/null
 
         # Bind by keyname AND by raw escape sequence: fish resolves incoming
         # bytes against raw-sequence bindings first, so a keyname-only binding
@@ -136,6 +173,12 @@ if test -n "$_kav_fzf_ver"; and printf '%s\n' "$_kav_fzf_ver" | awk -F. 'NR == 1
         bind --user -M insert \eOA _hist_up
         bind --user \cr _hist_search
         bind --user -M insert \cr _hist_search
+        bind --user \e\[17~ _hist_scope_all
+        bind --user -M insert \e\[17~ _hist_scope_all
+        bind --user \e\[18~ _hist_scope_dir
+        bind --user -M insert \e\[18~ _hist_scope_dir
+        bind --user \e\[19~ _hist_scope_sess
+        bind --user -M insert \e\[19~ _hist_scope_sess
     end
 
     # Apply bindings now: fish only auto-calls fish_user_key_bindings at

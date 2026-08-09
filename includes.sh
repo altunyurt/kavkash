@@ -46,7 +46,7 @@ kav_new_id_to_time() {
 # over rerunnable after a crash between the rename and the inserts.
 kav_ensure_history_schema() {
     if sqlite3 "$KAV_DB_FILE" "SELECT 1 FROM sqlite_master WHERE type='table' AND name='history' AND sql LIKE '%id TEXT%';" | grep -q 1; then
-        sqlite3 "$KAV_DB_FILE" "BEGIN; ALTER TABLE history RENAME TO history_old; CREATE TABLE history (id INTEGER PRIMARY KEY, command TEXT NOT NULL, cwd TEXT NOT NULL, exit_code INTEGER NOT NULL, duration_ms INTEGER NOT NULL); COMMIT;"
+        sqlite3 "$KAV_DB_FILE" "BEGIN; ALTER TABLE history RENAME TO history_old; CREATE TABLE history (id INTEGER PRIMARY KEY, command TEXT NOT NULL, cwd TEXT NOT NULL, exit_code INTEGER NOT NULL, duration_ms INTEGER NOT NULL, session TEXT); COMMIT;"
     fi
     if sqlite3 "$KAV_DB_FILE" "SELECT 1 FROM sqlite_master WHERE type='table' AND name='history_old';" | grep -q 1; then
         # old id is xxxxxxxx-xxxx-...: chars 1-8 + 10-13 are the ms in hex.
@@ -64,10 +64,15 @@ kav_ensure_history_schema() {
             # monotonic so the PK never collides.
             [ "$ns" -le "$prev" ] && ns=$((prev + 1))
             prev=$ns
-            printf "INSERT INTO history VALUES (%s, CAST(unhex('%s') AS TEXT), CAST(unhex('%s') AS TEXT), %s, %s);\n" "$ns" "$hcmd" "$hcwd" "$exitc" "$dur"
+            printf "INSERT INTO history (id, command, cwd, exit_code, duration_ms) VALUES (%s, CAST(unhex('%s') AS TEXT), CAST(unhex('%s') AS TEXT), %s, %s);\n" "$ns" "$hcmd" "$hcwd" "$exitc" "$dur"
         done | sqlite3 "$KAV_DB_FILE"
         sqlite3 "$KAV_DB_FILE" "DROP TABLE history_old;"
     fi
-    sqlite3 "$KAV_DB_FILE" "CREATE TABLE IF NOT EXISTS history (id INTEGER PRIMARY KEY, command TEXT NOT NULL, cwd TEXT NOT NULL, exit_code INTEGER NOT NULL, duration_ms INTEGER NOT NULL);"
+    sqlite3 "$KAV_DB_FILE" "CREATE TABLE IF NOT EXISTS history (id INTEGER PRIMARY KEY, command TEXT NOT NULL, cwd TEXT NOT NULL, exit_code INTEGER NOT NULL, duration_ms INTEGER NOT NULL, session TEXT);"
+    # v0.3.x tables lack the session column (additive; pre-session rows are
+    # NULL, which session scoping naturally excludes).
+    if ! sqlite3 "$KAV_DB_FILE" "PRAGMA table_info(history);" | grep -q '|session|'; then
+        sqlite3 "$KAV_DB_FILE" "ALTER TABLE history ADD COLUMN session TEXT;"
+    fi
 }
 

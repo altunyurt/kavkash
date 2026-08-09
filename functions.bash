@@ -5,10 +5,13 @@
 _SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 . "$_SCRIPT_DIR/includes.sh"
 
-# _hist_picker — the single fzf widget behind both Up and Ctrl+R.
-#   count:  DB result cap (Up=500, Ctrl+R=10000)
-#   init_q: initial query — Ctrl+R seeds it with the current line, Up empty
-#   mode:   "walk" (Up) or "search" (Ctrl+R) — shown in the fzf prompt/header
+# _hist_picker — the single fzf widget behind Up, Ctrl+R and the scope
+# keys (F6 all / F7 dir / F8 session — search mode with a scope).
+#   count:    DB result cap (Up=500, Ctrl+R=10000)
+#   init_q:   initial query — Ctrl+R seeds it with the current line, Up empty
+#   mode:     "walk" (Up) or "search" (Ctrl+R) — shown in the fzf prompt/header
+#   cwd:      dir scope (empty = global) — matches the dir and its subtree
+#   session:  per-shell token scope (empty = global)
 #
 # Design (fzf >= 0.54): the picker loads a *window* of the newest commands —
 # start:reload-sync, one code path, no initial pipe — and fzf filters it
@@ -19,11 +22,24 @@ _SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # resolves the cascade before the first paint, so a seeded query reaches full
 # coverage in a few log2-sized round trips; --track keeps the cursor on the
 # current command across reloads. The server sends raw commands — multi-line
-# ones display natively (fzf >= 0.53), no escaping.
+# ones display natively (fzf >= 0.53), no escaping. Scope filters are
+# server-side (before the LIMIT), so a dir/session command from long ago
+# isn't cut off by the window; fzf still does the keyword filtering.
 _hist_picker() {
-    local count="$1" init_q="${2:-}" mode="${3:-walk}" picked key cmd win win_file
+    local count="$1" init_q="${2:-}" mode="${3:-walk}" cwd="${4:-}" session="${5:-}"
+    local picked key cmd win win_file label prompt scope_arg
     _hist_armed=0   # the trap fires for the bind -x widget invocation itself
                     # and for the eval'd Enter command — both must not record
+    if [[ -n "$cwd" ]]; then
+        label="dir $cwd"; prompt="dir> "
+    elif [[ -n "$session" ]]; then
+        label="session"; prompt="sess> "
+    else
+        label="all"; prompt="$mode> "
+    fi
+    # fzf parses action command lines; single quotes keep a space-containing
+    # $PWD out of the tokenizer (a literal ' in a path is not scoped).
+    scope_arg="'$cwd' '$session'"
     win=$count
     (( win > 1000 )) && win=1000
     win_file=$(mktemp) || {
@@ -36,11 +52,11 @@ _hist_picker() {
     # start:reload drives the list. print()+accept NUL-frames
     # "key\0<cmd>\0"; the awk turns that into "key\n<cmd>".
     picked=$(fzf --height 15 --no-sort --track --sync --highlight-line \
-        --prompt "$mode> " --query "$init_q" --read0 --print0 \
-        --header "$mode · $count newest · f5: older · tab: paste · enter: run" \
-        --bind "start:reload-sync:$_SCRIPT_DIR/picker.sh $win_file $count load" \
-        --bind "result:transform:$_SCRIPT_DIR/picker.sh $win_file $count" \
-        --bind "f5:transform:$_SCRIPT_DIR/picker.sh $win_file $count force" \
+        --prompt "$prompt" --query "$init_q" --read0 --print0 \
+        --header "$mode · $count newest · $label · F6 all F7 dir F8 sess · f5 older · tab paste · enter run" \
+        --bind "start:reload-sync:$_SCRIPT_DIR/picker.sh $win_file $count load $scope_arg" \
+        --bind "result:transform:$_SCRIPT_DIR/picker.sh $win_file $count $scope_arg" \
+        --bind "f5:transform:$_SCRIPT_DIR/picker.sh $win_file $count force $scope_arg" \
         --bind 'enter:print()+accept,tab:print(tab)+accept' \
         < /dev/null \
         | awk 'BEGIN { RS = "\0" }
@@ -65,7 +81,7 @@ _hist_picker() {
                 eval "$cmd"
                 _hist_exit=$?
                 local id
-                id=$("$_SCRIPT_DIR/hook.sh" W "$cmd" "$PWD")
+                id=$("$_SCRIPT_DIR/hook.sh" W "$cmd" "$PWD" "$_hist_sess")
                 if [[ -n "$id" ]]; then
                     "$_SCRIPT_DIR/hook.sh" U "$id" "$_hist_exit" 0
                 fi
@@ -88,6 +104,11 @@ _hist_up() { _hist_picker 500 "" walk; }
 
 # Ctrl+R: picker seeded with the current line (search mode), 10k cap.
 _hist_search() { _hist_picker 10000 "$READLINE_LINE" search; }
+
+# Scope variants: F6 all, F7 current dir (+subtree), F8 this shell session.
+_hist_scope_all() { _hist_picker 10000 "$READLINE_LINE" search "" ""; }
+_hist_scope_dir() { _hist_picker 10000 "$READLINE_LINE" search "$PWD" ""; }
+_hist_scope_sess() { _hist_picker 10000 "$READLINE_LINE" search "" "$_hist_sess"; }
 
 # --- capture: preexec (DEBUG trap) + precmd (PROMPT_COMMAND) ---
 #
@@ -140,11 +161,11 @@ kav_preexec_record() {
     if [[ "$cmd" == "exit" || "$cmd" == "logout" ]]; then
         # The shell exits before a backgrounded delivery could connect,
         # so the last command would be lost — send this one synchronously.
-        "$_SCRIPT_DIR/hook.sh" W "$cmd" "$PWD" sync
+        "$_SCRIPT_DIR/hook.sh" W "$cmd" "$PWD" "$_hist_sess" sync
         return 0
     fi
     _hist_t0=$(date +%s%3N 2> /dev/null || date +%s)
-    _hist_corr=$("$_SCRIPT_DIR/hook.sh" W "$cmd" "$PWD")
+    _hist_corr=$("$_SCRIPT_DIR/hook.sh" W "$cmd" "$PWD" "$_hist_sess")
 }
 
 kav_precmd_record() {
@@ -167,7 +188,7 @@ kav_precmd_record() {
         if [[ "$idx" =~ ^[0-9]+$ && $idx -gt _hist_last_idx && -n "$cmd" ]]; then
             _hist_last_idx=$idx
             local id
-            id=$("$_SCRIPT_DIR/hook.sh" W "$cmd" "$PWD")
+            id=$("$_SCRIPT_DIR/hook.sh" W "$cmd" "$PWD" "$_hist_sess")
             [[ -n "$id" ]] && "$_SCRIPT_DIR/hook.sh" U "$id" "$_hist_exit" 0
         fi
     elif [[ "$idx" =~ ^[0-9]+$ ]]; then
@@ -176,6 +197,13 @@ kav_precmd_record() {
     fi
     _hist_armed=1
 }
+
+# Session token: one per interactive shell, minted at source time (rc files
+# re-run on `exec`, so the new shell gets a fresh token — never inherit).
+# Subshells inherit the env var but are excluded by the recording guards
+# (the DEBUG trap doesn't recurse in subshells). Carried on every W;
+# session scope in the picker matches on it.
+_hist_sess=$(cat /proc/sys/kernel/random/uuid 2> /dev/null) || _hist_sess=$(od -An -N16 -tx1 /dev/urandom 2> /dev/null | tr -d ' \n')
 
 # Run the recorder on every primary prompt via bash's PROMPT_COMMAND (array
 # form in bash 5.1+, scalar before); kavkash's hook goes FIRST so $? is
@@ -203,6 +231,9 @@ if [ -n "$_kav_fzf_ver" ] && printf '%s\n' "$_kav_fzf_ver" | \
         awk -F. 'NR == 1 { exit ($1 > 0 || $2 >= 54) ? 0 : 1 }'; then
     bind -x '"\C-r": _hist_search'
     bind -x '"\e[A": _hist_up'
+    bind -x '"\e[17~": _hist_scope_all'   # F6
+    bind -x '"\e[18~": _hist_scope_dir'   # F7
+    bind -x '"\e[19~": _hist_scope_sess'  # F8
 else
     printf 'kavkash: fzf >= 0.54 required (found %s) — picker disabled; Up/Ctrl-R keep shell defaults\n' \
         "${_kav_fzf_ver:-not installed}" >&2

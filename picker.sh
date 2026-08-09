@@ -2,12 +2,19 @@
 # picker.sh - pagination helper for the fzf history picker (functions.*).
 #
 # Two roles:
-#   picker.sh WIN_FILE COUNT load        run query.sh with the current window
-#                                        (target of the picker's start:reload-sync)
-#   picker.sh WIN_FILE COUNT [force]     decide whether the picker's window should
-#                                        grow; if so, record the new size in
-#                                        WIN_FILE and print a reload-sync action
-#                                        for fzf's transform to run.
+#   picker.sh WIN_FILE COUNT load [CWD SESSION]
+#                                    run query.sh with the current window
+#                                    (target of the picker's start:reload-sync)
+#   picker.sh WIN_FILE COUNT [force] [CWD SESSION]
+#                                    decide whether the picker's window should
+#                                    grow; if so, record the new size in
+#                                    WIN_FILE and print a reload-sync action
+#                                    for fzf's transform to run.
+# CWD/SESSION scope the server query and must ride along on every reload —
+# a growth-triggered reload with the wrong scope would repaint the wrong
+# rows. Empty = global. fzf parses action command lines, so the widget
+# single-quotes these two args (paths may contain spaces; a literal quote
+# in a path is not supported).
 #
 # The window size lives in a temp file because fzf's transform action runs its
 # command in a subshell - the widget shell can't see mutated state. Writing the
@@ -31,13 +38,15 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 win_file=$1
 count=$2
 mode=${3:-decide}
+cwd=${4:-}
+session=${5:-}
 case "$count" in '' | *[!0-9]*) count=10000 ;; esac
 
 win=$(cat "$win_file" 2> /dev/null)
 case "$win" in '' | *[!0-9]*) win=1000 ;; esac
 
 if [ "$mode" = "load" ]; then
-    exec "$SCRIPT_DIR/query.sh" "$win"
+    exec "$SCRIPT_DIR/query.sh" "$win" "" "$cwd" "$session"
 fi
 
 # decide / force: grow the window and emit a reload-sync action.
@@ -58,5 +67,6 @@ if [ -n "${grow:-}" ]; then
     win=$((win * 2))
     [ "$win" -gt "$count" ] && win=$count
     printf '%s\n' "$win" > "$win_file"
-    printf 'reload-sync:%s/query.sh %s\n' "$SCRIPT_DIR" "$win"
+    # re-quote cwd/session: fzf re-parses this action command line
+    printf "reload-sync:%s/query.sh %s '' '%s' '%s'\n" "$SCRIPT_DIR" "$win" "$cwd" "$session"
 fi
