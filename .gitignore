@@ -1,3 +1,4 @@
 *db
 history.db*
 INSTALLED_REVISION
+*.log
