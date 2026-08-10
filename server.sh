@@ -10,8 +10,12 @@ _SCRIPT_DIR="$(dirname -- "$(realpath -- "$0")")"
 if [ -f "$KAV_PID_FILE" ]; then
     old_pid=$(cat "$KAV_PID_FILE" 2> /dev/null || true)
     if [ -n "$old_pid" ] && kill -0 "$old_pid" 2> /dev/null; then
-        printf "error: %s\n" "A kavkash daemon is already running (pid $old_pid)" >&2
-        exit 1
+        printf "kavkash: a daemon is already running (pid %s) — leaving it as is\n" "$old_pid" >&2
+        # Exit 0 ("success"): the service is satisfied — another instance is
+        # live. An exit 1 here would make systemd's Restart=on-abnormal unit
+        # retry every RestartSec until the foreign daemon dies (a hot
+        # restart loop when an old daemon outlives its session).
+        exit 0
     fi
     # stale pid: process is gone — drop it and start fresh
     rm -f "$KAV_PID_FILE"

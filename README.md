@@ -27,7 +27,7 @@ The installer starts the daemon and prints the exact `source` line for
 your shell — it never edits your rc files.
 
 **With systemd** (default when available): a `kavkash.service` user unit
-is enabled and started (`Restart=on-failure`, starts at login). Manage
+is enabled and started (`Restart=on-abnormal`, starts at login). Manage
 it like any user service:
 
 ```sh

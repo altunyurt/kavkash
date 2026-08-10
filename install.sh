@@ -26,7 +26,7 @@
 #
 # systemd --user integration:
 #   On systems running systemd with a reachable user session, this script
-#   installs a `kavkash.service` user unit (Restart=on-failure, started at
+#   installs a `kavkash.service` user unit (Restart=on-abnormal, started at
 #   login via default.target) instead of asking you to background the
 #   daemon manually. Where systemd isn't usable — no systemd PID 1, no
 #   `systemctl`, or no active --user session/bus (e.g. a container without
@@ -327,7 +327,10 @@ After=default.target
 [Service]
 Type=simple
 ExecStart=$KAV_DATA_HOME/server.sh
-Restart=on-failure
+# Restart=on-abnormal: retry on crashes (signals), never on clean exits —
+# server.sh exits 0 when a daemon is already running, so a foreign/stale
+# daemon must not drive a restart loop.
+Restart=on-abnormal
 RestartSec=2
 
 [Install]
