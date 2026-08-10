@@ -27,29 +27,35 @@ A container with the whole app — daemon, shell hooks, fzf picker — with
 and the history copies live only inside the image, never on the host.
 
 ```sh
-docker build -t kavkash:demo .
-./docker/demo.sh                 # copies your bash/zsh/fish histories into
-                                 # the image, then runs the daemon container
+./demo.sh                  # builds the image (kavkash via the real
+                           # curl|sh install), copies your histories in,
+                           # runs the daemon container
 
 docker exec -it kavkash-demo bash    # or: fish / zsh — any shell works
 docker stop kavkash-demo
 ```
 
-`docker/demo.sh` stages your existing history files (bash, zsh, fish,
-atuin — only the ones that exist), builds a thin image layer that copies
-them onto the base, and runs it; the entrypoint imports them into
-`history.db` at container start (idempotent). Re-run `./docker/demo.sh`
-any time to rebuild with fresh history. `docker run -it kavkash:demo`
-drops you straight into a kavkash session without any history.
-`PERSIST=1 ./docker/demo.sh` keeps `history.db` across restarts (volume
-`kavkash-demo-data`). The base image builds kavkash with the exact
-one-liner the README documents — `curl -fsSL …/install.sh | dash` —
-resolving the latest GitHub release and verifying its checksum at build
-time. The rc files are wired at build, so every exec'd shell is a
-kavkash session automatically. Base is Debian 13 pinned — kavkash needs
-fzf ≥ 0.54, and bookworm's 0.38 would silently disable the picker.
-Note: an atuin import needs a plaintext (v17-) store; encrypted v18+
-rows require the atuin binary inside the container.
+`demo.sh` is a single self-contained file — it generates the Dockerfile
+and the container entrypoint at run time, so it also works piped
+straight from the repo, exactly like the installer:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/altunyurt/kavkash/main/demo.sh | dash
+```
+
+It copies your existing history files (bash, zsh, fish, atuin — only
+the ones that exist) into the image; the entrypoint imports them into
+`history.db` at container start (idempotent). Re-run it any time to
+rebuild with fresh history. `PERSIST=1 ./demo.sh` keeps `history.db`
+across restarts (volume `kavkash-demo-data`). The image installs
+kavkash with the exact one-liner the README documents —
+`curl -fsSL …/install.sh | dash` — resolving the latest GitHub release
+and verifying its checksum at build time. The rc files are wired at
+build, so every exec'd shell is a kavkash session automatically. Base is
+Debian 13 pinned — kavkash needs fzf ≥ 0.54, and bookworm's 0.38 would
+silently disable the picker. Note: an atuin import needs a plaintext
+(v17-) store; encrypted v18+ rows require the atuin binary inside the
+container.
 
 ## Run
 
