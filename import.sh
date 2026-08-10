@@ -288,11 +288,12 @@ import_atuin() {
             [ -n "$db" ] && f=$db
         fi
     fi
-    # Expand ~/ and $USER (an explicit path may carry a literal tilde).
+    # Expand ~/ and $USER (explicit paths may carry a literal tilde; USER
+    # can be unset in non-login contexts like containers/cron).
     case "$f" in
         "~/"*) f="$HOME/${f#"~/"}" ;;
     esac
-    f=$(printf '%s' "$f" | sed "s/\$USER/$USER/g")
+    f=$(printf '%s' "$f" | sed "s/\$USER/${USER:-$(id -un)}/g")
     if [ ! -f "$f" ]; then
         [ -n "$1" ] && echo "import.sh: atuin db not found: $f" >&2
         return 0

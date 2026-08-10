@@ -30,6 +30,12 @@ RUN apt-get update \
 # like a successful (empty) install.
 RUN bash -o pipefail -c 'export KAVKASH_NO_SYSTEMD=1 KAVKASH_IMPORT=0; curl -fsSL https://raw.githubusercontent.com/altunyurt/kavkash/main/install.sh | dash'
 
+# The container runs as root, but debian images don't set the USER env
+# var — import.sh's atuin path expands $USER, and the released installer
+# (which the curl|dash build pulls) predates the ${USER:-$(id -un)}
+# fallback, so a missing USER would crash the import at container start.
+ENV USER=root
+
 COPY docker/entrypoint.sh /usr/local/bin/kavkash-entrypoint
 RUN chmod +x /usr/local/bin/kavkash-entrypoint
 
