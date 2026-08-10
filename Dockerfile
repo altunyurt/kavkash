@@ -9,39 +9,40 @@
 FROM debian:13-slim
 
 # Runtime deps: socat (socket daemon), sqlite3 (store), mawk (processor),
-# fzf (picker), the three shells the hooks integrate with, and curl
-# (install.sh's downloader — also lets you run the curl|sh flow inside).
+# fzf (picker), the three shells the hooks integrate with, curl (the
+# installer one-liner, and a way to re-run it inside), and
+# ca-certificates — slim ships none, so curl would fail its TLS handshake
+# without it.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
         bash zsh fish \
-        socat sqlite3 mawk fzf curl \
+        socat sqlite3 mawk fzf curl ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
-# The repo goes in as a tarball so the entrypoint can drive the REAL
-# installer via KAVKASH_TARBALL_URL=file://... — download, checksum
-# verify, extract and the no-systemd manual-start fallback all run with
-# zero network. The repo is wrapped in a single top-level dir (GitHub's
-# <repo>-<sha>/ layout): install.sh's unpack() locates the source by
-# taking the first */ entry, so a flat tarball would make it find
-# docker/ instead of the repo root. Staged outside /src so the tarball
-# can't include itself.
-COPY . /src
-RUN mkdir -p /tmp/pkg \
- && tar -C /src -cf - . | tar -C /tmp/pkg -xf - \
- && mv /tmp/pkg /tmp/kavkash-demo \
- && tar -C /tmp -czf /tmp/kavkash.tar.gz kavkash-demo
+# Install kavkash with the EXACT documented one-liner — the installer is
+# piped to dash, resolves the latest GitHub release, downloads, checksums,
+# extracts, and installs into /root/.local/share/kavkash. No systemd in a
+# container (the installer would detect that anyway; the flag makes it
+# deterministic) and no histories exist during the build, so the import
+# prompt is answered "no" — the entrypoint imports mounted ones at
+# container start instead. Run under bash -o pipefail: dash alone can't
+# report a broken pipe, and a dead curl upstream would otherwise look
+# like a successful (empty) install.
+RUN bash -o pipefail -c 'export KAVKASH_NO_SYSTEMD=1 KAVKASH_IMPORT=0; curl -fsSL https://raw.githubusercontent.com/altunyurt/kavkash/main/install.sh | dash'
+
+COPY docker/entrypoint.sh /usr/local/bin/kavkash-entrypoint
+RUN chmod +x /usr/local/bin/kavkash-entrypoint
 
 # Bake the hook wiring into the rc files so EVERY interactive shell
 # (docker exec included) lands in a kavkash session automatically.
-# Guarded: the functions files only exist after the entrypoint's first
-# install run, and a mounted volume may shadow the install dir.
+# Guarded: a mounted volume may shadow the install dir.
 # HISTFILE: the host history is mounted read-only at /root/.bash_history
-# (import reads it there at install time); give interactive bash its own
+# (the entrypoint's import reads it there); give interactive bash its own
 # writable file so exit-time history writes don't hit the read-only mount.
 RUN mkdir -p /root/.config/fish \
  && printf '\nHISTFILE=/root/.kavkash-bash-history\n[ -f /root/.local/share/kavkash/functions.bash ] && source /root/.local/share/kavkash/functions.bash\n' >> /root/.bashrc \
  && printf '\n[ -f /root/.local/share/kavkash/functions.zsh ] && source /root/.local/share/kavkash/functions.zsh\n' >> /root/.zshrc \
  && printf '\nif test -f /root/.local/share/kavkash/functions.fish\n    source /root/.local/share/kavkash/functions.fish\nend\n' >> /root/.config/fish/config.fish
 
-ENTRYPOINT ["/src/docker/entrypoint.sh"]
+ENTRYPOINT ["/usr/local/bin/kavkash-entrypoint"]
 CMD ["bash"]

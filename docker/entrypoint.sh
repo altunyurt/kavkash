@@ -1,33 +1,26 @@
 #!/bin/sh
 # kavkash demo container entrypoint.
 #
-# Runs the REAL installer against a local tarball of this repo (file:// —
-# no network), which exercises its download/verify/extract code paths plus
-# the no-systemd manual-start fallback. KAVKASH_IMPORT=1 makes the
-# installer import whatever history files are mounted at the standard
-# paths (~/.bash_history, ~/.zsh_history, fish_history, atuin db) — so
-# the demo starts pre-seeded with YOUR commands, read from read-only
-# mounts.
-#
-# Then: with a TTY (docker run -it ...) it backgrounds the daemon and
-# execs the requested shell; without one (docker run -d) it runs the
-# daemon in the foreground so the container stays alive and shells attach
-# via `docker exec -it` — the rc files baked into the image wire the
-# hooks, so every exec'd shell is a kavkash session automatically.
+# kavkash itself was installed at image build time (the documented
+# `curl ... install.sh | dash` one-liner). This entrypoint:
+#   1. imports whatever history files are mounted at the standard paths
+#      (~/.bash_history, ~/.zsh_history, fish_history, atuin db) — so the
+#      demo starts pre-seeded with YOUR commands, read from read-only
+#      mounts (import.sh is idempotent, and picks up new host commands on
+#      every start)
+#   2. starts the daemon — with a TTY (docker run -it ...) it backgrounds
+#      it and execs the requested shell; without one (docker run -d) it
+#      runs the daemon in the foreground as PID 1 so the container stays
+#      alive and shells attach via `docker exec -it` — the rc files baked
+#      into the image wire the hooks, so every exec'd shell is a kavkash
+#      session automatically.
 
 set -eu
 
 KAV_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/kavkash"
 KAV_SOCK="${XDG_RUNTIME_DIR:-/tmp}/kavkash/history.sock"
 
-install_kavkash() {
-    sha=$(sha256sum /tmp/kavkash.tar.gz | awk '{ print $1 }')
-    KAVKASH_TARBALL_URL="file:///tmp/kavkash.tar.gz" \
-    KAVKASH_TARBALL_SHA256="$sha" \
-    KAVKASH_NO_SYSTEMD=1 \
-    KAVKASH_IMPORT=1 \
-    /src/install.sh
-}
+"$KAV_DATA_HOME/import.sh" --all
 
 wait_for_daemon() {
     i=0
@@ -40,8 +33,6 @@ wait_for_daemon() {
         exit 1
     fi
 }
-
-install_kavkash
 
 if [ -t 0 ] && [ $# -gt 0 ]; then
     # interactive (docker run -it ...): background daemon, then the shell

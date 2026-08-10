@@ -39,11 +39,12 @@ docker stop kavkash-demo
 
 `docker run -it kavkash:demo` instead drops you straight into a kavkash
 session. `PERSIST=1 ./docker/demo.sh` keeps `history.db` across restarts
-(volume `kavkash-demo-data`). The entrypoint runs the real installer
-against a local tarball (`KAVKASH_TARBALL_URL=file://...`, the
-no-systemd fallback branch) and imports the mounted histories
-(`KAVKASH_IMPORT=1`), then starts the daemon. The image bakes the hook
-wiring into the rc files, so every exec'd shell is a kavkash session
+(volume `kavkash-demo-data`). The image builds kavkash with the exact
+one-liner the README documents — `curl -fsSL …/install.sh | dash` —
+resolving the latest GitHub release and verifying its checksum at build
+time; the entrypoint then imports the mounted histories (idempotent, and
+picks up new host commands on every start) and starts the daemon. The
+rc files are wired at build, so every exec'd shell is a kavkash session
 automatically. Base is Debian 13 pinned — kavkash needs fzf ≥ 0.54, and
 bookworm's 0.38 would silently disable the picker. Note: an atuin
 import needs a plaintext (v17-) store; encrypted v18+ rows require the
