@@ -20,6 +20,35 @@ installer's header):
 - `KAVKASH_NO_SYSTEMD=1` — don't install the systemd unit
 - `KAVKASH_REPO` / `KAVKASH_TARBALL_URL` / `KAVKASH_TARBALL_SHA256` — install from elsewhere
 
+## Try it in Docker (nothing touches your system)
+
+A container with the whole app — daemon, shell hooks, fzf picker — that
+imports **your** shell histories read-only. No install, no rc edits, no
+history on disk anywhere except the container's.
+
+```sh
+docker build -t kavkash:demo .
+# daemon container; attach shells with docker exec
+./docker/demo.sh                 # mounts your bash/zsh/fish histories
+# or the raw command:
+docker run -d --name kavkash-demo -v ~/.bash_history:/root/.bash_history:ro kavkash:demo
+
+docker exec -it kavkash-demo bash    # or: fish / zsh — any shell works
+docker stop kavkash-demo
+```
+
+`docker run -it kavkash:demo` instead drops you straight into a kavkash
+session. `PERSIST=1 ./docker/demo.sh` keeps `history.db` across restarts
+(volume `kavkash-demo-data`). The entrypoint runs the real installer
+against a local tarball (`KAVKASH_TARBALL_URL=file://...`, the
+no-systemd fallback branch) and imports the mounted histories
+(`KAVKASH_IMPORT=1`), then starts the daemon. The image bakes the hook
+wiring into the rc files, so every exec'd shell is a kavkash session
+automatically. Base is Debian 13 pinned — kavkash needs fzf ≥ 0.54, and
+bookworm's 0.38 would silently disable the picker. Note: an atuin
+import needs a plaintext (v17-) store; encrypted v18+ rows require the
+atuin binary inside the container.
+
 ## Run
 
 The installer starts the daemon and prints the exact `source` line for
