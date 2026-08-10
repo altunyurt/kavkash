@@ -17,12 +17,9 @@
 #                             0 = no (default: prompt interactively)
 #
 # Revision tracking:
-#   On success this script writes ${KAV_DATA_HOME}/INSTALLED_REVISION containing
-#   the repo, the resolved tag, the resolved commit SHA (immutable), the
-#   sha256 of the downloaded tarball, whether that checksum was verified
-#   against a value published by upstream, and the install timestamp. Read
-#   that file any time to know exactly what is on disk and how it was
-#   verified — do not trust a tag name alone, since tags are mutable.
+#   On success writes ${KAV_DATA_HOME}/INSTALLED_REVISION: repo, tag, commit
+#   SHA, tarball sha256, verification status, timestamp. Read it to know
+#   exactly what is on disk — do not trust a tag name alone (tags move).
 #
 # systemd --user integration:
 #   On systems running systemd with a reachable user session, this script
@@ -35,15 +32,11 @@
 #   drop-in (`systemctl --user edit kavkash.service`), since this script
 #   regenerates the base unit file on every run.
 #
-# Safety note: all executable logic lives inside main(), which is invoked
-# only on the final line of this file. A POSIX shell must parse a function
-# body in full — matching every brace — before it can run any of it, so if
-# this file is truncated or only partially downloaded (e.g. a `curl | sh`
-# that gets cut off), the shell either hits a parse error and exits before
-# doing anything, or never reaches the trailing `main "$@"` call at all.
-# Nothing above this point (the function definitions) mutates the system by
-# itself. Do not add top-level statements outside function bodies below
-# this note, and do not put anything after the final `main "$@"` call.
+# Safety: all executable logic lives inside main(), invoked only on the
+# final line — a POSIX shell parses the whole file before running anything,
+# so a truncated `curl | sh` download exits at parse time without side
+# effects. Keep it that way: no top-level statements outside functions,
+# nothing after the final `main "$@"`.
 
 set -eu
 

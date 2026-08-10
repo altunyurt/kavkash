@@ -1,18 +1,12 @@
 #!/bin/sh
-# kavkash uninstaller — removes a kavkash installation.
+# kavkash uninstaller — removes a kavkash installation: the daemon
+# (systemd --user unit, else the pid-file daemon), runtime artifacts
+# (socket, pid file, server log), the unit file, and the install dir
+# ${XDG_DATA_HOME:-~/.local/share}/kavkash (history.db kept unless
+# --purge).
 #
-# Removes, in order:
-#   1. the daemon (systemd --user unit if enabled, otherwise the pid-file
-#      daemon started manually via server.sh &)
-#   2. runtime artifacts (socket, pid file, server log) from the runtime dir
-#   3. the systemd unit file + daemon-reload
-#   4. the install directory ${XDG_DATA_HOME:-~/.local/share}/kavkash
-#      (history.db is kept by default — pass --purge to delete it too)
-#
-# It does NOT touch your shell rc files: the installer only ever PRINTED
-# the `source .../functions.*` line and never wrote it, so an uninstaller
-# has no business editing ~/.bashrc/.zshrc/config.fish. It prints the
-# exact lines to remove instead.
+# It never touches shell rc files — the installer only ever PRINTED the
+# `source .../functions.*` line, so this just prints the lines to remove.
 #
 # Usage:
 #   ./uninstall.sh            interactive — confirms before removing anything
@@ -24,9 +18,9 @@
 #   KAVKASH_KEEP_DB=1|0       decide history.db fate without prompting
 #   KAVKASH_ASSUME_YES=1      same as -y
 #
-# Safety: mirrors install.sh's layout — all executable logic lives inside
-# main(), invoked only on the final line, so a truncated download of this
-# file can never partially uninstall anything.
+# Safety: same layout as install.sh — all executable logic lives inside
+# main(), invoked only on the final line, so a truncated download can
+# never partially uninstall anything.
 
 set -eu
 

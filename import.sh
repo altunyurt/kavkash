@@ -240,10 +240,9 @@ import_atuin() {
     PSEUDO_BASE=2000000000
     f=${1:-}   # explicit --atuin=PATH (plaintext store); else infer
     if [ -n "$f" ]; then
-        # Explicit --atuin=PATH: skip guard/CLI/config — read PATH directly.
-        :
+        :   # explicit path: skip the guard/CLI/config logic below
     else
-        # Infer mode only — never reached for an explicit path.
+        # infer the store: config.toml db_path, else the default path
         cfg="${XDG_CONFIG_HOME:-$HOME/.config}/atuin/config.toml"
         if ! kav_have atuin && [ ! -f "${XDG_DATA_HOME:-$HOME/.local/share}/atuin/history.db" ] && [ ! -f "$cfg" ]; then
             return 0

@@ -80,10 +80,8 @@ _hist_scope_sess() { _hist_picker 10000 "$BUFFER" search "" "$_hist_sess"; }
 # Register widgets and bindings. Enter/Ctrl+C are NOT bound — zsh defaults
 # handle them.
 #
-# fzf >= 0.54 required: multi-line display (0.53), print() (0.53), transform +
-# FZF_* env + result event (0.45/0.46), start:reload without an initial reader
-# and the --sync render guarantee (0.54). Older fzf can't render the raw
-# multi-line rows the server now sends, so the widgets are not registered.
+# fzf >= 0.54 required — older versions can't render the raw multi-line
+# rows the server sends; the widgets are not registered.
 _kav_fzf_ver=$(fzf --version 2>/dev/null | awk 'NR == 1 { print $1 }')
 if [ -n "$_kav_fzf_ver" ] && printf '%s\n' "$_kav_fzf_ver" | \
         awk -F. 'NR == 1 { exit ($1 > 0 || $2 >= 54) ? 0 : 1 }'; then

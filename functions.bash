@@ -63,9 +63,9 @@ _hist_bind_widget() {
 # filters in-memory (no per-keystroke DB trips, full fzf syntax). picker.sh
 # grows the window from fzf events: a result-transform doubles it when
 # exhausted (0 matches, or all match); f5 forces the next page. --sync
-# resolves the cascade before first paint; --track keeps the cursor across
-# reloads. Commands go over the wire raw — multi-line rows display natively
-# (fzf >= 0.53).
+# resolves the reload cascade before first paint; --track pins the cursor
+# across reloads. Commands go over the wire raw — multi-line rows display
+# natively (fzf >= 0.53).
 _hist_picker() {
     local count="$1" init_q="${2:-}" mode="${3:-walk}" cwd="${4:-}" session="${5:-}"
     local picked key cmd win win_file scope_file label prompt picker
@@ -321,10 +321,8 @@ trap kav_preexec_record DEBUG
 # Enter fallback). Enter and Ctrl+C are NOT bound — readline's defaults
 # execute/cancel.
 #
-# fzf >= 0.54 required: multi-line display (0.53), print() (0.53), transform +
-# FZF_* env + result event (0.45/0.46), start:reload without an initial reader
-# and the --sync render guarantee (0.54). Older fzf can't render the raw
-# multi-line rows the server sends, so the picker is disabled, not degraded.
+# fzf >= 0.54 required — older versions can't render the raw multi-line
+# rows the server sends; the picker is disabled, not degraded.
 _kav_fzf_ver=$(fzf --version 2>/dev/null | awk 'NR == 1 { print $1 }')
 if [ -n "$_kav_fzf_ver" ] && printf '%s\n' "$_kav_fzf_ver" | \
         awk -F. 'NR == 1 { exit ($1 > 0 || $2 >= 54) ? 0 : 1 }'; then

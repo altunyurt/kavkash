@@ -20,7 +20,6 @@ installer's header):
 - `KAVKASH_NO_SYSTEMD=1` — don't install the systemd unit
 - `KAVKASH_REPO` / `KAVKASH_TARBALL_URL` / `KAVKASH_TARBALL_SHA256` — install from elsewhere
 
-
 ## Run
 
 The installer starts the daemon and prints the exact `source` line for
