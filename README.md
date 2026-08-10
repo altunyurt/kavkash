@@ -1,8 +1,6 @@
 # kavkash
 
-Minimal shell-history daemon: shell hooks capture every command into
-SQLite, an fzf picker serves them back. **Up** browses the recent
-commands, **Ctrl+R** searches everything, **F6/F7/F8** scope the search.
+An Atuin inspired shell history engine entirely built with SQLite3, socat, fzf, and POSIX shell scripts.
 
 ## Install
 
@@ -21,6 +19,7 @@ installer's header):
   idempotent and safe
 - `KAVKASH_NO_SYSTEMD=1` — don't install the systemd unit
 - `KAVKASH_REPO` / `KAVKASH_TARBALL_URL` / `KAVKASH_TARBALL_SHA256` — install from elsewhere
+
 
 ## Run
 
