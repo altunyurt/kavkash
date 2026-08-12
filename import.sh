@@ -9,8 +9,10 @@
 #   bash  ~/.bash_history             plain lines, or "#<epoch>" pairs (HISTTIMEFORMAT)
 #   zsh   ${HISTFILE:-~/.zsh_history} plain lines, or ": <epoch>:<dur>;<cmd>"
 #   fish  ${XDG_DATA_HOME}/fish/fish_history  YAML entries
-#   atuin v17-: plaintext SQLite (history / history_v2), read directly
-#   atuin v18+: PASETO-encrypted, read via the atuin CLI which decrypts
+#   atuin                            read via the atuin CLI, which decrypts
+#                                    v18+ PASETO stores; the store layout
+#                                    varies by version, so the CLI is the
+#                                    only stable reader
 
 set -eu
 
@@ -27,8 +29,8 @@ tmpdir=${TMPDIR:-/tmp}
 ENTRIES=$(mktemp "$tmpdir/kavkash-import.XXXXXX")
 SQLOUT=$(mktemp "$tmpdir/kavkash-import.XXXXXX")
 ATUINPARSE=$(mktemp "$tmpdir/kavkash-atuin-parse.XXXXXX")
-DAYS=""; OFFS=""   # per-day TZ offset map (CLI path only)
-trap 'rm -f "$ENTRIES" "$SQLOUT" "$ATUINPARSE" "$DAYS" "$OFFS"' EXIT
+DAYS=""; OFFS=""; ATUINOUT=""   # atuin temp files (per-day TZ offset map)
+trap 'rm -f "$ENTRIES" "$SQLOUT" "$ATUINPARSE" "$ATUINOUT" "$DAYS" "$OFFS"' EXIT
 
 cat > "$ATUINPARSE" <<'EOF'
 BEGIN {
@@ -96,37 +98,27 @@ function dur_ms(d,   u, x) {
     return x * u
 }
 
-{
-    start = 0
-    if (MODE == "cli") {
-        if ($0 ~ /^[0-9]{4}-[0-9]{2}-[0-9]{2} /) start = 1
-    } else if ($0 ~ /^[0-9]{19}\|/) {
-        # 19-digit ns id (the row's timestamp)
-        start = 1
-    }
-    if (start) {
-        flush()
-        nf = split($0, F, "|")
-        p_ts = F[1]
-        p_cwd = F[2]
-        if (MODE == "cli") { p_dur = dur_ms(F[3]); p_exit = F[4] }
-        else               { p_exit = F[3]; p_dur = F[4] + 0 }
-        pending = F[5]
-        for (i = 6; i <= nf; i++) pending = pending "|" F[i]
-        if (MODE == "cli") {
-            if (p_ts ~ /^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}$/)
-                # epoch_ms yields ms; append 6 digits for ns. String
-                # concat, not arithmetic: 19 digits exceed awk's double.
-                p_ts = (epoch_ms(p_ts) - offmap[substr(F[1], 1, 10)] * 60000) "000000"
-            else
-                p_ts = ""
-        } else if (p_ts !~ /^[0-9]+$/) {
-            p_ts = ""
-        }
-    } else if (pending != "") {
-        pending = pending "\n" $0
-    }
+# atuin CLI record: "YYYY-MM-DD HH:MM:SS|cwd|duration|exit|command" —
+# the command is everything after the 4th '|' and may contain '|'. Other
+# lines continue the previous record (multiline commands).
+$0 ~ /^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}/ {
+    flush()
+    nf = split($0, F, "|")
+    p_ts = F[1]
+    p_cwd = F[2]
+    p_dur = dur_ms(F[3])
+    p_exit = F[4]
+    pending = F[5]
+    for (i = 6; i <= nf; i++) pending = pending "|" F[i]
+    if (p_ts ~ /^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}$/)
+        # epoch_ms yields ms; append 6 digits for ns. String
+        # concat, not arithmetic: 19 digits exceed awk's double.
+        p_ts = (epoch_ms(p_ts) - offmap[substr(F[1], 1, 10)] * 60000) "000000"
+    else
+        p_ts = ""
+    next
 }
+pending != "" { pending = pending "\n" $0 }
 
 END { flush() }
 EOF
@@ -238,84 +230,43 @@ import_fish() {
 import_atuin() {
     counter=0
     PSEUDO_BASE=2000000000
-    f=${1:-}   # explicit --atuin=PATH (plaintext store); else infer
-    if [ -n "$f" ]; then
-        :   # explicit path: skip the guard/CLI/config logic below
-    else
-        # infer the store: config.toml db_path, else the default path
-        cfg="${XDG_CONFIG_HOME:-$HOME/.config}/atuin/config.toml"
-        if ! kav_have atuin && [ ! -f "${XDG_DATA_HOME:-$HOME/.local/share}/atuin/history.db" ] && [ ! -f "$cfg" ]; then
-            return 0
-        fi
-        if kav_have atuin; then
-            echo "reading atuin history" >&2
-            ATUINOUT=$(mktemp "$tmpdir/kavkash-atuin.XXXXXX")
-            if atuin history list -r false -f '{time}|{directory}|{duration}|{exit}|{command}' --print0 > "$ATUINOUT" 2> /dev/null && [ -s "$ATUINOUT" ]; then
-                # atuin {time} is LOCAL wall-clock; subtract the local UTC
-                # offset from the UTC-interpreted epoch (per unique day, one
-                # date call — exact except a few hours on DST-transition
-                # days). Without GNU date, fall back to one constant offset.
-                DAYS=$(mktemp "$tmpdir/kavkash-atuin-days.XXXXXX")
-                OFFS=$(mktemp "$tmpdir/kavkash-atuin-offs.XXXXXX")
-                tr '\0' '\n' < "$ATUINOUT" | grep -oE '^[0-9]{4}-[0-9]{2}-[0-9]{2}' | sort -u > "$DAYS"
-                if [ -s "$DAYS" ]; then
-                    ok=1
-                    while IFS= read -r d; do
-                        off=$(date -d "$d 12:00:00" +%z 2>/dev/null) || { ok=0; break; }
-                        printf '%s %s\n' "$d" "$off"
-                    done < "$DAYS" > "$OFFS"
-                    if [ "$ok" = 0 ]; then
-                        off=$(date +%z 2>/dev/null)
-                        while IFS= read -r d; do printf '%s %s\n' "$d" "$off"; done < "$DAYS" > "$OFFS"
-                    fi
-                fi
-                # Single awk pass (a per-record shell loop took ~16 s per 40k).
-                tr '\0' '\n' < "$ATUINOUT" \
-                    | awk -v MODE=cli -v PSEUDO="$PSEUDO_BASE" -v OFFMAP="$OFFS" -f "$ATUINPARSE" >> "$ENTRIES"
-                rm -f "$ATUINOUT"
-                return 0
-            fi
-            # atuin present but the CLI failed — clean up and fall through
-            # to reading the plaintext store directly.
-            rm -f "$ATUINOUT"
-        fi
-        # Fallback: read plaintext SQLite directly (config.toml db_path,
-        # else the default).
-        data_dir="${XDG_DATA_HOME:-$HOME/.local/share}/atuin"
-        f="$data_dir/history.db"
-        if [ -f "$cfg" ]; then
-            db=$(sed -n 's/^[[:space:]]*db_path[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$cfg" | head -1)
-            [ -n "$db" ] && f=$db
-        fi
-    fi
-    # Expand ~/ and $USER (explicit paths may carry a literal tilde; USER
-    # can be unset in non-login contexts like containers/cron).
-    case "$f" in
-        "~/"*) f="$HOME/${f#"~/"}" ;;
-    esac
-    f=$(printf '%s' "$f" | sed "s/\$USER/${USER:-$(id -un)}/g")
-    if [ ! -f "$f" ]; then
-        [ -n "$1" ] && echo "import.sh: atuin db not found: $f" >&2
+    if ! kav_have atuin; then
+        echo "skipping atuin: CLI not found (it resolves the store and decrypts v18+ stores)" >&2
         return 0
     fi
-    echo "reading atuin history ($f)" >&2
-    # schema variants: history_v2 (atuin v14-17) / history (v18+ and v1)
-    table=""
-    for t in history_v2 history; do
-        if sqlite3 "$f" "SELECT 1 FROM sqlite_master WHERE type='table' AND name='$t';" | grep -q 1; then
-            table=$t
-            break
+    echo "reading atuin history" >&2
+    ATUINOUT=$(mktemp "$tmpdir/kavkash-atuin.XXXXXX")
+    # The CLI is the only stable reader: the store layout varies by version
+    # (plaintext history table, PASETO-encrypted rows, sync-v2 records.db),
+    # and the CLI resolves the real db path and key from its own config.
+    if atuin history list -r false -f '{time}|{directory}|{duration}|{exit}|{command}' --print0 > "$ATUINOUT" 2> /dev/null; then
+        [ -s "$ATUINOUT" ] || return 0   # empty store — nothing to import
+        # atuin {time} is LOCAL wall-clock; subtract the local UTC
+        # offset from the UTC-interpreted epoch (per unique day, one
+        # date call — exact except a few hours on DST-transition
+        # days). Without GNU date, fall back to one constant offset.
+        DAYS=$(mktemp "$tmpdir/kavkash-atuin-days.XXXXXX")
+        OFFS=$(mktemp "$tmpdir/kavkash-atuin-offs.XXXXXX")
+        tr '\0' '\n' < "$ATUINOUT" | grep -oE '^[0-9]{4}-[0-9]{2}-[0-9]{2}' | sort -u > "$DAYS"
+        if [ -s "$DAYS" ]; then
+            ok=1
+            while IFS= read -r d; do
+                off=$(date -d "$d 12:00:00" +%z 2>/dev/null) || { ok=0; break; }
+                printf '%s %s\n' "$d" "$off"
+            done < "$DAYS" > "$OFFS"
+            if [ "$ok" = 0 ]; then
+                off=$(date +%z 2>/dev/null)
+                while IFS= read -r d; do printf '%s %s\n' "$d" "$off"; done < "$DAYS" > "$OFFS"
+            fi
         fi
-    done
-    [ -n "$table" ] || return 0
-    # v18+ stores ns timestamps, older ms — detect from data; both become
-    # ns ids. cwd may be NULL. command stays LAST so pipes survive the
-    # IFS='|' read; lines without a leading ts are multiline continuations.
-    ns=$(sqlite3 "$f" "SELECT max(timestamp) FROM $table;")
-    mult=1
-    [ "${#ns}" -le 16 ] && mult=1000000
-    sqlite3 -noheader "$f" "SELECT CAST(timestamp*$mult AS INTEGER), COALESCE(cwd,''), exit, CAST(COALESCE(duration,0)*$mult AS INTEGER), command FROM $table ORDER BY timestamp ASC;" \
-        | awk -v MODE=plain -v PSEUDO="$PSEUDO_BASE" -f "$ATUINPARSE" >> "$ENTRIES"
+        # Single awk pass (a per-record shell loop took ~16 s per 40k).
+        tr '\0' '\n' < "$ATUINOUT" \
+            | awk -v PSEUDO="$PSEUDO_BASE" -v OFFMAP="$OFFS" -f "$ATUINPARSE" >> "$ENTRIES"
+        rm -f "$ATUINOUT"
+        return 0
+    fi
+    rm -f "$ATUINOUT"
+    echo "atuin: CLI failed to read the store" >&2
 }
 
 # --- source selection (no flags == --help; install.sh passes --all) --------
@@ -329,11 +280,10 @@ selected explicitly; with no options this help is printed.
   -b, --bash          import bash history (${HISTFILE:-~/.bash_history})
   -z, --zsh           import zsh history (${HISTFILE:-~/.zsh_history})
   -f, --fish          import fish history (fish_history)
-      --atuin         import atuin history (store inferred: config.toml
-                      db_path, else the default; the atuin CLI is preferred
-                      because v18+ stores are PASETO-encrypted)
-      --atuin=PATH    import atuin from PATH directly (plaintext
-                      history/history_v2 sqlite store; no CLI, no config)
+      --atuin         import atuin history (requires the `atuin` CLI: the
+                      store layout varies by version and v18+ stores are
+                      PASETO-encrypted, so the CLI is the only stable
+                      reader — it resolves the store and key itself)
       --all           shorthand for -b -z -f --atuin
   -h, --help          show this help and exit
 
@@ -342,14 +292,17 @@ Idempotent: re-running imports nothing new. Rows deduplicate on
 EOF
 }
 
-want_bash=0; want_zsh=0; want_fish=0; want_atuin=0; atuin_db=""
+want_bash=0; want_zsh=0; want_fish=0; want_atuin=0
 for a in "$@"; do
     case "$a" in
         -b | --bash)        want_bash=1 ;;
         -z | --zsh)         want_zsh=1 ;;
         -f | --fish)        want_fish=1 ;;
         --atuin)            want_atuin=1 ;;
-        --atuin=*)          want_atuin=1; atuin_db=${a#--atuin=} ;;
+        --atuin=*)
+            echo "import.sh: --atuin=PATH was removed — atuin history is read via the atuin CLI" >&2
+            exit 2
+            ;;
         --all)              want_bash=1; want_zsh=1; want_fish=1; want_atuin=1 ;;
         -h | --help)        usage; exit 0 ;;
         *) echo "import.sh: unknown option: $a" >&2; usage >&2; exit 2 ;;
@@ -360,7 +313,7 @@ done
 [ "$want_bash" = 1 ] && import_bash
 [ "$want_zsh" = 1 ] && import_zsh
 [ "$want_fish" = 1 ] && import_fish
-[ "$want_atuin" = 1 ] && import_atuin "$atuin_db"
+[ "$want_atuin" = 1 ] && import_atuin
 
 [ -s "$ENTRIES" ] || { echo "nothing to import (no history found)"; exit 0; }
 total=$(tr -cd '\036' < "$ENTRIES" | wc -c)
@@ -426,11 +379,10 @@ function incs(s, k,   i) {
 }
 EOF
 
-# atuin parse: atuin CLI output (MODE=cli) or direct sqlite rows
-# (MODE=plain) -> ENTRIES frames (0x1E record / 0x1F field). A record
-# starts with a timestamp line; other lines continue the previous record
-# (multiline commands). The command field is everything after the 4th
-# '|' — commands may contain '|'.
+# atuin parse: the CLI's records -> ENTRIES frames (0x1E record / 0x1F
+# field). A record starts with the wall-clock timestamp line; other
+# lines continue the previous record (multiline commands). The command
+# field is everything after the 4th '|' — commands may contain '|'.
 if kav_have pv; then
     pv -N "sql" "$ENTRIES" | awk -f "$AWKPROG" > "$SQLOUT"
 else

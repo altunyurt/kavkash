@@ -13,10 +13,10 @@ Installs to `${XDG_DATA_HOME:-~/.local/share}/kavkash` (Unix socket under
 installer's header):
 
 - `KAVKASH_IMPORT=1` — import existing bash/zsh/fish history and atuin
-  (atuin v18+ stores are PASETO-encrypted, so import goes through the
-  `atuin` CLI, which decrypts with your key; v17-and-older stores are
-  plaintext SQLite and are read directly); re-running the import is
-  idempotent and safe
+  (atuin history is read via the `atuin` CLI — the store layout varies
+  by version and v18+ stores are PASETO-encrypted, so the CLI is the
+  only stable reader, resolving the store and your key itself);
+  re-running the import is idempotent and safe
 - `KAVKASH_NO_SYSTEMD=1` — don't install the systemd unit
 - `KAVKASH_REPO` / `KAVKASH_TARBALL_URL` / `KAVKASH_TARBALL_SHA256` — install from elsewhere
 
@@ -49,10 +49,12 @@ ones that exist) into the image; the entrypoint imports them into
 mounted read-only instead** (real db path from atuin's own config /
 `atuin info`): atuin records nothing inside the container, so the ro
 mount can't be tainted, and the key file stays on the host — baking it
-into an image would leak a secret through the immutable layers. v17-
-plaintext stores and v18's sqlite `history.db` import directly; fully
-encrypted stores additionally need the atuin binary inside the
-container. Re-run it any time to rebuild with fresh history.
+into an image would leak a secret through the immutable layers. Import
+goes through the `atuin` CLI — the image ships the exact version your
+host runs (stores carry a schema version, so a mismatched binary would
+either refuse to open them or try to migrate the ro mount), decrypting
+v18+ stores with the mounted key. Re-run it any time to rebuild with
+fresh history.
 `PERSIST=1 ./demo.sh` keeps `history.db` across restarts (volume
 `kavkash-demo-data`). The image installs
 kavkash with the exact one-liner the README documents —
@@ -167,9 +169,9 @@ shell Up/Ctrl+R fzf picker ← picker.sh → query.sh ←───────�
   size and scope live in temp files because fzf transforms run in a
   subshell.
 - `import.sh` — idempotent import from bash/zsh/fish history files and
-  atuin (v18+ stores are PASETO-encrypted — each row is a PASETO token
-  the atuin CLI decrypts with your key; older stores are plaintext
-  SQLite, read directly).
+  atuin (read via the `atuin` CLI: the store layout varies by version
+  and v18+ stores are PASETO-encrypted, so the CLI is the only stable
+  reader — it decrypts with your key).
 
 ## Pruning
 

@@ -10,9 +10,11 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/altunyurt/kavkash/main/demo.sh | dash
 #
-# Existing history files (bash/zsh/fish/atuin) are copied into the image
-# (missing ones skipped) and imported at container start (idempotent).
-# On build failure the context is left in place for debugging.
+# Existing history files (bash/zsh/fish) are copied into the image
+# (missing ones skipped) and imported at container start (idempotent);
+# the atuin store and key are mounted read-only, and the exact version of
+# your atuin binary is baked in (see below). On build failure the context
+# is left in place for debugging.
 #
 # Usage:
 #   ./demo.sh                 build + run the demo daemon container
@@ -38,6 +40,8 @@ cat > "$stage/Dockerfile" <<'DEOF'
 FROM debian:13-slim
 
 # ca-certificates: absent from slim, curl needs it for TLS.
+# atuin is NOT apt-installed: demo.sh bakes the host's exact version in
+# (see the atuin section) so the store's schema version always matches.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
         bash zsh fish socat sqlite3 mawk fzf curl ca-certificates \
@@ -49,8 +53,7 @@ RUN apt-get update \
 # dead curl must fail the build, not look like an empty install.
 RUN bash -o pipefail -c 'export KAVKASH_NO_SYSTEMD=1 KAVKASH_IMPORT=0; curl -fsSL https://raw.githubusercontent.com/altunyurt/kavkash/main/install.sh | dash'
 
-# Container runs as root, but debian doesn't set USER and import.sh's
-# atuin path expands $USER.
+# Container runs as root, but debian doesn't set USER; pin it.
 ENV USER=root
 
 COPY entrypoint.sh /usr/local/bin/kavkash-entrypoint
@@ -117,25 +120,59 @@ add_copy "$HOME/.bash_history"                  /root/.bash_history
 add_copy "$HOME/.zsh_history"                   /root/.zsh_history
 add_copy "$HOME/.local/share/fish/fish_history" /root/.local/share/fish/fish_history
 
-# --- atuin: mounted read-only, never baked into the image ---------------
+# --- atuin: store+key mounted ro; exact-version binary baked in ---------
 # Shell histories are copied because the container's shells write to them
 # (taint); atuin records nothing inside the container, so its store can be
 # mounted ro instead — and must be: the key file is a secret, and a copy
 # in a layer is a copy forever (immutable image layers, distribution).
-# The real db path comes from atuin's own config (see `atuin info`); it
-# lands in the container at import.sh's default path.
+# The image's atuin must match the HOST's exact version: stores carry a
+# schema version, so a mismatched binary either refuses to open the store
+# (newer) or tries to migrate it (impossible on the ro mount). demo.sh
+# downloads the release binary of the host's `atuin --version` (musl =
+# static, runs anywhere) and copies it in; the store lands at the
+# container's default store path, which that fresh atuin reads
+# (import.sh extracts via `atuin history list`).
 atuin_mounts=""
-atuin_db="$HOME/.local/share/atuin/history.db"
-if [ -f "$HOME/.config/atuin/config.toml" ]; then
-    p=$(sed -n 's/^[[:space:]]*db_path[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$HOME/.config/atuin/config.toml" | head -1)
-    [ -n "$p" ] && atuin_db=$p
-fi
-case "$atuin_db" in "~/"*) atuin_db="$HOME/$(printf '%s' "$atuin_db" | sed 's|^~/||')" ;; esac
-atuin_db=$(printf '%s' "$atuin_db" | sed "s/\$USER/$(id -un)/g")
-if [ -f "$atuin_db" ]; then
-    atuin_mounts="-v $atuin_db:/root/.local/share/atuin/history.db:ro"
+if command -v atuin > /dev/null 2>&1; then
+    atuin_db="$HOME/.local/share/atuin/history.db"
+    if [ -f "$HOME/.config/atuin/config.toml" ]; then
+        p=$(sed -n 's/^[[:space:]]*db_path[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$HOME/.config/atuin/config.toml" | head -1)
+        [ -n "$p" ] && atuin_db=$p
+    fi
+    case "$atuin_db" in "~/"*) atuin_db="$HOME/$(printf '%s' "$atuin_db" | sed 's|^~/||')" ;; esac
+    atuin_db=$(printf '%s' "$atuin_db" | sed "s/\$USER/$(id -un)/g")
+    [ -f "$atuin_db" ] && atuin_mounts="-v $atuin_db:/root/.local/share/atuin/history.db:ro"
     [ -f "$HOME/.local/share/atuin/key" ] \
         && atuin_mounts="$atuin_mounts -v $HOME/.local/share/atuin/key:/root/.local/share/atuin/key:ro"
+
+    ver=$(atuin --version | awk '{print $2}' | sed 's/^v//')
+    case "$(uname -m)" in
+        x86_64)  triple=x86_64-unknown-linux-musl ;;
+        aarch64) triple=aarch64-unknown-linux-musl ;;
+        *) echo "demo.sh: no atuin release for $(uname -m)" >&2; exit 1 ;;
+    esac
+    url=""
+    for u in \
+        "https://github.com/atuinsh/atuin/releases/download/v$ver/atuin-$triple.tar.gz" \
+        "https://github.com/atuinsh/atuin/releases/download/v$ver/atuin-v$ver-$triple.tar.gz"; do
+        if curl -fsSL --max-time 120 "$u" -o "$stage/atuin.tar.gz" 2> /dev/null; then url=$u; break; fi
+    done
+    [ -n "$url" ] || { echo "demo.sh: atuin v$ver release not found (dev build?)" >&2; exit 1; }
+    sha=$(curl -fsSL --max-time 30 "$url.sha256" 2>/dev/null | awk '{print $1}')
+    if [ -n "$sha" ]; then
+        printf '%s  atuin.tar.gz\n' "$sha" > "$stage/atuin.sha256"
+        ( cd "$stage" && sha256sum -c atuin.sha256 > /dev/null ) \
+            || { echo "demo.sh: atuin v$ver checksum mismatch" >&2; exit 1; }
+    else
+        echo "demo.sh: warning: no sha256 asset for atuin v$ver — skipping verification" >&2
+    fi
+    tar -xzf "$stage/atuin.tar.gz" -C "$stage"
+    bin="$stage/atuin-$triple/atuin"          # v18+ asset layout
+    [ -f "$bin" ] || bin="$stage/atuin-v$ver-$triple/atuin"   # v17- layout
+    cp "$bin" "$stage/atuin"
+    chmod +x "$stage/atuin"
+    printf 'COPY atuin /usr/local/bin/atuin\n' >> "$stage/Dockerfile"
+    echo "demo.sh: baked atuin v$ver ($triple) into the image"
 fi
 
 echo "demo.sh: building image (kavkash via curl|dash, $hist_count history file(s) copied in)"
