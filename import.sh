@@ -29,8 +29,9 @@ tmpdir=${TMPDIR:-/tmp}
 ENTRIES=$(mktemp "$tmpdir/kavkash-import.XXXXXX")
 SQLOUT=$(mktemp "$tmpdir/kavkash-import.XXXXXX")
 ATUINPARSE=$(mktemp "$tmpdir/kavkash-atuin-parse.XXXXXX")
+DBMAP=$(mktemp "$tmpdir/kavkash-dbmap.XXXXXX")
 DAYS=""; OFFS=""; ATUINOUT=""   # atuin temp files (per-day TZ offset map)
-trap 'rm -f "$ENTRIES" "$SQLOUT" "$ATUINPARSE" "$ATUINOUT" "$DAYS" "$OFFS"' EXIT
+trap 'rm -f "$ENTRIES" "$SQLOUT" "$ATUINPARSE" "$DBMAP" "$ATUINOUT" "$DAYS" "$OFFS"' EXIT
 
 cat > "$ATUINPARSE" <<'EOF'
 BEGIN {
@@ -319,6 +320,17 @@ done
 total=$(tr -cd '\036' < "$ENTRIES" | wc -c)
 echo "parsed $total commands" >&2
 
+# Existing (id, command) rows → the awk's id-ownership map (see AWKPROG):
+# a re-import that gained a new same-second entry must not land on an id
+# the DB already holds for a different command. The command is SQL-escaped
+# and newlines folded to SOH so multi-line commands stay on one map line
+# (the awk mirrors both transforms). cwd is excluded: the atuin
+# enrichment in the awk rewrites cwd, so it can't be part of the
+# id-ownership match. sqlite3 -separator with the 0x1F field separator
+# (a plain control char, no quoting worries).
+sep=$(printf '\037')
+sqlite3 -noheader -separator "$sep" "$DB" "SELECT id, replace(replace(command, char(39), char(39)||char(39)), char(10), char(1)) FROM history;" > "$DBMAP" 2> /dev/null || true
+
 # Bulk insert in one sqlite3 session, via one awk pass over ENTRIES.
 # atuin rows (src=A) first enrich any existing cwd-less row. Rows dedup
 # on (command, cwd, id) — id IS the ns timestamp, so re-runs insert
@@ -326,12 +338,25 @@ echo "parsed $total commands" >&2
 # occurrence. ORDER BY id DESC == time order (INTEGER PRIMARY KEY = the
 # table's rowid).
 AWKPROG=$(mktemp "$tmpdir/kavkash-awk.XXXXXX")
-trap 'rm -f "$ENTRIES" "$SQLOUT" "$AWKPROG" "$ATUINPARSE" "$DAYS" "$OFFS"; [ -n "${KAV_TMP_IDX:-}" ] && sqlite3 "$DB" "DROP INDEX IF EXISTS idx_import_cmd;"' EXIT
+trap 'rm -f "$ENTRIES" "$SQLOUT" "$AWKPROG" "$ATUINPARSE" "$DBMAP" "$DAYS" "$OFFS"; [ -n "${KAV_TMP_IDX:-}" ] && sqlite3 "$DB" "DROP INDEX IF EXISTS idx_import_cmd;"' EXIT
 cat > "$AWKPROG" <<'EOF'
 BEGIN {
+    RS = "\n"     # map lines: "id\x1fcommand" — command is SQL-escaped
+                  # and newlines folded to SOH (see the dump), so a
+                  # multi-line command stays on one line
+    if (DBMAP != "") {
+        while ((getline l < DBMAP) > 0) {
+            split(l, m, "\037")
+            dbkey[m[1]] = m[2]
+        }
+        close(DBMAP)
+    }
     RS = "\036"   # 0x1E record separator (matches emit)
     FS = "\037"   # 0x1F field separator
 }
+
+# SQL-escape a command/cwd field (doubled quotes).
+function esc(s) { gsub(/'/, "''", s); return s }
 
 # +1 on a decimal string (19-digit ns exceeds awk's double precision, so
 # the bump is done as text; digits-only input, carry handled).
@@ -346,35 +371,40 @@ function inc(s,   i, d, c, out) {
     if (c) out = "1" out
     return out
 }
-function incs(s, k,   i) {
-    for (i = 1; i <= k; i++) s = inc(s)
-    return s
-}
 
 {
-    cmd = $2
+    cmd = esc($2)
     if (cmd == "") next
-    gsub(/'/, "''", cmd)
-    cwd = $3
-    gsub(/'/, "''", cwd)
+    cwd = esc($3)
     ts = $1
     dur = $4 + 0
     exitc = $5 + 0
-    # Same-second atuin entries share the CLI's second-granular {time}, so
-    # equal ns ids would collide on the integer PK. Bump per equal-ts
-    # group (deterministic: the stream is stable per source, so re-runs
-    # compute the same ids). The stream may be newest-first (real atuin
-    # CLI), so only EQUAL values bump — never smaller ones.
-    cnt[ts]++
-    if (cnt[ts] > 1) ts = incs(ts, cnt[ts] - 1)
+    # The id is the row's timestamp; same-second entries (all sources are
+    # second-granular) would collide on the integer PK. Walk up from the
+    # timestamp to an id that is free — "occupied" means the DB already
+    # holds a DIFFERENT command there, or this stream already used it
+    # (keeps same-second duplicates distinct). An id the DB holds for the
+    # SAME command is kept: the NOT EXISTS below skips it — so a re-import
+    # that gained a new same-second entry shifts the group without
+    # disturbing the old placements. Ownership is by command alone: the
+    # atuin enrichment below rewrites cwd, and newlines are folded to SOH
+    # exactly as the map dump did.
+    key = cmd
+    gsub(/\n/, "\001", key)
+    id = ts
+    while ((id in dbkey && dbkey[id] != key) || (id in used)) id = inc(id)
+    used[id] = key
+    ts = id
     if ($6 == "A")
         printf "UPDATE history SET cwd='%s', duration_ms=%s, exit_code=%s WHERE command='%s' AND cwd='';\n", cwd, dur, exitc, cmd
-    # Idempotent: skip when (command, cwd, id) already exists — id IS the
-    # timestamp, so this is the (command, cwd, ts) dedup. A re-import
-    # produces identical ids and inserts nothing. The ts field is passed
-    # through as text: it is 19-digit ns and would lose precision in awk
-    # arithmetic (%s prints the string as-is).
-    printf "INSERT INTO history (id, command, cwd, exit_code, duration_ms) SELECT %s, '%s', '%s', %s, %s WHERE NOT EXISTS (SELECT 1 FROM history WHERE id=%s AND command='%s' AND cwd='%s');\n", ts, cmd, cwd, dur, exitc, ts, cmd, cwd
+    # Idempotent: skip when the id already exists — id IS the timestamp,
+    # so this is the (command, cwd, ts) dedup. Checking the id alone also
+    # keeps the re-import stable when the atuin enrichment above changed a
+    # row's cwd — an (id, command, cwd) key would stop matching and
+    # re-insert the row. INSERT OR IGNORE: belt for a pathological map
+    # collision (e.g. a command containing the field separator) — silently
+    # skips instead of failing the import.
+    printf "INSERT OR IGNORE INTO history (id, command, cwd, exit_code, duration_ms) SELECT %s, '%s', '%s', %s, %s WHERE NOT EXISTS (SELECT 1 FROM history WHERE id=%s);\n", ts, cmd, cwd, dur, exitc, ts
 }
 EOF
 
@@ -383,9 +413,9 @@ EOF
 # lines continue the previous record (multiline commands). The command
 # field is everything after the 4th '|' — commands may contain '|'.
 if kav_have pv; then
-    pv -N "sql" "$ENTRIES" | awk -f "$AWKPROG" > "$SQLOUT"
+    pv -N "sql" "$ENTRIES" | awk -v DBMAP="$DBMAP" -f "$AWKPROG" > "$SQLOUT"
 else
-    awk -f "$AWKPROG" "$ENTRIES" > "$SQLOUT"
+    awk -v DBMAP="$DBMAP" -f "$AWKPROG" "$ENTRIES" > "$SQLOUT"
 fi
 
 echo "inserting $total commands" >&2
