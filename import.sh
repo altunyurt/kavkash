@@ -360,12 +360,11 @@ function incs(s, k,   i) {
     ts = $1
     dur = $4 + 0
     exitc = $5 + 0
-    # Same ts from different rows — same-second atuin records, or equal
-    # pseudo counters from different files — would collide on the integer
-    # PK (the old UUIDs absorbed this with their random suffix). Bump per
-    # equal-ts group (deterministic: the stream is stable per source, so
-    # re-runs compute the same ids). The stream may be newest-first (real
-    # atuin CLI), so only EQUAL values bump — never smaller ones.
+    # Same-second atuin entries share the CLI's second-granular {time}, so
+    # equal ns ids would collide on the integer PK. Bump per equal-ts
+    # group (deterministic: the stream is stable per source, so re-runs
+    # compute the same ids). The stream may be newest-first (real atuin
+    # CLI), so only EQUAL values bump — never smaller ones.
     cnt[ts]++
     if (cnt[ts] > 1) ts = incs(ts, cnt[ts] - 1)
     if ($6 == "A")

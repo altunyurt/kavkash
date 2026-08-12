@@ -23,8 +23,9 @@ installer's header):
 ## Try it in Docker (nothing touches your system)
 
 A container with the whole app — daemon, shell hooks, fzf picker — with
-**your** shell histories copied into the image. No install, no rc edits,
-and the history copies live only inside the image, never on the host.
+**your** shell histories copied into the image (bash/zsh/fish files; the
+atuin store and key are mounted read-only instead — see below). No
+install, no rc edits — nothing is written to the host.
 
 ```sh
 ./demo.sh                  # builds the image (kavkash via the real

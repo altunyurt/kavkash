@@ -1,7 +1,7 @@
 #!/bin/sh
 # demo.sh — build and run a kavkash demo container with YOUR shell
-# histories COPIED into the image (nothing mounted, nothing installed on
-# the host).
+# histories COPIED into the image (nothing installed on the host); the
+# atuin store and key are mounted read-only instead (see below).
 #
 # Single self-contained file: the base Dockerfile and the container
 # entrypoint are embedded below and generated into a temp build context

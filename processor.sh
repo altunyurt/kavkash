@@ -124,10 +124,9 @@ case "$TYPE" in
         # Query: newest `count` commands matching the scope, NUL-framed raw
         # rows. The picker always sends an empty query — fzf filters the
         # loaded window in-memory — so the query field is accepted for
-        # protocol stability and ignored (the server-side subsequence
-        # matcher is long gone). cwd/session scope (empty = no filter)
-        # applies BEFORE the LIMIT: the picker's window is "newest N
-        # matching the scope".
+        # protocol stability and ignored. cwd/session scope (empty = no
+        # filter) applies BEFORE the LIMIT: the picker's window is "newest
+        # N matching the scope".
         action="$1"
         count="$3"
         cwd="$4"
