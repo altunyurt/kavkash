@@ -43,19 +43,24 @@ straight from the repo, exactly like the installer:
 curl -fsSL https://raw.githubusercontent.com/altunyurt/kavkash/main/demo.sh | dash
 ```
 
-It copies your existing history files (bash, zsh, fish, atuin — only
-the ones that exist) into the image; the entrypoint imports them into
-`history.db` at container start (idempotent). Re-run it any time to
-rebuild with fresh history. `PERSIST=1 ./demo.sh` keeps `history.db`
-across restarts (volume `kavkash-demo-data`). The image installs
+It copies your existing shell history files (bash, zsh, fish — only the
+ones that exist) into the image; the entrypoint imports them into
+`history.db` at container start (idempotent). Your **atuin store is
+mounted read-only instead** (real db path from atuin's own config /
+`atuin info`): atuin records nothing inside the container, so the ro
+mount can't be tainted, and the key file stays on the host — baking it
+into an image would leak a secret through the immutable layers. v17-
+plaintext stores and v18's sqlite `history.db` import directly; fully
+encrypted stores additionally need the atuin binary inside the
+container. Re-run it any time to rebuild with fresh history.
+`PERSIST=1 ./demo.sh` keeps `history.db` across restarts (volume
+`kavkash-demo-data`). The image installs
 kavkash with the exact one-liner the README documents —
 `curl -fsSL …/install.sh | dash` — resolving the latest GitHub release
 and verifying its checksum at build time. The rc files are wired at
 build, so every exec'd shell is a kavkash session automatically. Base is
 Debian 13 pinned — kavkash needs fzf ≥ 0.54, and bookworm's 0.38 would
-silently disable the picker. Note: an atuin import needs a plaintext
-(v17-) store; encrypted v18+ rows require the atuin binary inside the
-container.
+silently disable the picker.
 
 ## Run
 

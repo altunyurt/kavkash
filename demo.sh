@@ -105,10 +105,8 @@ exec "$KAV_DATA_HOME/server.sh"
 EEOF
 chmod +x "$stage/entrypoint.sh"
 
-# --- copy the user's history files into the build context ---------------
+# --- copy the user's shell history files into the build context ---------
 hist_count=0
-# plaintext atuin stores (v17-) only; encrypted v18+ rows need the atuin
-# binary inside the container, so copying the db alone won't import those
 add_copy() {
     [ -f "$1" ] || return 0
     cp "$1" "$stage/$(basename "$1")"
@@ -118,7 +116,27 @@ add_copy() {
 add_copy "$HOME/.bash_history"                  /root/.bash_history
 add_copy "$HOME/.zsh_history"                   /root/.zsh_history
 add_copy "$HOME/.local/share/fish/fish_history" /root/.local/share/fish/fish_history
-add_copy "$HOME/.local/share/atuin/history.db"  /root/.local/share/atuin/history.db
+
+# --- atuin: mounted read-only, never baked into the image ---------------
+# Shell histories are copied because the container's shells write to them
+# (taint); atuin records nothing inside the container, so its store can be
+# mounted ro instead — and must be: the key file is a secret, and a copy
+# in a layer is a copy forever (immutable image layers, distribution).
+# The real db path comes from atuin's own config (see `atuin info`); it
+# lands in the container at import.sh's default path.
+atuin_mounts=""
+atuin_db="$HOME/.local/share/atuin/history.db"
+if [ -f "$HOME/.config/atuin/config.toml" ]; then
+    p=$(sed -n 's/^[[:space:]]*db_path[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$HOME/.config/atuin/config.toml" | head -1)
+    [ -n "$p" ] && atuin_db=$p
+fi
+case "$atuin_db" in "~/"*) atuin_db="$HOME/$(printf '%s' "$atuin_db" | sed 's|^~/||')" ;; esac
+atuin_db=$(printf '%s' "$atuin_db" | sed "s/\$USER/$(id -un)/g")
+if [ -f "$atuin_db" ]; then
+    atuin_mounts="-v $atuin_db:/root/.local/share/atuin/history.db:ro"
+    [ -f "$HOME/.local/share/atuin/key" ] \
+        && atuin_mounts="$atuin_mounts -v $HOME/.local/share/atuin/key:/root/.local/share/atuin/key:ro"
+fi
 
 echo "demo.sh: building image (kavkash via curl|dash, $hist_count history file(s) copied in)"
 if ! docker build -q -t "$IMAGE" "$stage"; then
@@ -130,7 +148,11 @@ fi
 # --- run: daemon container; attach shells with docker exec --------------
 mounts=""
 [ "$PERSIST" = 1 ] && mounts="-v kavkash-demo-data:/root/.local/share/kavkash"
-docker run --rm -d --name "$NAME" $mounts "$IMAGE"
+docker run --rm -d --name "$NAME" $mounts $atuin_mounts "$IMAGE"
+
+if [ -n "$atuin_mounts" ]; then
+    echo "atuin: store mounted read-only at /root/.local/share/atuin/history.db (key stays on the host)"
+fi
 
 echo "container '$NAME' is running (kavkash daemon, your history imported from the image)."
 echo "  docker exec -it $NAME bash    # or: fish / zsh"
