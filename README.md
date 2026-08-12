@@ -31,8 +31,8 @@ install, no rc edits — nothing is written to the host.
 
 ```sh
 ./demo.sh                  # builds the image (kavkash via the real
-                           # curl|sh install), copies your histories in,
-                           # runs the daemon container
+                           # curl|sh install), copies your shell histories
+                           # in, runs the daemon container
 
 docker exec -it kavkash-demo bash    # or: fish / zsh — any shell works
 docker stop kavkash-demo
@@ -121,19 +121,21 @@ files are never touched — remove the `source` line yourself.
 
 ## Usage
 
-- **Up** (`walk> `) — browse the 500 newest commands.
-- **Ctrl+R** (`search> `) — search everything, seeded with the current
-  line (cap 10k).
+- **Up / Down** — walk all of history back and forth: Up brings the
+  previous command to the line, more Ups go further back, Down steps
+  forward again — no popup.
+- **Ctrl+R** (`search> `) — where the real thing begins: search ALL
+  distinct commands, seeded with the current line.
 - **F6** (`all> `) · **F7** (`dir> `) · **F8** (`sess> `) — scope the
   search: global, current dir + subdirs, or this shell session. They
   switch scope inside the open picker (prompt updates, list reloads,
   query kept).
 - **Enter** runs the picked command; **Tab** pastes it onto the line for
   editing.
-- The picker loads a window of the newest commands and filters it
-  in-memory — full fzf syntax (`!`, `'exact'`, `a|b`), no per-keystroke
-  DB hits. The window doubles automatically when exhausted; **F5**
-  forces the next page. Multi-line commands display natively.
+- The picker loads ALL distinct commands (each command appears once —
+  hundreds of `ls` become a single entry) and filters them in-memory —
+  full fzf syntax (`!`, `'exact'`, `a|b`), no per-keystroke DB hits.
+  Multi-line commands display natively.
 - On bash ≥ 4.3, Enter runs through readline's native `accept-line`
   (atuin's macro-chain trick), so the command behaves exactly as typed —
   real exit code and duration are recorded. Older bash and ble.sh use a
@@ -141,8 +143,8 @@ files are never touched — remove the `source` line yourself.
 
 ## Requirements
 
-- **fzf ≥ 0.54** — older versions disable the picker (warning printed,
-  history still records)
+- **fzf ≥ 0.54** — older versions disable the picker and Up/Down
+  stepping (warning printed, history still records)
 - **socat** (Unix-socket transport; `nc -U` works as fallback),
   **sqlite3**, **awk** — everything else is plain POSIX sh
 
@@ -152,8 +154,9 @@ Developed and tested on Debian trixie (dash, bash 5.2, zsh, fish 4).
 
 ```
 shell hooks → hook.sh → Unix socket → server.sh → processor.sh → SQLite
-                                                                    ↓
-shell Up/Ctrl+R fzf picker ← picker.sh → query.sh ←──────────────────┘
+                                                                       ↓
+shell Up/Down stepper → query.sh ──────────────────────────────────────┘
+shell Ctrl+R/F6-F8 picker ← picker.sh → query.sh ──────────────────────┘
 ```
 
 - Shells call `hook.sh` on preexec/precmd (bash synthesizes preexec with
@@ -165,12 +168,16 @@ shell Up/Ctrl+R fzf picker ← picker.sh → query.sh ←───────�
   duration, and a per-shell session token. The row id is ns-since-epoch:
   INTEGER PRIMARY KEY aliases the rowid, so the table is stored in time
   order and `ORDER BY id DESC` is a reverse leaf scan.
-- The picker (`functions.*`) loads a *window* of the newest commands via
-  `query.sh` and fzf filters it in-memory. Dir/session scope is filtered
-  server-side **before** the LIMIT, so an old scoped command isn't cut
-  off by the window. `picker.sh` drives pagination from fzf events; win
-  size and scope live in temp files because fzf transforms run in a
-  subshell.
+- The picker (`functions.*`) loads ALL distinct commands via `query.sh`
+  (count=0 = no limit) and fzf filters them in-memory. The server
+  deduplicates (GROUP BY command, newest occurrence first). Dir/session
+  scope is applied server-side, so a scope switch (F6-F8) re-queries the
+  whole scoped set. The scope lives in a temp file because fzf
+  transforms run in a subshell.
+- Up/Down step through ALL history one distinct command per press: each
+  press is a `count=1` query at an increasing/decreasing `OFFSET` over
+  the deduplicated set — cheap, since the rowid index makes the OFFSET
+  scan a reverse leaf walk.
 - `import.sh` — idempotent import from bash/zsh/fish history files and
   atuin (read via the `atuin` CLI: the store layout varies by version
   and v18+ stores are PASETO-encrypted, so the CLI is the only stable

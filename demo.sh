@@ -141,9 +141,19 @@ if command -v atuin > /dev/null 2>&1; then
     fi
     case "$atuin_db" in "~/"*) atuin_db="$HOME/$(printf '%s' "$atuin_db" | sed 's|^~/||')" ;; esac
     atuin_db=$(printf '%s' "$atuin_db" | sed "s/\$USER/$(id -un)/g")
-    [ -f "$atuin_db" ] && atuin_mounts="-v $atuin_db:/root/.local/share/atuin/history.db:ro"
-    [ -f "$HOME/.local/share/atuin/key" ] \
-        && atuin_mounts="$atuin_mounts -v $HOME/.local/share/atuin/key:/root/.local/share/atuin/key:ro"
+    # docker -v splits the spec on ':' and chokes on spaces — refuse such
+    # paths (they come from atuin's config) instead of building a broken
+    # mount.
+    case "$atuin_db" in
+        *[[:space:]:]*)
+            echo "demo.sh: atuin db path contains spaces or ':' — skipping the atuin mount" >&2
+            ;;
+        *)
+            [ -f "$atuin_db" ] && atuin_mounts="-v $atuin_db:/root/.local/share/atuin/history.db:ro"
+            [ -f "$HOME/.local/share/atuin/key" ] \
+                && atuin_mounts="$atuin_mounts -v $HOME/.local/share/atuin/key:/root/.local/share/atuin/key:ro"
+            ;;
+    esac
 
     ver=$(atuin --version | awk '{print $2}' | sed 's/^v//')
     case "$(uname -m)" in
@@ -152,12 +162,24 @@ if command -v atuin > /dev/null 2>&1; then
         *) echo "demo.sh: no atuin release for $(uname -m)" >&2; exit 1 ;;
     esac
     url=""
+    last_curl=22
     for u in \
         "https://github.com/atuinsh/atuin/releases/download/v$ver/atuin-$triple.tar.gz" \
         "https://github.com/atuinsh/atuin/releases/download/v$ver/atuin-v$ver-$triple.tar.gz"; do
-        if curl -fsSL --max-time 120 "$u" -o "$stage/atuin.tar.gz" 2> /dev/null; then url=$u; break; fi
+        if curl -fsSL --max-time 120 "$u" -o "$stage/atuin.tar.gz" 2> /dev/null; then
+            url=$u
+            break
+        fi
+        last_curl=$?   # 22 = HTTP error (404: no such asset); else network
     done
-    [ -n "$url" ] || { echo "demo.sh: atuin v$ver release not found (dev build?)" >&2; exit 1; }
+    if [ -z "$url" ]; then
+        if [ "$last_curl" = "22" ]; then
+            echo "demo.sh: atuin v$ver release not found (dev build?)" >&2
+        else
+            echo "demo.sh: failed to download atuin v$ver (curl exit $last_curl — network?)" >&2
+        fi
+        exit 1
+    fi
     sha=$(curl -fsSL --max-time 30 "$url.sha256" 2>/dev/null | awk '{print $1}')
     if [ -n "$sha" ]; then
         printf '%s  atuin.tar.gz\n' "$sha" > "$stage/atuin.sha256"

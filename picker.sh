@@ -1,56 +1,43 @@
 #!/bin/sh
-# picker.sh - pagination + scope helper for the fzf history picker.
-# Three roles (the widget builds the right argv for each):
+# picker.sh - scope helper for the fzf history picker. Two roles (the
+# widget builds the right argv for each):
 #
-#   picker.sh load WIN_FILE COUNT [SCOPE_FILE]
-#       run query.sh with the current window (target of start:reload-sync
-#       and of every growth / scope-switch reload). CWD/SESSION come from
-#       SCOPE_FILE (two lines: cwd, session; missing = global), so a scope
-#       switch and a growth-triggered reload always agree.
+#   picker.sh load COUNT [SCOPE_FILE]
+#       run query.sh for the whole distinct set (COUNT=0 = no limit);
+#       target of start:reload-sync and of every scope-switch reload.
+#       CWD/SESSION come from SCOPE_FILE (two lines: cwd, session;
+#       missing = global).
 #
-#   picker.sh decide WIN_FILE COUNT [SCOPE_FILE] [force]
-#       grow the window when it's exhausted (0 matches, or all rows match);
-#       record the new size in WIN_FILE and print a reload-sync action for
-#       fzf's transform. [force] (F5) always grows.
-#
-#   picker.sh switch SCOPE_FILE CWD SESSION PROMPT WIN_FILE COUNT
+#   picker.sh switch SCOPE_FILE CWD SESSION PROMPT COUNT
 #       F6/F7/F8 target: rewrite SCOPE_FILE to the new scope, then print
 #       change-prompt+reload-sync so fzf re-queries with it.
 #
-# Win size + scope live in temp files because fzf's transform runs its
-# command in a subshell — the widget shell can't see mutated state.
-# Exit codes are not part of the protocol (socat EXEC and fzf transform
-# discard them); the printed action string is the contract.
+# The scope lives in a temp file because fzf's transform runs its command
+# in a subshell — the widget shell can't see mutated state. Exit codes
+# are not part of the protocol (socat EXEC and fzf transform discard
+# them); the printed action string is the contract.
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
 mode=$1
 case "$mode" in
     load)
-        win_file=$2
-        count=$3
-        scope_file=${4:-}
-        ;;
-    decide)
-        win_file=$2
-        count=$3
-        scope_file=${4:-}
-        force=${5:-}
+        count=$2
+        scope_file=${3:-}
         ;;
     switch)
         scope_file=$2
         cwd=$3
         session=$4
         prompt=$5
-        win_file=$6
-        count=$7
+        count=$6
         # The new scope is applied before the reload below reads it.
         printf '%s\n%s\n' "$cwd" "$session" > "$scope_file"
         # change-prompt gives the scope switch visible feedback; the
-        # reload-sync re-queries through picker.sh load so win + scope
-        # stay in one place. Colon form matches the decide output.
-        printf 'change-prompt(%s> )+reload-sync:%s/picker.sh load %s %s %s\n' \
-            "$prompt" "$SCRIPT_DIR" "$win_file" "$count" "$scope_file"
+        # reload-sync re-queries through picker.sh load so the scope
+        # never diverges.
+        printf 'change-prompt(%s> )+reload-sync:%s/picker.sh load %s %s\n' \
+            "$prompt" "$SCRIPT_DIR" "$count" "$scope_file"
         exit 0
         ;;
     *)
@@ -58,10 +45,7 @@ case "$mode" in
         ;;
 esac
 
-case "$count" in '' | *[!0-9]*) count=10000 ;; esac
-
-win=$(cat "$win_file" 2> /dev/null)
-case "$win" in '' | *[!0-9]*) win=1000 ;; esac
+case "$count" in '' | *[!0-9]*) count=0 ;; esac
 
 # Scope: two lines from SCOPE_FILE (cwd, session); unreadable = global.
 # Both lines come from ONE fd — reopening between reads would get line 1
@@ -75,32 +59,4 @@ if [ -n "$scope_file" ] && [ -r "$scope_file" ]; then
     exec 3<&-
 fi
 
-if [ "$mode" = "load" ]; then
-    exec "$SCRIPT_DIR/query.sh" "$win" "" "$cwd" "$session"
-fi
-
-# decide / force: grow the window and emit a reload-sync action (through
-# picker.sh load, so win + scope stay in one place).
-[ "$win" -lt "$count" ] || exit 0
-
-if [ "$force" = "force" ]; then
-    grow=1
-else
-    # decide mode: only grow while the user is filtering and the query
-    # collapsed the loaded window (0 matches, or every row matches so
-    # the newest rows are no longer in view).
-    case "$FZF_QUERY" in '') exit 0 ;; esac
-    case "$FZF_MATCH_COUNT" in '' | *[!0-9]*) exit 0 ;; esac
-    case "$FZF_TOTAL_COUNT" in '' | *[!0-9]*) exit 0 ;; esac
-    if [ "$FZF_MATCH_COUNT" -eq 0 ] || [ "$FZF_MATCH_COUNT" -ge "$FZF_TOTAL_COUNT" ]; then
-        grow=1
-    fi
-fi
-
-if [ -n "${grow:-}" ]; then
-    win=$((win * 2))
-    [ "$win" -gt "$count" ] && win=$count
-    printf '%s\n' "$win" > "$win_file"
-    printf 'reload-sync:%s/picker.sh load %s %s%s\n' \
-        "$SCRIPT_DIR" "$win_file" "$count" "${scope_file:+ $scope_file}"
-fi
+exec "$SCRIPT_DIR/query.sh" "$count" "" "$cwd" "$session"

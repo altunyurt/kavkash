@@ -91,14 +91,19 @@ case "$TYPE" in
         safe_cmd=$(printf '%s' "$cmd" | sed "s/'/''/g")
         safe_cwd=$(printf '%s' "$cwd" | sed "s/'/''/g")
         safe_session=$(printf '%s' "$session" | sed "s/'/''/g")
-        # Plain INSERT: two commands in the same nanosecond cannot happen
-        # (each hook call itself takes µs-ms). A shell that dies mid-
-        # command leaves exit 0 / duration 0; ids are never reused.
-        # busy_timeout makes concurrent writers (several terminals at once)
-        # wait for the lock instead of failing with SQLITE_BUSY. Empty
-        # session -> NULL (pre-session rows are NULL too; session scope
-        # matches non-NULL tokens only).
-        sqlite3 "$db_file" "PRAGMA busy_timeout = 3000; INSERT INTO history (id, command, cwd, exit_code, duration_ms, session) VALUES ($id, '$safe_cmd', '$safe_cwd', 0, 0, NULLIF('$safe_session', ''));"
+        # Consecutive-repeat collapse: a W whose (command, cwd, session)
+        # matches the latest row updates that row in place — the row
+        # becomes the newest occurrence (id = this command's timestamp;
+        # exit/duration still pending the U) — instead of inserting a
+        # duplicate. IS handles empty-session (NULL) matching. A shell
+        # that dies mid-command leaves exit 0 / duration 0; ids are never
+        # reused; busy_timeout makes concurrent writers (several terminals
+        # at once) wait for the lock instead of failing with SQLITE_BUSY.
+        changed=$(sqlite3 "$db_file" "PRAGMA busy_timeout = 3000; UPDATE history SET id=$id, exit_code=0, duration_ms=0, session=NULLIF('$safe_session','') WHERE id=(SELECT id FROM history ORDER BY id DESC LIMIT 1) AND command='$safe_cmd' AND cwd='$safe_cwd' AND session IS NULLIF('$safe_session',''); SELECT changes();" 2> /dev/null | tail -1)
+        case "$changed" in
+            *[1-9]*) : ;;   # collapsed the previous consecutive repeat
+            *) sqlite3 "$db_file" "PRAGMA busy_timeout = 3000; INSERT INTO history (id, command, cwd, exit_code, duration_ms, session) VALUES ($id, '$safe_cmd', '$safe_cwd', 0, 0, NULLIF('$safe_session', ''));" ;;
+        esac
         ;;
     U)
         # Update: precmd reports $? and shell-measured duration for the id.
@@ -114,24 +119,30 @@ case "$TYPE" in
         safe_id=$(printf '%s' "$id" | sed "s/'/''/g")
         n=0
         while [ "$n" -lt 5 ]; do
-            changed=$(sqlite3 "$db_file" "PRAGMA busy_timeout = 3000; UPDATE history SET exit_code=$exit_code, duration_ms=$duration WHERE id='$safe_id'; SELECT changes();" 2> /dev/null)
+            changed=$(sqlite3 "$db_file" "PRAGMA busy_timeout = 3000; UPDATE history SET exit_code=$exit_code, duration_ms=$duration WHERE id='$safe_id'; SELECT changes();" 2> /dev/null | tail -1)
             case "$changed" in *[1-9]*) break ;; esac
             n=$((n + 1))
             sleep 0.01 2> /dev/null || break
         done
         ;;
     Q)
-        # Query: newest `count` commands matching the scope, NUL-framed raw
-        # rows. The picker always sends an empty query — fzf filters the
-        # loaded window in-memory — so the query field is accepted for
-        # protocol stability and ignored. cwd/session scope (empty = no
-        # filter) applies BEFORE the LIMIT: the picker's window is "newest
-        # N matching the scope".
+        # Query: newest `count` DISTINCT commands matching the scope at
+        # `offset`, NUL-framed raw rows (GROUP BY command — one row per
+        # unique command, ordered by its newest occurrence). The picker
+        # always sends an empty query — fzf filters the loaded window
+        # in-memory — so the query field is accepted for protocol stability
+        # and ignored. The Up/Down stepper sends count=1 and walks the
+        # offset. cwd/session scope (empty = no filter) applies BEFORE the
+        # LIMIT: the picker's window is "newest N distinct commands
+        # matching the scope".
         action="$1"
         count="$3"
         cwd="$4"
         session="$5"
+        offset="$6"
         case "$count" in '' | *[!0-9]*) count=10000 ;; esac
+        [ "$count" = "0" ] && count=-1   # 0 = all rows (SQLite LIMIT -1)
+        case "$offset" in '' | *[!0-9]*) offset=0 ;; esac
         case "$action" in
             search) ;;
             *) exit 0 ;;
@@ -146,7 +157,13 @@ case "$TYPE" in
             ss=$(printf '%s' "$session" | sed "s/'/''/g")
             where="${where:+$where AND }session = '$ss'"
         fi
-        sql="SELECT REPLACE(REPLACE(REPLACE(command, char(30), ''), char(31), ''), char(13), '') FROM history${where:+ WHERE $where} ORDER BY id DESC LIMIT $count;"
+        # Dedup: GROUP BY command folds interspersed repeats (e.g.
+        # hundreds of "ls") into one row per distinct command, ordered by
+        # each command's newest occurrence (MAX(id)); consecutive repeats
+        # were already collapsed at save time (W). The scope WHERE applies
+        # before the GROUP, so the window is "newest N distinct commands
+        # matching the scope".
+        sql="SELECT REPLACE(REPLACE(REPLACE(command, char(30), ''), char(31), ''), char(13), '') FROM history${where:+ WHERE $where} GROUP BY command ORDER BY MAX(id) DESC LIMIT $count OFFSET $offset;"
 
         # sqlite3 -ascii (0x1E rows / 0x1F cols); the SELECT already stripped
         # those hazards, so no embedded separator can tear a row. Rows are

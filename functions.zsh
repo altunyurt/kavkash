@@ -3,50 +3,41 @@
 _SCRIPT_DIR=${0:A:h}      # kavkash root, where hook.sh/query.sh/picker.sh live
 . "$_SCRIPT_DIR/includes.sh"
 
-# _hist_picker — the single fzf widget behind both Up and Ctrl+R (see
+# _hist_picker — the single fzf widget behind Ctrl+R and F6/F7/F8 (see
 # functions.bash for the design rationale; zsh mirrors it, except accept
 # RUNS the picked command — zsh can from a widget).
 _hist_picker() {
-    local count="$1" init_q="${2:-}" mode="${3:-walk}" cwd="${4:-}" session="${5:-}"
-    local picked key cmd win win_file scope_file label prompt picker
+    local count="$1" init_q="${2:-}" cwd="${3:-}" session="${4:-}"
+    local picked key cmd scope_file label prompt picker
     if [[ -n "$cwd" ]]; then
         label="dir $cwd"; prompt="dir> "
     elif [[ -n "$session" ]]; then
         label="session"; prompt="sess> "
     else
-        label="all"; prompt="$mode> "
+        label="all"; prompt="search> "
     fi
-    win=$count
-    (( win > 1000 )) && win=1000
-    win_file=$(mktemp) || return 0
-    scope_file=$(mktemp) || {
-        rm -f "$win_file"
-        return 0
-    }
-    printf '%s\n' "$win" > "$win_file"
+    scope_file=$(mktemp) || return 0
     printf '%s\n%s\n' "$cwd" "$session" > "$scope_file"
     picker="$_SCRIPT_DIR/picker.sh"
     # fzf stderr must stay on the terminal (2>/dev/null blanks the UI);
     # </dev/null keeps the tty out of its stdin — start:reload drives the
-    # list. print()+accept NUL-frames "key\0<cmd>\0"; awk turns that into
-    # "key\n<cmd>". Scope lives in SCOPE_FILE; every reload goes through
-    # picker.sh load (start, growth, F5, F6-F8), so win and scope never
-    # diverge; F6-F8 switch scope via picker.sh switch.
+    # list. count=0 = ALL distinct commands, loaded once (no window, no
+    # paging); fzf filters the search text in-memory; F6-F8 re-query the
+    # scope server-side via picker.sh switch. print()+accept NUL-frames
+    # "key\0<cmd>\0"; awk turns that into "key\n<cmd>".
     picked=$(fzf --height 15 --no-sort --track --sync --highlight-line \
         --prompt "$prompt" --query "$init_q" --read0 --print0 \
-        --header "$mode · $count newest · $label · F6 all F7 dir F8 sess · f5 older · tab paste · enter run" \
-        --bind "start:reload-sync:$picker load $win_file $count $scope_file" \
-        --bind "result:transform:$picker decide $win_file $count $scope_file" \
-        --bind "f5:transform:$picker decide $win_file $count $scope_file force" \
-        --bind "f6:transform:$picker switch $scope_file '' '' all $win_file $count" \
-        --bind "f7:transform:$picker switch $scope_file '$PWD' '' dir $win_file $count" \
-        --bind "f8:transform:$picker switch $scope_file '' '$_hist_sess' sess $win_file $count" \
+        --header "search · all · $label · F6 all F7 dir F8 sess · tab paste · enter run" \
+        --bind "start:reload-sync:$picker load $count $scope_file" \
+        --bind "f6:transform:$picker switch $scope_file '' '' all $count" \
+        --bind "f7:transform:$picker switch $scope_file '$PWD' '' dir $count" \
+        --bind "f8:transform:$picker switch $scope_file '' '$_hist_sess' sess $count" \
         --bind 'enter:print()+accept,tab:print(tab)+accept' \
         < /dev/null \
         | awk 'BEGIN { RS = "\0" }
             NR == 1 { key = $0; next }
             NR == 2 { printf "%s\n%s\n", key, $0 }')
-    rm -f "$win_file" "$scope_file"
+    rm -f "$scope_file"
 
     # fzf ran as a full-screen app inside this widget; zle's incremental
     # redraw won't repaint the prompt it clobbered. Force a full repaint.
@@ -66,16 +57,50 @@ _hist_picker() {
     return 0
 }
 
-# Up: picker over the 500 newest commands (walk mode). Down is left at zsh's default.
-_hist_up() { _hist_picker 500 "" walk; }
+# Up/Down: walk ALL history one command per press — Up steps back one (no
+# cap — the server's OFFSET on the rowid index makes deep steps cheap),
+# Down steps forward and blanks the line at the bottom. The index resets
+# in _hist_precmd (every new prompt), so a fresh Up always starts at the
+# newest command.
+typeset -g _hist_step_idx=0
+_hist_step_up() {
+    local cmd
+    _hist_step_idx=$((_hist_step_idx + 1))
+    cmd=$("$_SCRIPT_DIR/query.sh" 1 "" "" "" $((_hist_step_idx - 1)) | tr '\0' '\n')
+    if [ -n "$cmd" ]; then
+        BUFFER="$cmd"
+        CURSOR=${#BUFFER}
+    else
+        _hist_step_idx=$((_hist_step_idx - 1))   # history exhausted — stay put
+    fi
+}
+_hist_step_down() {
+    local cmd
+    if (( _hist_step_idx <= 1 )); then
+        _hist_step_idx=0
+        BUFFER=""
+        CURSOR=0
+        return
+    fi
+    _hist_step_idx=$((_hist_step_idx - 1))
+    cmd=$("$_SCRIPT_DIR/query.sh" 1 "" "" "" $((_hist_step_idx - 1)) | tr '\0' '\n')
+    if [ -n "$cmd" ]; then
+        BUFFER="$cmd"
+        CURSOR=${#BUFFER}
+    else
+        _hist_step_idx=0   # defensive: the fetch came up empty
+        BUFFER=""
+        CURSOR=0
+    fi
+}
 
-# Ctrl+R: picker seeded with the current line (search mode), 10k cap.
-_hist_search() { _hist_picker 10000 "$BUFFER" search; }
+# Ctrl+R: search picker seeded with the current line (all distinct commands).
+_hist_search() { _hist_picker 0 "$BUFFER"; }
 
 # Scope variants: F6 all, F7 current dir (+subtree), F8 this shell session.
-_hist_scope_all() { _hist_picker 10000 "$BUFFER" search "" ""; }
-_hist_scope_dir() { _hist_picker 10000 "$BUFFER" search "$PWD" ""; }
-_hist_scope_sess() { _hist_picker 10000 "$BUFFER" search "" "$_hist_sess"; }
+_hist_scope_all() { _hist_picker 0 "$BUFFER" "" ""; }
+_hist_scope_dir() { _hist_picker 0 "$BUFFER" "$PWD" ""; }
+_hist_scope_sess() { _hist_picker 0 "$BUFFER" "" "$_hist_sess"; }
 
 # Register widgets and bindings. Enter/Ctrl+C are NOT bound — zsh defaults
 # handle them.
@@ -86,13 +111,15 @@ _kav_fzf_ver=$(fzf --version 2>/dev/null | awk 'NR == 1 { print $1 }')
 if [ -n "$_kav_fzf_ver" ] && printf '%s\n' "$_kav_fzf_ver" | \
         awk -F. 'NR == 1 { exit ($1 > 0 || $2 >= 54) ? 0 : 1 }'; then
     zle -N kavkash-search _hist_search
-    zle -N kavkash-up _hist_up
+    zle -N kavkash-step-up _hist_step_up
+    zle -N kavkash-step-down _hist_step_down
     zle -N kavkash-scope-all _hist_scope_all
     zle -N kavkash-scope-dir _hist_scope_dir
     zle -N kavkash-scope-sess _hist_scope_sess
 
     bindkey '^R' kavkash-search
-    bindkey '^[[A' kavkash-up
+    bindkey '^[[A' kavkash-step-up
+    bindkey '^[[B' kavkash-step-down
     bindkey '^[[17~' kavkash-scope-all   # F6
     bindkey '^[[18~' kavkash-scope-dir   # F7
     bindkey '^[[19~' kavkash-scope-sess  # F8
@@ -124,6 +151,7 @@ _hist_preexec() {
 
 _hist_precmd() {
     local _hist_exit=$?
+    _hist_step_idx=0       # Up/Down stepper starts fresh at every prompt
     if [ -n "$_hist_corr" ]; then
         local _now=$(date +%s%3N 2>/dev/null || echo "$(date +%s)000")
         "$_SCRIPT_DIR/hook.sh" U "$_hist_corr" "$_hist_exit" "$((_now - _hist_t0))"

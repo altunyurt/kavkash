@@ -52,23 +52,22 @@ _hist_bind_widget() {
     unset _hist_km
 }
 
-# _hist_picker — the fzf widget behind Up, Ctrl+R and F6/F7/F8.
-#   count:     DB cap (Up=500, Ctrl+R=10000)
-#   init_q:    search seed — Ctrl+R uses the current line, Up empty
-#   mode:      "walk" (Up) or "search" (Ctrl+R), shown in the fzf header
-#   cwd/session: scope (empty = global); filtered server-side BEFORE the
-#               LIMIT, so a scoped command from long ago survives the
-#               window cut; fzf filters keywords in-memory.
-# Design: loads a *window* of newest commands via start:reload-sync, fzf
-# filters in-memory (no per-keystroke DB trips, full fzf syntax). picker.sh
-# grows the window from fzf events: a result-transform doubles it when
-# exhausted (0 matches, or all match); f5 forces the next page. --sync
-# resolves the reload cascade before first paint; --track pins the cursor
-# across reloads. Commands go over the wire raw — multi-line rows display
-# natively (fzf >= 0.53).
+# _hist_picker — the fzf widget behind Ctrl+R and F6/F7/F8.
+#   count:     0 = all distinct commands (server sends no LIMIT)
+#   init_q:    search seed — the current line
+#   cwd/session: scope (empty = global); applied server-side, so the
+#               whole distinct set for the scope is loaded; fzf filters
+#               the search text in-memory. The server deduplicates: one
+#               row per distinct command, newest occurrence first (GROUP
+#               BY command, MAX(id)).
+# Design: loads ALL distinct commands up front (count=0 = no LIMIT) via
+# start:reload-sync — no window, no paging — and fzf filters in-memory
+# (no per-keystroke DB trips, full fzf syntax). Scope switches (F6-F8)
+# re-query server-side via picker.sh switch. Commands go over the wire
+# raw — multi-line rows display natively (fzf >= 0.53).
 _hist_picker() {
-    local count="$1" init_q="${2:-}" mode="${3:-walk}" cwd="${4:-}" session="${5:-}"
-    local picked key cmd win win_file scope_file label prompt picker
+    local count="$1" init_q="${2:-}" cwd="${3:-}" session="${4:-}"
+    local picked key cmd scope_file label prompt picker
     _hist_armed=0   # disarm during the widget: the trap must not record the
                     # widget's own commands (incl. the fallback's eval'd
                     # command); the native-accept path re-arms at the end so
@@ -87,44 +86,35 @@ _hist_picker() {
     elif [[ -n "$session" ]]; then
         label="session"; prompt="sess> "
     else
-        label="all"; prompt="$mode> "
+        label="all"; prompt="search> "
     fi
-    win=$count
-    (( win > 1000 )) && win=1000
-    win_file=$(mktemp) || {
-        _hist_armed=1
-        return 0
-    }
     scope_file=$(mktemp) || {
-        rm -f "$win_file"
         _hist_armed=1
         return 0
     }
-    printf '%s\n' "$win" > "$win_file"
     printf '%s\n%s\n' "$cwd" "$session" > "$scope_file"
     picker="$_SCRIPT_DIR/picker.sh"
     # fzf stderr must stay on the terminal (2>/dev/null blanks the UI);
     # </dev/null keeps the tty out of its stdin — start:reload drives the
-    # list. print()+accept NUL-frames "key\0<cmd>\0"; awk turns that into
-    # "key\n<cmd>". Scope lives in SCOPE_FILE; every reload (start, growth,
-    # F5, F6-F8) goes through picker.sh load, so win and scope never diverge.
-    # F6/F7/F8 switch scope inside the picker via picker.sh switch, which
-    # rewrites the scope file and prints the reload action for transform.
+    # list. count=0 = ALL distinct commands, loaded once (no window, no
+    # paging); fzf filters the search text in-memory. Scope lives in
+    # SCOPE_FILE; F6/F7/F8 switch it via picker.sh switch, which rewrites
+    # the file and prints change-prompt + reload-sync for transform.
+    # print()+accept NUL-frames "key\0<cmd>\0"; awk turns that into
+    # "key\n<cmd>".
     picked=$(fzf --height 15 --no-sort --track --sync --highlight-line \
         --prompt "$prompt" --query "$init_q" --read0 --print0 \
-        --header "$mode · $count newest · $label · F6 all F7 dir F8 sess · f5 older · tab paste · enter run" \
-        --bind "start:reload-sync:$picker load $win_file $count $scope_file" \
-        --bind "result:transform:$picker decide $win_file $count $scope_file" \
-        --bind "f5:transform:$picker decide $win_file $count $scope_file force" \
-        --bind "f6:transform:$picker switch $scope_file '' '' all $win_file $count" \
-        --bind "f7:transform:$picker switch $scope_file '$PWD' '' dir $win_file $count" \
-        --bind "f8:transform:$picker switch $scope_file '' '$_hist_sess' sess $win_file $count" \
+        --header "search · all · $label · F6 all F7 dir F8 sess · tab paste · enter run" \
+        --bind "start:reload-sync:$picker load $count $scope_file" \
+        --bind "f6:transform:$picker switch $scope_file '' '' all $count" \
+        --bind "f7:transform:$picker switch $scope_file '$PWD' '' dir $count" \
+        --bind "f8:transform:$picker switch $scope_file '' '$_hist_sess' sess $count" \
         --bind 'enter:print()+accept,tab:print(tab)+accept' \
         < /dev/null \
         | awk 'BEGIN { RS = "\0" }
             NR == 1 { key = $0; next }
             NR == 2 { printf "%s\n%s\n", key, $0 }')
-    rm -f "$win_file" "$scope_file"
+    rm -f "$scope_file"
 
     if [[ -n "$picked" ]]; then
         key="${picked%%$'\n'*}"
@@ -198,16 +188,50 @@ _hist_picker() {
     _hist_armed=1   # re-arm on every exit path: the next typed line records again
 }
 
-# Up: picker over the 500 newest commands (walk mode). Down is deliberately unbound.
-_hist_up() { _hist_picker 500 "" walk; }
+# Up/Down: walk ALL history one command per press — Up steps back one (no
+# cap — the server's OFFSET on the rowid index makes deep steps cheap),
+# Down steps forward and blanks the line at the bottom. The index resets
+# on every new prompt (kav_precmd_record), so a fresh Up always starts at
+# the newest command.
+_hist_step_idx=0
+_hist_step_up() {
+    local cmd
+    _hist_step_idx=$((_hist_step_idx + 1))
+    cmd=$("$_SCRIPT_DIR/query.sh" 1 "" "" "" $((_hist_step_idx - 1)) | tr '\0' '\n')
+    if [[ -n "$cmd" ]]; then
+        READLINE_LINE="$cmd"
+        READLINE_POINT=${#READLINE_LINE}
+    else
+        _hist_step_idx=$((_hist_step_idx - 1))   # history exhausted — stay put
+    fi
+}
+_hist_step_down() {
+    local cmd
+    if (( _hist_step_idx <= 1 )); then
+        _hist_step_idx=0
+        READLINE_LINE=""
+        READLINE_POINT=0
+        return
+    fi
+    _hist_step_idx=$((_hist_step_idx - 1))
+    cmd=$("$_SCRIPT_DIR/query.sh" 1 "" "" "" $((_hist_step_idx - 1)) | tr '\0' '\n')
+    if [[ -n "$cmd" ]]; then
+        READLINE_LINE="$cmd"
+        READLINE_POINT=${#READLINE_LINE}
+    else
+        _hist_step_idx=0   # defensive: the fetch came up empty
+        READLINE_LINE=""
+        READLINE_POINT=0
+    fi
+}
 
-# Ctrl+R: picker seeded with the current line (search mode), 10k cap.
-_hist_search() { _hist_picker 10000 "$READLINE_LINE" search; }
+# Ctrl+R: search picker seeded with the current line (all distinct commands).
+_hist_search() { _hist_picker 0 "$READLINE_LINE"; }
 
 # Scope variants: F6 all, F7 current dir (+subtree), F8 this shell session.
-_hist_scope_all() { _hist_picker 10000 "$READLINE_LINE" search "" ""; }
-_hist_scope_dir() { _hist_picker 10000 "$READLINE_LINE" search "$PWD" ""; }
-_hist_scope_sess() { _hist_picker 10000 "$READLINE_LINE" search "" "$_hist_sess"; }
+_hist_scope_all() { _hist_picker 0 "$READLINE_LINE" "" ""; }
+_hist_scope_dir() { _hist_picker 0 "$READLINE_LINE" "$PWD" ""; }
+_hist_scope_sess() { _hist_picker 0 "$READLINE_LINE" "" "$_hist_sess"; }
 
 # --- capture: preexec (DEBUG trap) + precmd (PROMPT_COMMAND) ---
 #
@@ -269,6 +293,7 @@ kav_preexec_record() {
 
 kav_precmd_record() {
     local _hist_exit=$?    # capture FIRST — anything else clobbers it
+    _hist_step_idx=0       # Up/Down stepper starts fresh at every prompt
     if [[ -n "$_hist_corr" ]]; then
         local _now=$(date +%s%3N 2> /dev/null || date +%s)
         "$_SCRIPT_DIR/hook.sh" U "$_hist_corr" "$_hist_exit" "$((_now - _hist_t0))"
@@ -331,7 +356,6 @@ if [ -n "$_kav_fzf_ver" ] && printf '%s\n' "$_kav_fzf_ver" | \
         # queues the sentinel chain; on Enter the widget swaps the tail to
         # accept-line and the command runs natively.
         _hist_bind_widget '\C-r' _hist_search
-        _hist_bind_widget '\e[A' _hist_up
         _hist_bind_widget '\e[17~' _hist_scope_all   # F6
         _hist_bind_widget '\e[18~' _hist_scope_dir   # F7
         _hist_bind_widget '\e[19~' _hist_scope_sess  # F8
@@ -339,11 +363,14 @@ if [ -n "$_kav_fzf_ver" ] && printf '%s\n' "$_kav_fzf_ver" | \
         # bash < 4.3 or ble.sh: direct bind -x + the print+eval Enter
         # fallback in _hist_picker (atuin's __atuin_accept_line).
         bind -x '"\C-r": _hist_search'
-        bind -x '"\e[A": _hist_up'
         bind -x '"\e[17~": _hist_scope_all'   # F6
         bind -x '"\e[18~": _hist_scope_dir'   # F7
         bind -x '"\e[19~": _hist_scope_sess'  # F8
     fi
+    # Up/Down need no macro chain: the stepper only sets the line, Enter is
+    # readline's default accept (no eval, no hook calls).
+    bind -x '"\e[A": _hist_step_up'
+    bind -x '"\e[B": _hist_step_down'
 else
     printf 'kavkash: fzf >= 0.54 required (found %s) — picker disabled; Up/Ctrl-R keep shell defaults\n' \
         "${_kav_fzf_ver:-not installed}" >&2
