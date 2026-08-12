@@ -1,6 +1,8 @@
 # kavkash
 
-An Atuin inspired shell history engine entirely built with SQLite3, socat, fzf, and POSIX shell scripts.
+An Atuin inspired shell history engine entirely built with SQLite3, socat, fzf, and POSIX shell scripts. 
+
+Built with *extensive* LLM assistance, battle-tested in daily use.
 
 ## Install
 
