@@ -19,8 +19,6 @@ kav_die() {
     exit 1
 }
 kav_have() { command -v "$1" > /dev/null 2>&1; }
-kav_say() { printf '%s\n' "$*"; }
-kav_warn() { printf 'warning: %s\n' "$*" >&2; }
 
 # Nanosecond epoch — the id doubles as the row's timestamp. INTEGER
 # PRIMARY KEY aliases the rowid, so the table itself is stored in id
@@ -30,11 +28,6 @@ kav_warn() { printf 'warning: %s\n' "$*" >&2; }
 kav_new_id() {
     date +%s%N 2> /dev/null \
         || printf '%s000000' "$(date +%s%3N 2> /dev/null || date +%s)"
-}
-
-# kav_new_id_to_time ID — human-readable time from an ns-since-epoch id.
-kav_new_id_to_time() {
-    date -d "@$(( $1 / 1000000000 ))" +"%Y-%m-%d %H:%M:%S" 2> /dev/null || printf '%s\n' "$1"
 }
 
 # Create the history table if missing. Idempotent — existing databases

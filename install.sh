@@ -283,11 +283,11 @@ check_deps() {
             printf '  %-9s %s\n' fzf "OK ($fzf_ver)"
         else
             printf '  %-9s %s\n' fzf "MISSING"
-            warn "missing dependency: fzf — found ${fzf_ver:-none}, needs >= 0.54; the Up/Ctrl+R picker stays disabled (history is still recorded)"
+            warn "missing dependency: fzf — found ${fzf_ver:-none}, needs >= 0.54; the picker and Up/Down stepping stay disabled (history is still recorded)"
         fi
     else
         printf '  %-9s %s\n' fzf "MISSING"
-        warn "missing dependency: fzf — no Up/Ctrl+R picker (history is still recorded)"
+        warn "missing dependency: fzf — no picker or Up/Down stepping (history is still recorded)"
     fi
     say ""
 }
