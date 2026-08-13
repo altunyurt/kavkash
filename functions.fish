@@ -46,8 +46,10 @@ function _hist_picker
     set -l picked
     fzf --height 15 --no-sort --track --sync --highlight-line \
         --prompt "$prompt" --query "$init_q" --read0 --print0 \
-        --header "search · all · $label · F6 all F7 dir F8 sess · tab paste · enter run" \
+        --delimiter "\x1f" --with-nth 1 --accept-nth 1 \
+        --header "search · all · $label · F6 all F7 dir F8 sess · shift-del delete · tab paste · enter run" \
         --bind "start:reload-sync:$picker load $count $scope_file" \
+        --bind "shift-delete:execute-silent($_HIST_SCRIPT_DIR/delete.sh {2})+reload-sync:$picker load $count $scope_file" \
         --bind "f6:transform:$picker switch $scope_file '' '' all $count" \
         --bind "f7:transform:$picker switch $scope_file '$PWD' '' dir $count" \
         --bind "f8:transform:$picker switch $scope_file '' '$_hist_sess' sess $count" \
@@ -88,6 +90,7 @@ function _hist_step_up
     set -g _kav_step_idx (math $_kav_step_idx + 1)
     set -l cmd ""
     "$_HIST_SCRIPT_DIR/query.sh" 1 "" "" "" (math $_kav_step_idx - 1) | read -z cmd
+    set -l cmd (string replace -r '\x1f.*' '' "$cmd" | string collect)   # drop the \x1f<id> payload
     if test -n "$cmd"
         commandline -r "$cmd"
         commandline -f repaint
@@ -107,6 +110,7 @@ function _hist_step_down
     set -g _kav_step_idx (math $_kav_step_idx - 1)
     set -l cmd ""
     "$_HIST_SCRIPT_DIR/query.sh" 1 "" "" "" (math $_kav_step_idx - 1) | read -z cmd
+    set -l cmd (string replace -r '\x1f.*' '' "$cmd" | string collect)   # drop the \x1f<id> payload
     if test -n "$cmd"
         commandline -r "$cmd"
         commandline -f repaint

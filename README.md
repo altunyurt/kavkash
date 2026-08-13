@@ -132,6 +132,8 @@ files are never touched — remove the `source` line yourself.
   query kept).
 - **Enter** runs the picked command; **Tab** pastes it onto the line for
   editing.
+- **Shift+Delete** — permanently delete the highlighted command (all its
+  occurrences; no undo).
 - The picker loads ALL distinct commands (each command appears once —
   hundreds of `ls` become a single entry) and filters them in-memory —
   full fzf syntax (`!`, `'exact'`, `a|b`), no per-keystroke DB hits.
@@ -157,6 +159,7 @@ shell hooks → hook.sh → Unix socket → server.sh → processor.sh → SQLit
                                                                        ↓
 shell Up/Down stepper → query.sh ──────────────────────────────────────┘
 shell Ctrl+R/F6-F8 picker ← picker.sh → query.sh ──────────────────────┘
+shell picker shift-delete → delete.sh ──────────────────────────────────┘
 ```
 
 - Shells call `hook.sh` on preexec/precmd (bash synthesizes preexec with
@@ -170,10 +173,12 @@ shell Ctrl+R/F6-F8 picker ← picker.sh → query.sh ─────────
   order and `ORDER BY id DESC` is a reverse leaf scan.
 - The picker (`functions.*`) loads ALL distinct commands via `query.sh`
   (count=0 = no limit) and fzf filters them in-memory. The server
-  deduplicates (GROUP BY command, newest occurrence first). Dir/session
-  scope is applied server-side, so a scope switch (F6-F8) re-queries the
-  whole scoped set. The scope lives in a temp file because fzf
-  transforms run in a subshell.
+  deduplicates (GROUP BY command, newest occurrence first) and appends
+  each row's id to the payload — hidden from the display, but Shift+Delete
+  hands it to `delete.sh`, which removes every occurrence of the command
+  via the `D` action, then reloads. Dir/session scope is applied
+  server-side, so a scope switch (F6-F8) re-queries the whole scoped set.
+  The scope lives in a temp file because fzf transforms run in a subshell.
 - Up/Down step through ALL history one distinct command per press: each
   press is a `count=1` query at an increasing/decreasing `OFFSET` over
   the deduplicated set — cheap, since the rowid index makes the OFFSET

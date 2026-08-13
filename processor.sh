@@ -163,7 +163,15 @@ case "$TYPE" in
         # were already collapsed at save time (W). The scope WHERE applies
         # before the GROUP, so the window is "newest N distinct commands
         # matching the scope".
-        sql="SELECT REPLACE(REPLACE(REPLACE(command, char(30), ''), char(31), ''), char(13), '') FROM history${where:+ WHERE $where} GROUP BY command ORDER BY MAX(id) DESC LIMIT $count OFFSET $offset;"
+        # Dedup: GROUP BY command folds interspersed repeats (e.g.
+        # hundreds of "ls") into one row per distinct command, ordered by
+        # each command's newest occurrence (MAX(id)); consecutive repeats
+        # were already collapsed at save time (W). The scope WHERE applies
+        # before the GROUP, so the window is "newest N distinct commands
+        # matching the scope". The payload is command + its MAX(id) so the
+        # picker can act on the row (delete) while displaying only the
+        # command (fzf --with-nth).
+        sql="SELECT REPLACE(REPLACE(REPLACE(command, char(30), ''), char(31), ''), char(13), '') || char(31) || MAX(id) FROM history${where:+ WHERE $where} GROUP BY command ORDER BY MAX(id) DESC LIMIT $count OFFSET $offset;"
 
         # sqlite3 -ascii (0x1E rows / 0x1F cols); the SELECT already stripped
         # those hazards, so no embedded separator can tear a row. Rows are
@@ -179,5 +187,14 @@ case "$TYPE" in
             if (row == "") next   # sqlite3 -ascii trailing-separator artifact; real rows are never empty
             print row
         }' | tr '\036' '\000'
+        ;;
+    D)
+        # Delete: D id — permanently remove a command (all its rows, so
+        # the deduplicated picker entry disappears). The id anchors the
+        # command: the delete targets every row whose command matches the
+        # one found at that id. Unknown ids delete nothing.
+        id="$1"
+        case "$id" in '' | *[!0-9]*) exit 0 ;; esac
+        sqlite3 "$db_file" "PRAGMA busy_timeout = 3000; DELETE FROM history WHERE command = (SELECT command FROM history WHERE id=$id);"
         ;;
 esac

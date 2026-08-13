@@ -27,8 +27,10 @@ _hist_picker() {
     # "key\0<cmd>\0"; awk turns that into "key\n<cmd>".
     picked=$(fzf --height 15 --no-sort --track --sync --highlight-line \
         --prompt "$prompt" --query "$init_q" --read0 --print0 \
-        --header "search · all · $label · F6 all F7 dir F8 sess · tab paste · enter run" \
+        --delimiter $'\x1f' --with-nth 1 --accept-nth 1 \
+        --header "search · all · $label · F6 all F7 dir F8 sess · shift-del delete · tab paste · enter run" \
         --bind "start:reload-sync:$picker load $count $scope_file" \
+        --bind "shift-delete:execute-silent($_SCRIPT_DIR/delete.sh {2})+reload-sync:$picker load $count $scope_file" \
         --bind "f6:transform:$picker switch $scope_file '' '' all $count" \
         --bind "f7:transform:$picker switch $scope_file '$PWD' '' dir $count" \
         --bind "f8:transform:$picker switch $scope_file '' '$_hist_sess' sess $count" \
@@ -67,6 +69,7 @@ _hist_step_up() {
     local cmd
     _hist_step_idx=$((_hist_step_idx + 1))
     cmd=$("$_SCRIPT_DIR/query.sh" 1 "" "" "" $((_hist_step_idx - 1)) | tr '\0' '\n')
+    cmd=${cmd%$'\x1f'*}   # drop the \x1f<id> payload (Q now carries it)
     if [ -n "$cmd" ]; then
         BUFFER="$cmd"
         CURSOR=${#BUFFER}
@@ -84,6 +87,7 @@ _hist_step_down() {
     fi
     _hist_step_idx=$((_hist_step_idx - 1))
     cmd=$("$_SCRIPT_DIR/query.sh" 1 "" "" "" $((_hist_step_idx - 1)) | tr '\0' '\n')
+    cmd=${cmd%$'\x1f'*}   # drop the \x1f<id> payload (Q now carries it)
     if [ -n "$cmd" ]; then
         BUFFER="$cmd"
         CURSOR=${#BUFFER}
