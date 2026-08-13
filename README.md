@@ -46,26 +46,13 @@ straight from the repo, exactly like the installer:
 curl -fsSL https://raw.githubusercontent.com/altunyurt/kavkash/main/demo.sh | dash
 ```
 
-It copies your existing shell history files (bash, zsh, fish — only the
-ones that exist) into the image; the entrypoint imports them into
-`history.db` at container start (idempotent). Your **atuin store is
-mounted read-only instead** (real db path from atuin's own config /
-`atuin info`): atuin records nothing inside the container, so the ro
-mount can't be tainted, and the key file stays on the host — baking it
-into an image would leak a secret through the immutable layers. Import
-goes through the `atuin` CLI — the image ships the exact version your
-host runs (stores carry a schema version, so a mismatched binary would
-either refuse to open them or try to migrate the ro mount), decrypting
-v18+ stores with the mounted key. Re-run it any time to rebuild with
-fresh history.
+To import your history, demo.sh copies the history files of your shell(s) 
+into the image and mounts the atuin store as readonly, without breaking or 
+tainting your existing setup.
+
 `PERSIST=1 ./demo.sh` keeps `history.db` across restarts (volume
-`kavkash-demo-data`). The image installs
-kavkash with the exact one-liner the README documents —
-`curl -fsSL …/install.sh | dash` — resolving the latest GitHub release
-and verifying its checksum at build time. The rc files are wired at
-build, so every exec'd shell is a kavkash session automatically. Base is
-Debian 13 pinned — kavkash needs fzf ≥ 0.54, and bookworm's 0.38 would
-silently disable the picker.
+`kavkash-demo-data`). 
+
 
 ## Run
 
@@ -138,10 +125,7 @@ files are never touched — remove the `source` line yourself.
   hundreds of `ls` become a single entry) and filters them in-memory —
   full fzf syntax (`!`, `'exact'`, `a|b`), no per-keystroke DB hits.
   Multi-line commands display natively.
-- On bash ≥ 4.3, Enter runs through readline's native `accept-line`
-  (atuin's macro-chain trick), so the command behaves exactly as typed —
-  real exit code and duration are recorded. Older bash and ble.sh use a
-  print+eval fallback.
+
 
 ## Requirements
 
