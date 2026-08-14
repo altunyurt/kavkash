@@ -73,9 +73,10 @@ operations go through one entry point, like `atuin` / `git`: the
   `--mean-it` and no spans) prints its own help + exit 2; invalid /
   unknown args die before touching the DB.
   - WHEN grammar is closed (no blind passthrough to GNU date):
-    - durations: `30d` / `12h` / `8w` / `2mo` / `45m` / `30min` / `1y`
-      — always "N unit ago", inherently past (`45m` and `30min` are
-      minutes, `2mo` months, `1y` years)
+    - durations: `30d` / `12h` / `8w` / `2mo` / `45min` / `1y`
+      — always "N unit ago", inherently past (no bare `m` — it's
+      ambiguous between minutes and months; `2mo` is months, `45min` is
+      minutes)
     - dates: strict whitelist `YYYY-MM-DD`, `YYYY-MM-DD HH:MM[:SS]`,
       `yesterday`, `today` — nothing else reaches `date -d` (its magic
       words like "next tuesday" / "5pm" / "1 week" can resolve to
@@ -94,7 +95,7 @@ operations go through one entry point, like `atuin` / `git`: the
   narrows which rows are eligible — everything outside is never touched:
   `--by-dir=/PATH` (repeatable, OR), `--by-date=DAY`,
   `--before=WHEN`/`--after=WHEN` (prune's full WHEN grammar — durations
-  `30d`/`12h`/`8w`/`2mo`/`45m`/`30min`/`1y`, `yesterday`/`today`, strict
+  `30d`/`12h`/`8w`/`2mo`/`45min`/`1y`, `yesterday`/`today`, strict
   `YYYY-MM-DD [HH:MM[:SS]]` — resolved to the local day, so `--after=30d`
   means "days after the day 30 days ago"; band between when both). The
   scope gates BOTH the outer DELETE and the kept-set

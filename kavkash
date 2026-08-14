@@ -121,48 +121,51 @@ usage: kavkash prune FLAG... [--mean-it]   (at least one removal flag)
   --mean-it         actually apply the removal. WITHOUT it, prune only
                     shows what would be removed and changes nothing.
 
-WHEN: a duration like 30d, 12h, 8w, 2mo, 45m, 30min, 1y
-(days/hours/weeks/months/minutes/years ago — 45m and 30min are both
-minutes, 2mo is months) or a strict date (YYYY-MM-DD, YYYY-MM-DD
+WHEN: a duration like 30d, 12h, 8w, 2mo, 45min, 1y
+(days/hours/weeks/months/minutes/years ago — 2mo is months, 45min is
+minutes; there is no bare "m") or a strict date (YYYY-MM-DD, YYYY-MM-DD
 HH:MM[:SS], yesterday, today). Durations are always "N unit ago";
 future boundaries are refused. Flags combine — the removed spans
 union. Rows are vacuumed afterwards.
 EOF
 }
 
-# WHEN (duration like 30d / 12h / 8w / 2mo / 45m / 30min / 1y, or a strict
+# WHEN (duration like 30d / 12h / 8w / 2mo / 45min / 1y, or a strict
 # date) -> ns since epoch, matching the id timestamps (local time, like
-# kav_new_id). Durations are "N <unit> ago" — always past. Dates are a
-# STRICT whitelist (YYYY-MM-DD, YYYY-MM-DD HH:MM[:SS], yesterday, today);
-# nothing else reaches GNU date, whose magic words ("next tuesday",
-# "5pm", "1 week") can resolve to FUTURE times and make --older-than
-# delete everything. Future boundaries are refused for the same reason.
+# kav_new_id). Durations are "N <unit> ago" — always past. There is no
+# bare "m": it's ambiguous between minutes and months (misreading 45m as
+# months would prune nearly everything) — minutes are 45min, months 2mo.
+# Dates are a STRICT whitelist (YYYY-MM-DD, YYYY-MM-DD HH:MM[:SS],
+# yesterday, today); nothing else reaches GNU date, whose magic words
+# ("next tuesday", "5pm", "1 week") can resolve to FUTURE times and make
+# --older-than delete everything. Future boundaries are refused for the
+# same reason.
 _kav_prune_when_ns() {
     when=$1
-    [ -n "$when" ] || kav_die 'prune: empty WHEN — use e.g. 30d, 12h, 8w, 2mo, 45m, 30min, 1y or a date'
+    [ -n "$when" ] || kav_die 'prune: empty WHEN — use e.g. 30d, 12h, 8w, 2mo, 45min, 1y or a date'
     num=""
     unit=""
     case "$when" in
         yesterday | today) : ;;   # date words — matched before the *y unit
         *min) num=${when%min}; unit=minutes ;;
         *mo)  num=${when%mo};  unit=months ;;
-        *m)   num=${when%m};   unit=minutes ;;
         *d)   num=${when%d};   unit=days ;;
         *h)   num=${when%h};   unit=hours ;;
         *w)   num=${when%w};   unit=weeks ;;
         *y)   num=${when%y};   unit=years ;;
     esac
     if [ -n "$unit" ]; then
-        case "$num" in '' | *[!0-9]*) kav_die "prune: invalid duration: '$when' (use e.g. 30d, 12h, 8w, 2mo, 45m, 30min, 1y or a date)";; esac
+        case "$num" in '' | *[!0-9]*) kav_die "prune: invalid duration: '$when' (use e.g. 30d, 12h, 8w, 2mo, 45min, 1y or a date)";; esac
         phrase="$num $unit ago"
         secs=$(date -d "$phrase" +%s 2> /dev/null) || kav_die "prune: cannot parse time: '$when'"
     else
         case "$when" in
+            *[0-9]m) kav_die "prune: '$when' — 'm' alone is ambiguous: use 45min for minutes or 45mo for months" ;;
             [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) : ;;
             [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]" "[0-9][0-9]:[0-9][0-9]) : ;;
             [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]" "[0-9][0-9]:[0-9][0-9]:[0-9][0-9]) : ;;
             yesterday | today) : ;;
-            *) kav_die "prune: '$when' is not a recognized duration (30d, 12h, 8w, 2mo, 45m, 30min, 1y) or date (YYYY-MM-DD [HH:MM[:SS]], yesterday, today)" ;;
+            *) kav_die "prune: '$when' is not a recognized duration (30d, 12h, 8w, 2mo, 45min, 1y) or date (YYYY-MM-DD [HH:MM[:SS]], yesterday, today)" ;;
         esac
         secs=$(date -d "$when" +%s 2> /dev/null) || kav_die "prune: cannot parse time: '$when'"
         now=$(date +%s)
@@ -269,7 +272,8 @@ narrow the scope; rows outside the scope are never touched.
   --before=A --after=B  only the band between them (both exclusive)
 
 WHEN (for --before/--after) accepts everything prune does: durations
-30d, 12h, 8w, 2mo, 45m, 30min, 1y ("N unit ago"), yesterday, today,
+30d, 12h, 8w, 2mo, 45min, 1y ("N unit ago" — no bare "m": 2mo is
+months, 45min is minutes), yesterday, today,
 and YYYY-MM-DD [HH:MM[:SS]] (durations and words resolve to their
 local day).
 
@@ -290,10 +294,11 @@ _kav_dedup_date_ok() {
 # WHEN (prune grammar: durations, yesterday/today, strict dates) -> the
 # LOCAL DAY string YYYY-MM-DD. Dedup's --before/--after bounds are days,
 # so durations/words collapse to their day (30d -> the day 30 days ago).
-# The whitelist mirrors prune: nothing else reaches GNU date.
+# No bare "m" (ambiguous between minutes and months): 45min / 2mo. The
+# whitelist mirrors prune: nothing else reaches GNU date.
 _kav_dedup_when_day() {
     when=$1
-    [ -n "$when" ] || kav_die 'dedup: empty WHEN — use e.g. 30d, 12h, 8w, 2mo, 45m, 30min, 1y or a date'
+    [ -n "$when" ] || kav_die 'dedup: empty WHEN — use e.g. 30d, 12h, 8w, 2mo, 45min, 1y or a date'
     num=""
     unit=""
     case "$when" in
@@ -301,22 +306,22 @@ _kav_dedup_when_day() {
             printf '%s\n' "$day"; return 0 ;;
         *min) num=${when%min}; unit=minutes ;;
         *mo)  num=${when%mo};  unit=months ;;
-        *m)   num=${when%m};   unit=minutes ;;
         *d)   num=${when%d};   unit=days ;;
         *h)   num=${when%h};   unit=hours ;;
         *w)   num=${when%w};   unit=weeks ;;
         *y)   num=${when%y};   unit=years ;;
     esac
     if [ -n "$unit" ]; then
-        case "$num" in '' | *[!0-9]*) kav_die "dedup: invalid duration: '$when' (use e.g. 30d, 12h, 8w, 2mo, 45m, 30min, 1y or a date)";; esac
+        case "$num" in '' | *[!0-9]*) kav_die "dedup: invalid duration: '$when' (use e.g. 30d, 12h, 8w, 2mo, 45min, 1y or a date)";; esac
         day=$(date -d "$num $unit ago" +%F 2> /dev/null) || kav_die "dedup: cannot parse time: '$when'"
         printf '%s\n' "$day"
     else
         case "$when" in
+            *[0-9]m) kav_die "dedup: '$when' — 'm' alone is ambiguous: use 45min for minutes or 45mo for months" ;;
             [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) : ;;
             [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]" "[0-9][0-9]:[0-9][0-9]) : ;;
             [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]" "[0-9][0-9]:[0-9][0-9]:[0-9][0-9]) : ;;
-            *) kav_die "dedup: '$when' is not a recognized duration (30d, 12h, 8w, 2mo, 45m, 30min, 1y) or date (YYYY-MM-DD [HH:MM[:SS]], yesterday, today)" ;;
+            *) kav_die "dedup: '$when' is not a recognized duration (30d, 12h, 8w, 2mo, 45min, 1y) or date (YYYY-MM-DD [HH:MM[:SS]], yesterday, today)" ;;
         esac
         day=$(date -d "$when" +%F 2> /dev/null) || kav_die "dedup: cannot parse time: '$when'"
         printf '%s\n' "$day"
