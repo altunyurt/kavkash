@@ -232,7 +232,7 @@ unpack() {
 install_files() {
     install -d "$KAV_DATA_HOME"
 
-    for f in includes.sh hook.sh server.sh processor.sh query.sh picker.sh delete.sh import.sh functions.bash functions.fish functions.zsh; do
+    for f in includes.sh hook.sh server.sh processor.sh query.sh picker.sh delete.sh import.sh backup.sh kavkash functions.bash functions.fish functions.zsh; do
         install -m 755 "$src/$f" "$KAV_DATA_HOME/$f"
     done
 
@@ -421,6 +421,9 @@ print_summary() {
     say ""
     say "next steps:"
 
+    say "  kavkash status — daemon, version, and history overview (try it!)"
+    say "  kavkash help   — all subcommands (backup, restore, prune, stats, ...)"
+
     say "  1. start the daemon:"
     if [ "$systemd_enabled" = "yes" ]; then
         say "       running under systemd --user (kavkash.service)"
@@ -491,6 +494,16 @@ main() {
     fetch_and_verify
     unpack
     install_files
+
+    # Put `kavkash` on PATH: ~/.local/bin/kavkash is a symlink to the
+    # install dir, so the dispatcher's realpath resolves its home.
+    if [ -n "${KAVKASH_NO_SYMLINK:-}" ]; then
+        say "skipping ~/.local/bin/kavkash symlink (KAVKASH_NO_SYMLINK set)"
+    else
+        install -d "$HOME/.local/bin"
+        ln -sfn "$KAV_DATA_HOME/kavkash" "$HOME/.local/bin/kavkash"
+    fi
+
     check_deps
     import_history
     setup_systemd

@@ -1,0 +1,262 @@
+#!/usr/bin/dash
+# kavkash — user-facing command dispatcher (see docs/cli.md).
+#
+# One entry point for the ops commands, atuin/git-style. The internal
+# scripts (hook.sh, processor.sh, query.sh, picker.sh, delete.sh,
+# server.sh) stay invisible; this file is installed as
+# ~/.local/bin/kavkash via a symlink (so realpath resolves the install
+# dir regardless of the caller's CWD).
+#
+# Subcommands: status · info · backup [dir] · restore FILE · import ·
+# prune [N] · compact · stats · log [N] · version · help
+
+. "$(dirname -- "$(realpath -- "$0")")/includes.sh"
+_SCRIPT_DIR=$(dirname -- "$(realpath -- "$0")")
+set -eu
+
+usage() {
+    cat <<'EOF'
+kavkash — shell history daemon, command-line interface
+
+usage: kavkash COMMAND [ARGS]
+
+  status                 daemon up? version, history rows/distinct, db size
+  info                   install paths, version, revision, shell-hook status
+  backup [DIR]           snapshot history.db to DIR (default: data dir),
+                         keep the newest 7 snapshots
+  restore FILE           stop daemon, replace history.db with FILE, start it
+  import [ARGS]          re-import shell/atuin history (import.sh passthrough)
+  prune FLAGS            remove history from the edges: --oldest=N,
+                         --newest=N, --older-than=WHEN, --newer-than=WHEN
+  compact                PRAGMA integrity_check, then VACUUM
+  stats                  totals + most-used commands
+  log [N]                tail the daemon log (default 50 lines)
+  version                print the installed version
+  help                   this help
+
+Run `kavkash COMMAND --help` for per-command details (where they exist).
+EOF
+}
+
+kav_cmd_status() {
+    local_state=stopped
+    if [ -f "$KAV_PID_FILE" ]; then
+        old_pid=$(cat "$KAV_PID_FILE" 2> /dev/null || true)
+        if [ -n "$old_pid" ] && kill -0 "$old_pid" 2> /dev/null; then
+            local_state="running (pid $old_pid)"
+        fi
+    fi
+    printf 'daemon:  %s\n' "$local_state"
+    printf 'version: %s\n' "$(cat "$KAV_DATA_HOME/VERSION" 2> /dev/null || printf 'unknown')"
+    if kav_have sqlite3 && [ -f "$KAV_DB_FILE" ]; then
+        stats=$(sqlite3 "$KAV_DB_FILE" 'SELECT count(*), count(DISTINCT command) FROM history;' 2> /dev/null || true)
+        size=$(stat -c %s "$KAV_DB_FILE" 2> /dev/null || true)
+        printf 'history: %s\n' "$stats" | awk -F'|' '{ printf "         %s rows, %s distinct commands\n", $1, $2 }'
+        [ -n "$size" ] && printf 'db:      %.1f MB\n' "$(awk -v s="$size" 'BEGIN { printf "%.1f", s / 1048576 }')"
+    else
+        printf 'history: database not found at %s\n' "$KAV_DB_FILE"
+    fi
+}
+
+kav_cmd_info() {
+    printf 'data dir:   %s\n' "$KAV_DATA_HOME"
+    printf 'database:   %s\n' "$KAV_DB_FILE"
+    printf 'socket:     %s\n' "$KAV_SOCK_FILE"
+    printf 'pid file:   %s\n' "$KAV_PID_FILE"
+    printf 'log file:   %s\n' "$KAV_RUNTIME_DIR/server.log"
+    printf 'version:    %s\n' "$(cat "$KAV_DATA_HOME/VERSION" 2> /dev/null || printf 'unknown')"
+    if [ -f "$KAV_DATA_HOME/INSTALLED_REVISION" ]; then
+        printf 'revision:   %s\n' "$(head -n 1 "$KAV_DATA_HOME/INSTALLED_REVISION")"
+    fi
+    hooks=""
+    grep -qsE '^\s*source.*functions\.bash' "$HOME/.bashrc" 2> /dev/null && hooks="bash ✓$hooks"
+    [ -n "$hooks" ] || hooks="bash —"
+    grep -qsE '^\s*source.*functions\.zsh' "$HOME/.zshrc" 2> /dev/null && hooks="$hooks · zsh ✓" || hooks="$hooks · zsh —"
+    grep -qsE '^\s*source.*functions\.fish' "$HOME/.config/fish/config.fish" 2> /dev/null && hooks="$hooks · fish ✓" || hooks="$hooks · fish —"
+    printf 'hooks:      %s\n' "$hooks"
+}
+
+kav_cmd_import() {
+    exec "$_SCRIPT_DIR/import.sh" "$@"
+}
+
+kav_prune_help() {
+    cat <<'EOF'
+kavkash prune — remove history from the edges (everything else stays)
+
+usage: kavkash prune FLAG...        (at least one flag required)
+
+  --oldest=N        remove the N oldest commands
+  --newest=N        remove the N newest commands
+  --older-than=WHEN remove everything older than WHEN
+  --newer-than=WHEN remove everything newer than WHEN
+
+WHEN: a duration like 30d, 12h, 8w, 2mo, 45m (days/hours/weeks/months/
+minutes ago) or any date `date -d` understands (2026-06-01,
+'2026-06-01 12:30:00', yesterday, now). Flags combine — the removed
+spans union. Rows are vacuumed afterwards.
+EOF
+}
+
+# WHEN (duration like 30d / 8w / 2mo / 12h / 45m, or a date) -> ns since
+# epoch, matching the id timestamps (local time, like kav_new_id).
+_kav_prune_when_ns() {
+    when=$1
+    [ -n "$when" ] || kav_die 'prune: empty WHEN — use e.g. 30d, 12h, 8w, 2mo, 45m or a date'
+    num=""
+    unit=""
+    case "$when" in
+        *mo) num=${when%mo}; unit=months ;;
+        *m)  num=${when%m};  unit=minutes ;;
+        *d)  num=${when%d};  unit=days ;;
+        *h)  num=${when%h};  unit=hours ;;
+        *w)  num=${when%w};  unit=weeks ;;
+    esac
+    if [ -n "$unit" ]; then
+        case "$num" in '' | *[!0-9]*) kav_die "prune: invalid duration: '$when' (use e.g. 30d, 12h, 8w, 2mo, 45m or a date)";; esac
+        phrase="$num $unit ago"
+    else
+        phrase="$when"
+    fi
+    secs=$(date -d "$phrase" +%s 2> /dev/null) || kav_die "prune: cannot parse time: '$when'"
+    printf '%s000000000\n' "$secs"
+}
+
+kav_cmd_prune() {
+    [ "$#" -gt 0 ] || { kav_prune_help >&2; exit 2; }
+    conds=""
+    what=""
+    while [ "$#" -gt 0 ]; do
+        arg=$1
+        case "$arg" in
+            --oldest=*)  n=${arg#--oldest=} ;;
+            --oldest)    shift; n=$1 ;;
+            --newest=*)  n=${arg#--newest=} ;;
+            --newest)    shift; n=$1 ;;
+            --older-than=*) when=${arg#--older-than=} ;;
+            --older-than)   shift; when=$1 ;;
+            --newer-than=*) when=${arg#--newer-than=} ;;
+            --newer-than)   shift; when=$1 ;;
+            -h|--help) kav_prune_help; exit 0 ;;
+            *) kav_die "prune: unknown argument: $arg" ;;
+        esac
+        case "$arg" in
+            --oldest*)
+                case "$n" in '' | *[!0-9]*) kav_die "prune: --oldest must be a positive integer (got '$n')";; esac
+                [ "$n" -gt 0 ] || kav_die 'prune: --oldest must be > 0'
+                conds="${conds}${conds:+ OR }id IN (SELECT id FROM history ORDER BY id ASC LIMIT $n)"
+                what="${what}${what:+, }oldest $n"
+                ;;
+            --newest*)
+                case "$n" in '' | *[!0-9]*) kav_die "prune: --newest must be a positive integer (got '$n')";; esac
+                [ "$n" -gt 0 ] || kav_die 'prune: --newest must be > 0'
+                conds="${conds}${conds:+ OR }id IN (SELECT id FROM history ORDER BY id DESC LIMIT $n)"
+                what="${what}${what:+, }newest $n"
+                ;;
+            --older-than*)
+                ns=$(_kav_prune_when_ns "$when")
+                conds="${conds}${conds:+ OR }id < $ns"
+                what="${what}${what:+, }older than $when"
+                ;;
+            --newer-than*)
+                ns=$(_kav_prune_when_ns "$when")
+                conds="${conds}${conds:+ OR }id > $ns"
+                what="${what}${what:+, }newer than $when"
+                ;;
+        esac
+        shift
+    done
+    kav_have sqlite3 || kav_die 'prune: sqlite3 is required'
+    [ -f "$KAV_DB_FILE" ] || kav_die "prune: no database at $KAV_DB_FILE"
+    before=$(sqlite3 "$KAV_DB_FILE" 'SELECT count(*) FROM history;')
+    sqlite3 "$KAV_DB_FILE" 'PRAGMA busy_timeout=5000;' > /dev/null
+    sqlite3 "$KAV_DB_FILE" "DELETE FROM history WHERE $conds;"
+    sqlite3 "$KAV_DB_FILE" 'VACUUM;'
+    after=$(sqlite3 "$KAV_DB_FILE" 'SELECT count(*) FROM history;')
+    printf 'pruned: %s -> %s rows (removed: %s)\n' "$before" "$after" "$what"
+}
+
+kav_cmd_compact() {
+    kav_have sqlite3 || kav_die 'compact: sqlite3 is required'
+    [ -f "$KAV_DB_FILE" ] || kav_die "compact: no database at $KAV_DB_FILE"
+    check=$(sqlite3 "$KAV_DB_FILE" 'PRAGMA integrity_check;' 2> /dev/null || true)
+    [ "$check" = ok ] || kav_die "compact: integrity check failed: $check"
+    sqlite3 "$KAV_DB_FILE" 'VACUUM;'
+    printf 'ok: integrity check passed, database vacuumed\n'
+}
+
+kav_cmd_stats() {
+    kav_have sqlite3 || kav_die 'stats: sqlite3 is required'
+    [ -f "$KAV_DB_FILE" ] || kav_die "stats: no database at $KAV_DB_FILE"
+    sqlite3 "$KAV_DB_FILE" 'SELECT count(*) || " total rows, " || count(DISTINCT command) || " distinct commands" FROM history;'
+    printf '\nmost used commands:\n'
+    sqlite3 -separator '  ' "$KAV_DB_FILE" \
+        'SELECT count(*) AS uses, command FROM history GROUP BY command ORDER BY uses DESC LIMIT 10;'
+}
+
+kav_cmd_log() {
+    n="${1:-50}"
+    case "$n" in '' | *[!0-9]*) n=50;; esac
+    [ -f "$KAV_RUNTIME_DIR/server.log" ] || kav_die "log: no server.log yet at $KAV_RUNTIME_DIR/server.log"
+    tail -n "$n" "$KAV_RUNTIME_DIR/server.log"
+}
+
+kav_cmd_restore() {
+    file="${1:-}"
+    [ -n "$file" ] || kav_die 'restore: usage: kavkash restore FILE'
+    [ -f "$file" ] || kav_die "restore: no such file: $file"
+    kav_have sqlite3 || kav_die 'restore: sqlite3 is required'
+    if ! sqlite3 "$file" 'PRAGMA integrity_check;' 2> /dev/null | grep -q '^ok$'; then
+        kav_die "restore: $file is not a valid sqlite database"
+    fi
+
+    # Stop the daemon (systemd unit if installed, else pid TERM + wait).
+    if [ -f "$HOME/.config/systemd/user/kavkash.service" ] && kav_have systemctl; then
+        systemctl --user stop kavkash.service > /dev/null 2>&1 || true
+    fi
+    if [ -f "$KAV_PID_FILE" ]; then
+        old_pid=$(cat "$KAV_PID_FILE" 2> /dev/null || true)
+        if [ -n "$old_pid" ] && kill -0 "$old_pid" 2> /dev/null; then
+            kill -TERM "$old_pid" 2> /dev/null || true
+            i=0
+            while [ $i -lt 50 ] && kill -0 "$old_pid" 2> /dev/null; do
+                sleep 0.1
+                i=$((i + 1))
+            done
+        fi
+    fi
+
+    # Swap the database in; never destroy the only copy.
+    if [ -f "$KAV_DB_FILE" ]; then
+        mv -f "$KAV_DB_FILE" "$KAV_DB_FILE.pre-restore"
+    fi
+    cp "$file" "$KAV_DB_FILE"
+
+    # Start the daemon again (systemd unit if installed, else background).
+    if [ -f "$HOME/.config/systemd/user/kavkash.service" ] && kav_have systemctl; then
+        systemctl --user start kavkash.service > /dev/null 2>&1 || true
+    else
+        "$_SCRIPT_DIR/server.sh" > /dev/null 2>&1 &
+    fi
+    printf 'restored: %s -> %s (previous database kept at %s.pre-restore)\n' \
+        "$file" "$KAV_DB_FILE" "$KAV_DB_FILE"
+}
+
+cmd="${1:-help}"
+# Guarded shift: with no args, a bare `shift` under set -e is a fatal
+# error in dash even with `|| true` (empirically).
+[ "$#" -gt 0 ] && shift
+case "$cmd" in
+    status)  kav_cmd_status ;;
+    info)    kav_cmd_info ;;
+    backup)  exec "$_SCRIPT_DIR/backup.sh" "$@" ;;
+    restore) kav_cmd_restore "$@" ;;
+    import)  kav_cmd_import "$@" ;;
+    prune)   kav_cmd_prune "$@" ;;
+    compact) kav_cmd_compact ;;
+    stats)   kav_cmd_stats ;;
+    log)     kav_cmd_log "$@" ;;
+    version) cat "$KAV_DATA_HOME/VERSION" ;;
+    help|-h|--help) usage ;;
+    *) usage >&2; exit 2 ;;
+esac

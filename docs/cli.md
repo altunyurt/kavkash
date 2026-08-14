@@ -1,4 +1,5 @@
-# kavkash CLI plan — a main `kavkash` command (unimplemented)
+# kavkash CLI — the main `kavkash` command (implemented in the dispatcher
+# branch; this doc is the design + roadmap it was built from)
 
 The flat scripts in `~/.local/share/kavkash/` are internal (hook.sh,
 processor.sh, query.sh, picker.sh, delete.sh, server.sh). User-facing
@@ -26,7 +27,7 @@ plan.
 | `kavkash backup [dir]` | `.backup` snapshot of history.db (consistent, live-safe); keep newest 7, prune the rest |
 | `kavkash restore FILE` | stop daemon → replace history.db → start |
 | `kavkash import`     | `import.sh --all` (idempotent) |
-| `kavkash prune [N]`  | keep newest N commands + `VACUUM` (currently a hand-typed README snippet; default 5000) |
+| `kavkash prune FLAGS` | remove history from the edges: `--oldest=N` / `--newest=N` (count) and `--older-than=WHEN` / `--newer-than=WHEN` (age/date, e.g. `30d`, `8w`, `2mo`, `2026-06-01`); spans union, `VACUUM` after; no default — bare `prune` prints its own help |
 | `kavkash compact`    | `VACUUM` + `PRAGMA integrity_check` |
 | `kavkash stats`      | totals + top commands (the GROUP BY dedup already exists) |
 | `kavkash log`        | tail `server.log` |
@@ -102,8 +103,12 @@ Per-command behavior:
   unit if present, else pid TERM + wait) → move current db aside to
   `history.db.pre-restore` → copy FILE in → start daemon
 - `import` — `exec import.sh "$@"`
-- `prune [N]` — default 5000, refuse 0; `DELETE … WHERE id NOT IN
-  (SELECT id … ORDER BY id DESC LIMIT N); VACUUM;`
+- `prune FLAGS` — remove = the verb: `--oldest=N` / `--newest=N` remove N
+  from each end; `--older-than=WHEN` / `--newer-than=WHEN` remove by
+  age/date (compact durations `30d`/`12h`/`8w`/`2mo`/`45m` → GNU `date -d`
+  phrases, or any date `date -d` accepts; local tz, ns ids). Spans union
+  in one DELETE; bare `prune` prints its own help; invalid/unknown args
+  die
 - `compact` — `PRAGMA integrity_check` then `VACUUM`
 - `stats` — totals + top 10 commands (GROUP BY count)
 - `log [N]` — `tail -n N server.log` (default 50)

@@ -174,13 +174,18 @@ shell picker shift-delete → delete.sh ─────────────�
 
 ## Pruning
 
-History grows without bound. Keep the newest N commands and reclaim the
-space:
+Remove history from the edges — everything else stays:
 
 ```sh
-sqlite3 ~/.local/share/kavkash/history.db \
-  "DELETE FROM history WHERE id NOT IN (SELECT id FROM history ORDER BY id DESC LIMIT 5000); VACUUM;"
+kavkash prune --older-than=30d      # remove everything older than 30 days
+kavkash prune --newest=100          # remove the 100 most recent commands
 ```
+
+`--oldest=N` / `--newest=N` remove by count; `--older-than` /
+`--newer-than` remove by age or date (`30d`, `8w`, `2mo`, `2026-06-01`,
+`yesterday`). Flags combine (`prune --older-than=90d --newer-than=7d`
+removes both ends, keeping the middle band); `kavkash prune` alone
+prints the command's help.
 
 `rm -f ~/.local/share/kavkash/history.db` wipes everything; the daemon
 recreates the schema on its next start.

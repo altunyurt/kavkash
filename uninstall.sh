@@ -144,6 +144,7 @@ stop_pidfile_daemon() {
 
 remove_runtime_artifacts() {
     rm -f "$KAV_SOCK_FILE" "$KAV_PID_FILE" "$KAV_RUNTIME_DIR/server.log"
+    rm -f "$HOME/.local/bin/kavkash"
     # runtime dir is ours (created by includes.sh) — remove when empty
     rmdir "$KAV_RUNTIME_DIR" 2> /dev/null || true
 }

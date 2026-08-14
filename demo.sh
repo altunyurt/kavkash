@@ -55,6 +55,9 @@ RUN bash -o pipefail -c 'export KAVKASH_NO_SYSTEMD=1 KAVKASH_IMPORT=0; curl -fsS
 
 # Container runs as root, but debian doesn't set USER; pin it.
 ENV USER=root
+# install.sh symlinks ~/.local/bin/kavkash onto PATH; root's default
+# PATH doesn't include it.
+ENV PATH="/root/.local/bin:$PATH"
 
 COPY entrypoint.sh /usr/local/bin/kavkash-entrypoint
 RUN chmod +x /usr/local/bin/kavkash-entrypoint
