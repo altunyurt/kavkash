@@ -26,8 +26,10 @@ usage: kavkash COMMAND [ARGS]
                          keep the newest 7 snapshots
   restore FILE           stop daemon, replace history.db with FILE, start it
   import [ARGS]          re-import shell/atuin history (import.sh passthrough)
-  prune FLAGS            remove history from the edges: --oldest=N,
-                         --newest=N, --older-than=WHEN, --newer-than=WHEN
+  prune FLAGS [--mean-it]   show what would be removed (dry run by default);
+                         --mean-it applies it — removes from the edges:
+                         --oldest=N, --newest=N, --older-than=WHEN,
+                         --newer-than=WHEN
   compact                PRAGMA integrity_check, then VACUUM
   stats                  totals + most-used commands
   log [N]                tail the daemon log (default 50 lines)
@@ -84,46 +86,68 @@ kav_prune_help() {
     cat <<'EOF'
 kavkash prune — remove history from the edges (everything else stays)
 
-usage: kavkash prune FLAG...        (at least one flag required)
+usage: kavkash prune FLAG... [--mean-it]   (at least one removal flag)
 
   --oldest=N        remove the N oldest commands
   --newest=N        remove the N newest commands
   --older-than=WHEN remove everything older than WHEN
   --newer-than=WHEN remove everything newer than WHEN
+  --mean-it         actually apply the removal. WITHOUT it, prune only
+                    shows what would be removed and changes nothing.
 
-WHEN: a duration like 30d, 12h, 8w, 2mo, 45m (days/hours/weeks/months/
-minutes ago) or any date `date -d` understands (2026-06-01,
-'2026-06-01 12:30:00', yesterday, now). Flags combine — the removed
-spans union. Rows are vacuumed afterwards.
+WHEN: a duration like 30d, 12h, 8w, 2mo, 45m, 30min, 1y
+(days/hours/weeks/months/minutes/years ago — 45m and 30min are both
+minutes, 2mo is months) or a strict date (YYYY-MM-DD, YYYY-MM-DD
+HH:MM[:SS], yesterday, today). Durations are always "N unit ago";
+future boundaries are refused. Flags combine — the removed spans
+union. Rows are vacuumed afterwards.
 EOF
 }
 
-# WHEN (duration like 30d / 8w / 2mo / 12h / 45m, or a date) -> ns since
-# epoch, matching the id timestamps (local time, like kav_new_id).
+# WHEN (duration like 30d / 12h / 8w / 2mo / 45m / 30min / 1y, or a strict
+# date) -> ns since epoch, matching the id timestamps (local time, like
+# kav_new_id). Durations are "N <unit> ago" — always past. Dates are a
+# STRICT whitelist (YYYY-MM-DD, YYYY-MM-DD HH:MM[:SS], yesterday, today);
+# nothing else reaches GNU date, whose magic words ("next tuesday",
+# "5pm", "1 week") can resolve to FUTURE times and make --older-than
+# delete everything. Future boundaries are refused for the same reason.
 _kav_prune_when_ns() {
     when=$1
-    [ -n "$when" ] || kav_die 'prune: empty WHEN — use e.g. 30d, 12h, 8w, 2mo, 45m or a date'
+    [ -n "$when" ] || kav_die 'prune: empty WHEN — use e.g. 30d, 12h, 8w, 2mo, 45m, 30min, 1y or a date'
     num=""
     unit=""
     case "$when" in
-        *mo) num=${when%mo}; unit=months ;;
-        *m)  num=${when%m};  unit=minutes ;;
-        *d)  num=${when%d};  unit=days ;;
-        *h)  num=${when%h};  unit=hours ;;
-        *w)  num=${when%w};  unit=weeks ;;
+        yesterday | today) : ;;   # date words — matched before the *y unit
+        *min) num=${when%min}; unit=minutes ;;
+        *mo)  num=${when%mo};  unit=months ;;
+        *m)   num=${when%m};   unit=minutes ;;
+        *d)   num=${when%d};   unit=days ;;
+        *h)   num=${when%h};   unit=hours ;;
+        *w)   num=${when%w};   unit=weeks ;;
+        *y)   num=${when%y};   unit=years ;;
     esac
     if [ -n "$unit" ]; then
-        case "$num" in '' | *[!0-9]*) kav_die "prune: invalid duration: '$when' (use e.g. 30d, 12h, 8w, 2mo, 45m or a date)";; esac
+        case "$num" in '' | *[!0-9]*) kav_die "prune: invalid duration: '$when' (use e.g. 30d, 12h, 8w, 2mo, 45m, 30min, 1y or a date)";; esac
         phrase="$num $unit ago"
+        secs=$(date -d "$phrase" +%s 2> /dev/null) || kav_die "prune: cannot parse time: '$when'"
     else
-        phrase="$when"
+        case "$when" in
+            [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) : ;;
+            [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]" "[0-9][0-9]:[0-9][0-9]) : ;;
+            [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]" "[0-9][0-9]:[0-9][0-9]:[0-9][0-9]) : ;;
+            yesterday | today) : ;;
+            *) kav_die "prune: '$when' is not a recognized duration (30d, 12h, 8w, 2mo, 45m, 30min, 1y) or date (YYYY-MM-DD [HH:MM[:SS]], yesterday, today)" ;;
+        esac
+        secs=$(date -d "$when" +%s 2> /dev/null) || kav_die "prune: cannot parse time: '$when'"
+        now=$(date +%s)
+        [ "$secs" -le "$now" ] || kav_die "prune: boundary '$when' is in the future — refusing (use --newest=N to remove recent commands)"
     fi
-    secs=$(date -d "$phrase" +%s 2> /dev/null) || kav_die "prune: cannot parse time: '$when'"
     printf '%s000000000\n' "$secs"
 }
 
 kav_cmd_prune() {
     [ "$#" -gt 0 ] || { kav_prune_help >&2; exit 2; }
+    mean_it=0
     conds=""
     what=""
     while [ "$#" -gt 0 ]; do
@@ -137,6 +161,7 @@ kav_cmd_prune() {
             --older-than)   shift; when=$1 ;;
             --newer-than=*) when=${arg#--newer-than=} ;;
             --newer-than)   shift; when=$1 ;;
+            --mean-it) mean_it=1 ;;
             -h|--help) kav_prune_help; exit 0 ;;
             *) kav_die "prune: unknown argument: $arg" ;;
         esac
@@ -166,8 +191,19 @@ kav_cmd_prune() {
         esac
         shift
     done
+    [ -n "$conds" ] || { kav_prune_help >&2; exit 2; }
     kav_have sqlite3 || kav_die 'prune: sqlite3 is required'
     [ -f "$KAV_DB_FILE" ] || kav_die "prune: no database at $KAV_DB_FILE"
+
+    if [ "$mean_it" -eq 0 ]; then
+        # Dry run by default: show what WOULD be removed, change nothing.
+        would=$(sqlite3 "$KAV_DB_FILE" "SELECT count(*) FROM history WHERE $conds;")
+        total=$(sqlite3 "$KAV_DB_FILE" 'SELECT count(*) FROM history;')
+        printf 'dry run: would remove %s of %s rows (removed: %s)\n' "$would" "$total" "$what"
+        printf '         nothing was changed — rerun with --mean-it to apply\n'
+        return 0
+    fi
+
     before=$(sqlite3 "$KAV_DB_FILE" 'SELECT count(*) FROM history;')
     sqlite3 "$KAV_DB_FILE" 'PRAGMA busy_timeout=5000;' > /dev/null
     sqlite3 "$KAV_DB_FILE" "DELETE FROM history WHERE $conds;"

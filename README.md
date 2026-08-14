@@ -174,18 +174,22 @@ shell picker shift-delete → delete.sh ─────────────�
 
 ## Pruning
 
-Remove history from the edges — everything else stays:
+Remove history from the edges — everything else stays. **Prune is a dry
+run by default**: it shows what would be removed and changes nothing.
+`--mean-it` actually applies it.
 
 ```sh
-kavkash prune --older-than=30d      # remove everything older than 30 days
-kavkash prune --newest=100          # remove the 100 most recent commands
+kavkash prune --older-than=30d          # dry run: preview only
+kavkash prune --older-than=30d --mean-it  # actually remove it
+kavkash prune --newest=100 --mean-it    # remove the 100 most recent commands
 ```
 
 `--oldest=N` / `--newest=N` remove by count; `--older-than` /
 `--newer-than` remove by age or date (`30d`, `8w`, `2mo`, `2026-06-01`,
-`yesterday`). Flags combine (`prune --older-than=90d --newer-than=7d`
-removes both ends, keeping the middle band); `kavkash prune` alone
-prints the command's help.
+`yesterday` — future boundaries are refused). Flags combine
+(`prune --older-than=90d --newer-than=7d --mean-it` removes both ends,
+keeping the middle band); `kavkash prune` alone prints the command's
+help.
 
 `rm -f ~/.local/share/kavkash/history.db` wipes everything; the daemon
 recreates the schema on its next start.
