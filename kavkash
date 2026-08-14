@@ -24,13 +24,8 @@ usage: kavkash COMMAND [ARGS]        per-command help: kavkash COMMAND --help
   info          install paths, version, revision, shell-hook status
   backup [DIR]  snapshot history.db (consistent, live-safe; keeps 7)
   restore FILE  replace history.db from a backup, restart the daemon
-  import [ARGS] re-import shell/atuin history (idempotent)
   update        update to the latest release (re-runs the installer)
-  prune         remove history from the edges — dry run by default
-  dedup         collapse repeated commands to one row each (dedup --all;
-                --mean-it applies) — dry run by default
-  compact       PRAGMA integrity_check, then VACUUM
-  stats         totals + most-used commands
+  history       history data: prune · dedup · stats · compact · import
   log [N]       tail the daemon log (default 50 lines)
   version       print the installed version
   help          this help
@@ -40,6 +35,24 @@ EOF
 # --- standard per-command help (kavkash COMMAND --help) -----------------
 # Uniform template: title, usage, description, OPTIONS (where present),
 # notes. Every subcommand answers --help with one of these blocks.
+
+kav_help_history() {
+    cat <<'EOF'
+kavkash history — history data operations
+
+usage: kavkash history SUBCOMMAND [ARGS]
+
+Operations on the stored history data. Each subcommand answers
+`kavkash history SUBCOMMAND --help` with its own flags.
+
+SUBCOMMANDS:
+  prune        remove history from the edges (dry run by default)
+  dedup        collapse repeated commands to one row each (dry run by default)
+  stats        totals + most-used commands
+  compact      PRAGMA integrity_check, then VACUUM
+  import       re-import shell/atuin history (idempotent)
+EOF
+}
 
 kav_help_status() {
     cat <<'EOF'
@@ -92,9 +105,9 @@ EOF
 
 kav_help_import() {
     cat <<'EOF'
-kavkash import — re-import shell/atuin history
+kavkash history import — re-import shell/atuin history
 
-usage: kavkash import [ARGS]
+usage: kavkash history import [ARGS]
 
 Runs import.sh (idempotent — safe to re-run). Flags: -b/--bash,
 -z/--zsh, -f/--fish, --atuin (requires the atuin CLI + key),
@@ -116,9 +129,9 @@ EOF
 
 kav_help_prune() {
     cat <<'EOF'
-kavkash prune — remove history from the edges
+kavkash history prune — remove history from the edges
 
-usage: kavkash prune [OPTIONS] [--mean-it]
+usage: kavkash history prune [OPTIONS] [--mean-it]
 
 Removes history from the edges of the timeline; everything else stays.
 Dry run by default: every flag is parsed and validated, what would be
@@ -141,9 +154,9 @@ EOF
 
 kav_help_dedup() {
     cat <<'EOF'
-kavkash dedup — collapse repeated commands to one row each
+kavkash history dedup — collapse repeated commands to one row each
 
-usage: kavkash dedup (--all | OPTIONS) [--mean-it]
+usage: kavkash history dedup (--all | OPTIONS) [--mean-it]
 
 Collapses the stored table to one row per command (keeps the newest
 occurrence per group). --all runs it over the whole table by command;
@@ -173,9 +186,9 @@ EOF
 
 kav_help_compact() {
     cat <<'EOF'
-kavkash compact — integrity check and vacuum
+kavkash history compact — integrity check and vacuum
 
-usage: kavkash compact
+usage: kavkash history compact
 
 Runs PRAGMA integrity_check (must pass) and then VACUUM to reclaim
 space.
@@ -184,9 +197,9 @@ EOF
 
 kav_help_stats() {
     cat <<'EOF'
-kavkash stats — history totals and top commands
+kavkash history stats — history totals and top commands
 
-usage: kavkash stats
+usage: kavkash history stats
 
 Prints the total row count, distinct command count, and the 10
 most-used commands.
@@ -613,17 +626,49 @@ kav_cmd_restore() {
         "$file" "$KAV_DB_FILE" "$KAV_DB_FILE"
 }
 
+# kavkash history — namespace for the history data operations.
+kav_cmd_history() {
+    sub="${1:-help}"
+    [ "$#" -gt 0 ] && shift
+    # nested --help: `history SUBCOMMAND --help` routes to the subcommand's
+    # standard help block; the namespace's own help handles bare `history`.
+    case " $* " in
+        *" --help "* | *" -h "*)
+            case "$sub" in
+                prune|dedup|stats|compact|import)
+                    kav_help_$sub
+                    exit 0
+                    ;;
+            esac
+            ;;
+    esac
+    case "$sub" in
+        prune)   kav_cmd_prune "$@" ;;
+        dedup)   kav_cmd_dedup "$@" ;;
+        stats)   kav_cmd_stats ;;
+        compact) kav_cmd_compact ;;
+        import)  kav_cmd_import "$@" ;;
+        help|-h|--help) kav_help_history ;;
+        *) kav_help_history >&2; exit 2 ;;
+    esac
+}
+
 cmd="${1:-help}"
 # Guarded shift: with no args, a bare `shift` under set -e is a fatal
 # error in dash even with `|| true` (empirically).
 [ "$#" -gt 0 ] && shift
 # `kavkash COMMAND --help` prints the command's standard help block
-# (uniform template); any subcommand answers it.
+# (uniform template); any subcommand answers it. `history` delegates to
+# its own dispatcher, which routes nested `history SUBCOMMAND --help`.
 case " $* " in
     *" --help "* | *" -h "*)
         case "$cmd" in
-            status|info|backup|restore|import|update|prune|dedup|compact|stats|log|version)
+            status|info|backup|restore|update|log|version)
                 kav_help_$cmd
+                exit 0
+                ;;
+            history)
+                kav_cmd_history "$@"
                 exit 0
                 ;;
             help|-h|--help)
@@ -640,12 +685,8 @@ case "$cmd" in
     info)    kav_cmd_info ;;
     backup)  exec "$_SCRIPT_DIR/backup.sh" "$@" ;;
     restore) kav_cmd_restore "$@" ;;
-    import)  kav_cmd_import "$@" ;;
     update)  kav_cmd_update ;;
-    prune)   kav_cmd_prune "$@" ;;
-    dedup)   kav_cmd_dedup "$@" ;;
-    compact) kav_cmd_compact ;;
-    stats)   kav_cmd_stats ;;
+    history) kav_cmd_history "$@" ;;
     log)     kav_cmd_log "$@" ;;
     version) cat "$KAV_DATA_HOME/VERSION" ;;
     help|-h|--help) usage ;;
