@@ -14,6 +14,21 @@ set -g _HIST_SCRIPT_DIR (dirname (status filename))
 set -g _HIST_HOOK (realpath "$_HIST_SCRIPT_DIR/hook.sh")
 set -g _HIST_PICKER (realpath "$_HIST_SCRIPT_DIR/picker.sh")
 
+# Daemon liveness: every client call guards on the socket first — a dead
+# daemon must never die silently (recording stops, Up/Ctrl+R do nothing).
+# Warn once per outage; the flag resets as soon as the daemon is reachable
+# again, so a restart mid-session re-arms the warning.
+function _kav_sock_up
+    test -S $_HIST_SOCK; or return 1
+    set -q _kav_daemon_warned; and set -e _kav_daemon_warned
+    return 0
+end
+function _kav_warn_daemon
+    set -q _kav_daemon_warned; and return 0
+    set -g _kav_daemon_warned 1
+    echo 'kavkash: daemon not running — history is not being saved. Start it with: systemctl --user start kavkash (or run '$_HIST_SCRIPT_DIR'/server.sh &)' >&2
+end
+
 # _hist_picker — the single fzf widget behind Ctrl+R and F6/F7/F8 (see
 # functions.bash for the design rationale; fish mirrors it). Accept: Enter
 # runs the picked command, Tab pastes it onto the line.
@@ -22,6 +37,10 @@ function _hist_picker
     set -l init_q $argv[2]
     set -l cwd $argv[3]
     set -l session $argv[4]
+    _kav_sock_up; or begin
+        _kav_warn_daemon
+        return 0
+    end
     set -l label all
     set -l prompt "search> "
     if test -n "$cwd"
@@ -86,6 +105,10 @@ end
 # after every executed command (_hist_postexec) and on Ctrl+C, so a fresh
 # Up always starts at the newest command.
 function _hist_step_up
+    _kav_sock_up; or begin
+        _kav_warn_daemon
+        return 0
+    end
     set -q _kav_step_idx; or set -g _kav_step_idx 0
     set -g _kav_step_idx (math $_kav_step_idx + 1)
     set -l cmd ""
@@ -100,6 +123,10 @@ function _hist_step_up
 end
 
 function _hist_step_down
+    _kav_sock_up; or begin
+        _kav_warn_daemon
+        return 0
+    end
     set -q _kav_step_idx; or set -g _kav_step_idx 0
     if test $_kav_step_idx -le 1
         set -g _kav_step_idx 0
@@ -155,6 +182,11 @@ end
 function _hist_preexec --on-event fish_preexec
     status is-command-substitution; and return 0
     [ -n "$argv[1]" ]; or return 0
+
+    _kav_sock_up; or begin
+        _kav_warn_daemon
+        return 0
+    end
 
     set -l t0 (date +%s%3N 2>/dev/null)
     [ -n "$t0" ]; or set t0 (date +%s)000

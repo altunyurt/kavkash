@@ -10,6 +10,29 @@ _SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # needs echo/line editing/signals back — restore this before running it.
 _hist_stty=$(stty -g 2> /dev/null || true)
 
+# Daemon liveness: every client call guards on the socket first — a dead
+# daemon must never die silently (recording stops, Up/Ctrl+R do nothing).
+# Warn once per outage; the flag resets as soon as the daemon is reachable
+# again, so a restart mid-session re-arms the warning.
+_hist_daemon_warned=0
+_hist_sock_up() {
+    if [[ -S "$KAV_SOCK_FILE" ]]; then
+        _hist_daemon_warned=0
+        return 0
+    fi
+    return 1
+}
+_hist_warn_daemon() {               # record path (preexec) — plain message
+    (( _hist_daemon_warned )) && return 0
+    _hist_daemon_warned=1
+    printf 'kavkash: daemon not running — history is not being saved. Start it with: systemctl --user start kavkash (or run %s/server.sh &)\n' "$_SCRIPT_DIR" >&2
+}
+_hist_warn_daemon_widget() {        # bind -x widgets — leading newline so
+    (( _hist_daemon_warned )) && return 0   # readline's redraw can't eat it
+    _hist_daemon_warned=1
+    printf '\nkavkash: daemon not running — history is not being saved. Start it with: systemctl --user start kavkash (or run %s/server.sh &)\n' "$_SCRIPT_DIR" >&2
+}
+
 # --- atuin-borrowed: readline macro-chain for native accept-line ---
 # (atuin: crates/atuin/src/shell/atuin.bash, __atuin_bind_impl / __atuin_widget_run)
 # bind -x widgets can't call accept-line, so atuin dispatches via a two-step
@@ -68,6 +91,10 @@ _hist_bind_widget() {
 _hist_picker() {
     local count="$1" init_q="${2:-}" cwd="${3:-}" session="${4:-}"
     local picked key cmd scope_file label prompt picker
+    if ! _hist_sock_up; then
+        _hist_warn_daemon_widget
+        return 0
+    fi
     _hist_armed=0   # disarm during the widget: the trap must not record the
                     # widget's own commands (incl. the fallback's eval'd
                     # command); the native-accept path re-arms at the end so
@@ -198,6 +225,10 @@ _hist_picker() {
 _hist_step_idx=0
 _hist_step_up() {
     local cmd
+    if ! _hist_sock_up; then
+        _hist_warn_daemon_widget
+        return 0
+    fi
     _hist_step_idx=$((_hist_step_idx + 1))
     cmd=$("$_SCRIPT_DIR/query.sh" 1 "" "" "" $((_hist_step_idx - 1)) | tr '\0' '\n')
     cmd=${cmd%$'\x1f'*}   # drop the \x1f<id> payload (Q now carries it)
@@ -210,6 +241,10 @@ _hist_step_up() {
 }
 _hist_step_down() {
     local cmd
+    if ! _hist_sock_up; then
+        _hist_warn_daemon_widget
+        return 0
+    fi
     if (( _hist_step_idx <= 1 )); then
         _hist_step_idx=0
         READLINE_LINE=""
@@ -276,6 +311,12 @@ _kav_hist_idx() {
 
 kav_preexec_record() {
     (( _hist_armed )) || return 0
+    # Daemon down: warn (throttled) and stay armed — the next command after
+    # a restart records normally instead of silently losing history.
+    if ! _hist_sock_up; then
+        _hist_warn_daemon
+        return 0
+    fi
     local line idx cmd
     line=$(HISTTIMEFORMAT='' builtin history 1)
     idx=$(_kav_hist_idx)

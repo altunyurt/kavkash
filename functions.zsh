@@ -3,12 +3,39 @@
 _SCRIPT_DIR=${0:A:h}      # kavkash root, where hook.sh/query.sh/picker.sh live
 . "$_SCRIPT_DIR/includes.sh"
 
+# Daemon liveness: every client call guards on the socket first — a dead
+# daemon must never die silently (recording stops, Up/Ctrl+R do nothing).
+# Warn once per outage; the flag resets as soon as the daemon is reachable
+# again, so a restart mid-session re-arms the warning.
+typeset -g _hist_daemon_warned=0
+_hist_sock_up() {
+    if [[ -S "$KAV_SOCK_FILE" ]]; then
+        _hist_daemon_warned=0
+        return 0
+    fi
+    return 1
+}
+_hist_warn_daemon() {               # record path (preexec) — plain message
+    (( _hist_daemon_warned )) && return 0
+    _hist_daemon_warned=1
+    printf 'kavkash: daemon not running — history is not being saved. Start it with: systemctl --user start kavkash (or run %s/server.sh &)\n' "$_SCRIPT_DIR" >&2
+}
+_hist_warn_daemon_widget() {        # zle widgets — leading newline so the
+    (( _hist_daemon_warned )) && return 0   # redraw can't eat the message
+    _hist_daemon_warned=1
+    printf '\nkavkash: daemon not running — history is not being saved. Start it with: systemctl --user start kavkash (or run %s/server.sh &)\n' "$_SCRIPT_DIR" >&2
+}
+
 # _hist_picker — the single fzf widget behind Ctrl+R and F6/F7/F8 (see
 # functions.bash for the design rationale; zsh mirrors it, except accept
 # RUNS the picked command — zsh can from a widget).
 _hist_picker() {
     local count="$1" init_q="${2:-}" cwd="${3:-}" session="${4:-}"
     local picked key cmd scope_file label prompt picker
+    if ! _hist_sock_up; then
+        _hist_warn_daemon_widget
+        return 0
+    fi
     if [[ -n "$cwd" ]]; then
         label="dir $cwd"; prompt="dir> "
     elif [[ -n "$session" ]]; then
@@ -67,6 +94,10 @@ _hist_picker() {
 typeset -g _hist_step_idx=0
 _hist_step_up() {
     local cmd
+    if ! _hist_sock_up; then
+        _hist_warn_daemon_widget
+        return 0
+    fi
     _hist_step_idx=$((_hist_step_idx + 1))
     cmd=$("$_SCRIPT_DIR/query.sh" 1 "" "" "" $((_hist_step_idx - 1)) | tr '\0' '\n')
     cmd=${cmd%$'\x1f'*}   # drop the \x1f<id> payload (Q now carries it)
@@ -79,6 +110,10 @@ _hist_step_up() {
 }
 _hist_step_down() {
     local cmd
+    if ! _hist_sock_up; then
+        _hist_warn_daemon_widget
+        return 0
+    fi
     if (( _hist_step_idx <= 1 )); then
         _hist_step_idx=0
         BUFFER=""
@@ -149,6 +184,12 @@ typeset -g _hist_t0=0
 typeset -g _hist_sess=$(cat /proc/sys/kernel/random/uuid 2> /dev/null) || _hist_sess=$(od -An -N16 -tx1 /dev/urandom 2> /dev/null | tr -d ' \n')
 
 _hist_preexec() {
+    # Daemon down: warn (throttled); _hist_corr stays empty so precmd
+    # skips the U and nothing is minted for a daemon that can't store it.
+    if ! _hist_sock_up; then
+        _hist_warn_daemon
+        return 0
+    fi
     _hist_t0=$(date +%s%3N 2>/dev/null || echo "$(date +%s)000")
     _hist_corr=$("$_SCRIPT_DIR/hook.sh" W "$1" "$PWD" "$_hist_sess")
 }
