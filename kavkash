@@ -18,30 +18,196 @@ usage() {
     cat <<'EOF'
 kavkash — shell history daemon, command-line interface
 
-usage: kavkash COMMAND [ARGS]
+usage: kavkash COMMAND [ARGS]        per-command help: kavkash COMMAND --help
 
-  status                 daemon up? version, history rows/distinct, db size
-  info                   install paths, version, revision, shell-hook status
-  backup [DIR]           snapshot history.db to DIR (default: data dir),
-                         keep the newest 7 snapshots
-  restore FILE           stop daemon, replace history.db with FILE, start it
-  import [ARGS]          re-import shell/atuin history (import.sh passthrough)
-  update                 re-run the installer: fetch the latest release
-                         and install it over this one
-  prune FLAGS [--mean-it]   show what would be removed (dry run by default);
-                         --mean-it applies it — removes from the edges:
-                         --oldest=N, --newest=N, --older-than=WHEN,
-                         --newer-than=WHEN
-  dedup [--by-dir[=/PATH]] [--by-date[=DAY]] [--before=DAY] [--after=DAY]
-                       [--mean-it] — collapse repeated commands to one row
-                       each (dry run by default; key/scope options narrow it)
-  compact                PRAGMA integrity_check, then VACUUM
-  stats                  totals + most-used commands
-  log [N]                tail the daemon log (default 50 lines)
-  version                print the installed version
-  help                   this help
+  status        daemon up? version, rows/distinct, db size
+  info          install paths, version, revision, shell-hook status
+  backup [DIR]  snapshot history.db (consistent, live-safe; keeps 7)
+  restore FILE  replace history.db from a backup, restart the daemon
+  import [ARGS] re-import shell/atuin history (idempotent)
+  update        update to the latest release (re-runs the installer)
+  prune         remove history from the edges — dry run by default
+  dedup         collapse repeated commands to one row each (dedup --all;
+                --mean-it applies) — dry run by default
+  compact       PRAGMA integrity_check, then VACUUM
+  stats         totals + most-used commands
+  log [N]       tail the daemon log (default 50 lines)
+  version       print the installed version
+  help          this help
+EOF
+}
 
-Run `kavkash COMMAND --help` for per-command details (where they exist).
+# --- standard per-command help (kavkash COMMAND --help) -----------------
+# Uniform template: title, usage, description, OPTIONS (where present),
+# notes. Every subcommand answers --help with one of these blocks.
+
+kav_help_status() {
+    cat <<'EOF'
+kavkash status — daemon, version, and history overview
+
+usage: kavkash status
+
+Shows whether the daemon is running (pid), the installed version, the
+history row count and distinct commands, and the database size.
+EOF
+}
+
+kav_help_info() {
+    cat <<'EOF'
+kavkash info — install paths and state
+
+usage: kavkash info
+
+Prints the data dir, database, socket, pid file, and log file paths,
+the installed version and revision, and which shell hooks are active
+(rc files are scanned for the source lines).
+EOF
+}
+
+kav_help_backup() {
+    cat <<'EOF'
+kavkash backup — snapshot history.db
+
+usage: kavkash backup [DIR]
+
+Takes a consistent snapshot of history.db via sqlite .backup (safe
+while the daemon is writing) into DIR (default: the data dir), named
+history.db.YYYY-MM-DD.HH-MM-SS (timestamped — consecutive runs never
+overwrite). Keeps the newest 7 snapshots and prunes the
+rest. Restore with `kavkash restore`.
+EOF
+}
+
+kav_help_restore() {
+    cat <<'EOF'
+kavkash restore — replace history.db from a backup
+
+usage: kavkash restore FILE
+
+Stops the daemon, swaps FILE in as history.db (keeping the current
+database as history.db.pre-restore), and restarts the daemon. FILE
+must be a valid sqlite database.
+EOF
+}
+
+kav_help_import() {
+    cat <<'EOF'
+kavkash import — re-import shell/atuin history
+
+usage: kavkash import [ARGS]
+
+Runs import.sh (idempotent — safe to re-run). Flags: -b/--bash,
+-z/--zsh, -f/--fish, --atuin (requires the atuin CLI + key),
+--all (everything; what install.sh passes).
+EOF
+}
+
+kav_help_update() {
+    cat <<'EOF'
+kavkash update — update to the latest release
+
+usage: kavkash update
+
+Fetches the installer from GitHub (KAVKASH_REPO, default
+altunyurt/kavkash) and runs it: the latest release is downloaded,
+checksum-verified, and installed over this one. Offers a re-import.
+EOF
+}
+
+kav_help_prune() {
+    cat <<'EOF'
+kavkash prune — remove history from the edges
+
+usage: kavkash prune [OPTIONS] [--mean-it]
+
+Removes history from the edges of the timeline; everything else stays.
+Dry run by default: every flag is parsed and validated, what would be
+removed is printed, and nothing changes — --mean-it applies it.
+
+OPTIONS:
+  --oldest=N          remove the N oldest commands
+  --newest=N          remove the N newest commands
+  --older-than=WHEN   remove everything older than WHEN
+  --newer-than=WHEN   remove everything newer than WHEN
+  --mean-it           apply the removal (dry run otherwise)
+
+WHEN is a duration (30d, 12h, 8w, 2mo, 45min, 1y — no bare "m": 2mo
+is months, 45min is minutes) or a strict date (YYYY-MM-DD,
+YYYY-MM-DD HH:MM[:SS], yesterday, today). Durations are always "N unit
+ago"; future boundaries are refused. Flags combine (removed spans
+union); rows are vacuumed afterwards.
+EOF
+}
+
+kav_help_dedup() {
+    cat <<'EOF'
+kavkash dedup — collapse repeated commands to one row each
+
+usage: kavkash dedup (--all | OPTIONS) [--mean-it]
+
+Collapses the stored table to one row per command (keeps the newest
+occurrence per group). --all runs it over the whole table by command;
+otherwise OPTIONS extend the dedup key or narrow the scope (rows
+outside the scope are never touched). --all is mutually exclusive with
+the filtering options. Dry run by default — --mean-it applies it. No
+arguments prints this help.
+
+OPTIONS:
+  --all               dedup the whole table (one row per distinct command)
+  --by-dir            key: also group by working directory
+  --by-dir=/PATH      scope: only dedup commands whose cwd is /PATH
+                      (repeatable: --by-dir=/a --by-dir=/b = either)
+  --by-date           key: also group by calendar day (local time)
+  --by-date=DAY       scope: only dedup commands on that day
+  --before=WHEN       scope: only rows strictly before WHEN's day
+  --after=WHEN        scope: only rows strictly after WHEN's day
+  --mean-it           apply the dedup (dry run otherwise)
+
+DAY is strict YYYY-MM-DD. WHEN takes the prune grammar (30d, 12h, 8w,
+2mo, 45min, 1y, yesterday, today, YYYY-MM-DD [HH:MM[:SS]]) and
+resolves to its local day. --before/--after are mutually exclusive
+with --by-date; --by-dir=/PATH cannot combine with bare --by-dir.
+Rows are vacuumed afterwards.
+EOF
+}
+
+kav_help_compact() {
+    cat <<'EOF'
+kavkash compact — integrity check and vacuum
+
+usage: kavkash compact
+
+Runs PRAGMA integrity_check (must pass) and then VACUUM to reclaim
+space.
+EOF
+}
+
+kav_help_stats() {
+    cat <<'EOF'
+kavkash stats — history totals and top commands
+
+usage: kavkash stats
+
+Prints the total row count, distinct command count, and the 10
+most-used commands.
+EOF
+}
+
+kav_help_log() {
+    cat <<'EOF'
+kavkash log — tail the daemon log
+
+usage: kavkash log [N]
+
+Prints the last N lines (default 50) of the daemon's server.log.
+EOF
+}
+
+kav_help_version() {
+    cat <<'EOF'
+kavkash version — print the installed version
+
+usage: kavkash version
 EOF
 }
 
@@ -108,28 +274,6 @@ kav_cmd_update() {
     exit "$rc"
 }
 
-kav_prune_help() {
-    cat <<'EOF'
-kavkash prune — remove history from the edges (everything else stays)
-
-usage: kavkash prune FLAG... [--mean-it]   (at least one removal flag)
-
-  --oldest=N        remove the N oldest commands
-  --newest=N        remove the N newest commands
-  --older-than=WHEN remove everything older than WHEN
-  --newer-than=WHEN remove everything newer than WHEN
-  --mean-it         actually apply the removal. WITHOUT it, prune only
-                    shows what would be removed and changes nothing.
-
-WHEN: a duration like 30d, 12h, 8w, 2mo, 45min, 1y
-(days/hours/weeks/months/minutes/years ago — 2mo is months, 45min is
-minutes; there is no bare "m") or a strict date (YYYY-MM-DD, YYYY-MM-DD
-HH:MM[:SS], yesterday, today). Durations are always "N unit ago";
-future boundaries are refused. Flags combine — the removed spans
-union. Rows are vacuumed afterwards.
-EOF
-}
-
 # WHEN (duration like 30d / 12h / 8w / 2mo / 45min / 1y, or a strict
 # date) -> ns since epoch, matching the id timestamps (local time, like
 # kav_new_id). Durations are "N <unit> ago" — always past. There is no
@@ -175,7 +319,7 @@ _kav_prune_when_ns() {
 }
 
 kav_cmd_prune() {
-    [ "$#" -gt 0 ] || { kav_prune_help >&2; exit 2; }
+    [ "$#" -gt 0 ] || { kav_help_prune >&2; exit 2; }
     mean_it=0
     conds=""
     what=""
@@ -191,7 +335,6 @@ kav_cmd_prune() {
             --newer-than=*) when=${arg#--newer-than=} ;;
             --newer-than)   shift; when=$1 ;;
             --mean-it) mean_it=1 ;;
-            -h|--help) kav_prune_help; exit 0 ;;
             *) kav_die "prune: unknown argument: $arg" ;;
         esac
         case "$arg" in
@@ -220,7 +363,7 @@ kav_cmd_prune() {
         esac
         shift
     done
-    [ -n "$conds" ] || { kav_prune_help >&2; exit 2; }
+    [ -n "$conds" ] || { kav_help_prune >&2; exit 2; }
     kav_have sqlite3 || kav_die 'prune: sqlite3 is required'
     [ -f "$KAV_DB_FILE" ] || kav_die "prune: no database at $KAV_DB_FILE"
 
@@ -248,39 +391,6 @@ kav_cmd_compact() {
     [ "$check" = ok ] || kav_die "compact: integrity check failed: $check"
     sqlite3 "$KAV_DB_FILE" 'VACUUM;'
     printf 'ok: integrity check passed, database vacuumed\n'
-}
-
-kav_dedup_help() {
-    cat <<'EOF'
-kavkash dedup — collapse repeated commands to one row each
-
-usage: kavkash dedup [OPTIONS] [--mean-it]
-
-By default one row per distinct command across the whole table (keeps
-the newest occurrence per group). Options extend the dedup key or
-narrow the scope; rows outside the scope are never touched.
-
-  --by-dir              key += working directory (ls in /tmp and in /etc
-                        stay separate)
-  --by-dir=/PATH        only dedup commands whose cwd is /PATH
-                        (repeatable: --by-dir=/a --by-dir=/b = either)
-  --by-date             key += calendar day (one row per command per day,
-                        local time)
-  --by-date=YYYY-MM-DD  only dedup commands on that day
-  --before=WHEN         only dedup rows strictly before WHEN's day
-  --after=WHEN          only dedup rows strictly after WHEN's day
-  --before=A --after=B  only the band between them (both exclusive)
-
-WHEN (for --before/--after) accepts everything prune does: durations
-30d, 12h, 8w, 2mo, 45min, 1y ("N unit ago" — no bare "m": 2mo is
-months, 45min is minutes), yesterday, today,
-and YYYY-MM-DD [HH:MM[:SS]] (durations and words resolve to their
-local day).
-
---before/--after are mutually exclusive with --by-date; --by-dir=VALUE
-cannot combine with bare --by-dir. Dry run by default — --mean-it
-applies. Vacuums afterwards.
-EOF
 }
 
 _kav_dedup_date_ok() {
@@ -330,6 +440,7 @@ _kav_dedup_when_day() {
 
 kav_cmd_dedup() {
     mean_it=0
+    all=0
     by_dir=""        # "" none · "key" bare (key += cwd) · "val" scoped to a cwd
     dir_vals=""      # | -separated cwd values for --by-dir=... (sep is char 31)
     by_date=""       # "" none · "key" (key += day) · "val" scoped to one day
@@ -337,10 +448,12 @@ kav_cmd_dedup() {
     before=""
     after=""
     sep=$(printf '\037')
+    [ "$#" -gt 0 ] || { kav_help_dedup >&2; exit 2; }
     while [ "$#" -gt 0 ]; do
         arg=$1
         case "$arg" in
             --mean-it) mean_it=1 ;;
+            --all)     all=1 ;;
             --by-dir)
                 [ "$by_dir" = val ] && kav_die 'dedup: cannot combine --by-dir=VALUE with bare --by-dir'
                 by_dir=key
@@ -364,13 +477,19 @@ kav_cmd_dedup() {
             --after=*)
                 after=$(_kav_dedup_when_day "${arg#--after=}")
                 ;;
-            -h|--help) kav_dedup_help; exit 0 ;;
             *) kav_die "dedup: unknown argument: $arg" ;;
         esac
         shift
     done
     [ -n "$by_date" ] && { [ -n "$before" ] || [ -n "$after" ]; } \
         && kav_die 'dedup: --by-date cannot combine with --before/--after'
+    if [ "$all" -eq 1 ]; then
+        { [ -n "$by_dir" ] || [ -n "$by_date" ] || [ -n "$before" ] || [ -n "$after" ]; } \
+            && kav_die 'dedup: --all cannot combine with --by-dir/--by-date/--before/--after'
+    else
+        { [ -n "$by_dir" ] || [ -n "$by_date" ] || [ -n "$before" ] || [ -n "$after" ]; } \
+            || { kav_help_dedup >&2; exit 2; }
+    fi
     kav_have sqlite3 || kav_die 'dedup: sqlite3 is required'
     [ -f "$KAV_DB_FILE" ] || kav_die "dedup: no database at $KAV_DB_FILE"
 
@@ -498,6 +617,24 @@ cmd="${1:-help}"
 # Guarded shift: with no args, a bare `shift` under set -e is a fatal
 # error in dash even with `|| true` (empirically).
 [ "$#" -gt 0 ] && shift
+# `kavkash COMMAND --help` prints the command's standard help block
+# (uniform template); any subcommand answers it.
+case " $* " in
+    *" --help "* | *" -h "*)
+        case "$cmd" in
+            status|info|backup|restore|import|update|prune|dedup|compact|stats|log|version)
+                kav_help_$cmd
+                exit 0
+                ;;
+            help|-h|--help)
+                usage
+                exit 0
+                ;;
+        esac
+        usage >&2
+        exit 2
+        ;;
+esac
 case "$cmd" in
     status)  kav_cmd_status ;;
     info)    kav_cmd_info ;;

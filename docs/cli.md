@@ -37,7 +37,7 @@ operations go through one entry point, like `atuin` / `git`: the
 | `kavkash update`       | re-run the installer against the latest release (fetch install.sh from GitHub, same flow as the README one-liner) |
 | `kavkash prune FLAGS [--mean-it]` | **dry run by default** — shows what would be removed, changes nothing; `--mean-it` applies it. Removes from the edges: `--oldest=N` / `--newest=N` (count), `--older-than=WHEN` / `--newer-than=WHEN` (age/date) |
 | `kavkash compact`    | `PRAGMA integrity_check` then `VACUUM` |
-| `kavkash dedup [OPTIONS] [--mean-it]` | collapse repeated commands to one row each; key/scope options: `--by-dir[=/PATH]`, `--by-date[=DAY]`, `--before=DAY`, `--after=DAY`; **dry run by default** — `--mean-it` applies |
+| `kavkash dedup (--all \| OPTIONS) [--mean-it]` | collapse repeated commands to one row each; `--all` = whole table by command (exclusive with the filtering options); or `--by-dir[=/PATH]`, `--by-date[=DAY]`, `--before=WHEN`, `--after=WHEN`; bare `dedup` prints its help; **dry run by default** — `--mean-it` applies |
 | `kavkash stats`      | totals + top 10 commands (GROUP BY count) |
 | `kavkash log [N]`    | tail `server.log` (default 50 lines) |
 | `kavkash version`    | cat VERSION |
@@ -52,7 +52,8 @@ operations go through one entry point, like `atuin` / `git`: the
 - `backup [dir]` — delegates to `backup.sh`: `sqlite3 .backup`
   (consistent even while the daemon writes — the DB is in `delete`
   journal mode, so a plain `cp` could catch a mid-transaction state),
-  target `history.db.YYYY-MM-DD` in `dir` (default data dir), keeps the
+  target `history.db.YYYY-MM-DD.HH-MM-SS` in `dir` (default data dir;
+  timestamped so consecutive runs never overwrite), keeps the
   newest 7 snapshots
 - `restore FILE` — validates FILE is a sqlite db → stops the daemon
   (systemd unit if installed, else pid TERM + wait) → moves the current
@@ -86,10 +87,12 @@ operations go through one entry point, like `atuin` / `git`: the
       delete everything; use `--newest=N` for recent cleanup)
     - local timezone, matching the ns ids
 - `compact` — `integrity_check` must be `ok`, then `VACUUM`
-- `dedup [OPTIONS] [--mean-it]` — the picker already displays one row per
-  command (GROUP BY); dedup makes what's STORED match. Default: one row
-  per distinct command across the whole table (keeps the newest
-  occurrence, `MAX(id)` — the picker's ordering). The dedup KEY extends:
+- `dedup (--all | OPTIONS) [--mean-it]` — the picker already displays one
+  row per command (GROUP BY); dedup makes what's STORED match. `--all`
+  dedups the whole table by command (keeps the newest occurrence per
+  group, `MAX(id)` — the picker's ordering) and is mutually exclusive
+  with every filtering option; bare `dedup` (or only `--mean-it`)
+  prints its help + exit 2. The dedup KEY extends:
   `--by-dir` (+ cwd), `--by-date` (+ local calendar day via
   `strftime('%F', id/1e9, 'unixepoch', 'localtime')`), both. The SCOPE
   narrows which rows are eligible — everything outside is never touched:
@@ -111,7 +114,7 @@ operations go through one entry point, like `atuin` / `git`: the
 ## Notes
 
 - **Dedup is mostly automatic** — save-time consecutive collapse and
-  display-time `GROUP BY`; `kavkash dedup --mean-it` is the manual
+  display-time `GROUP BY`; `kavkash dedup --all --mean-it` is the manual
   maintenance command that collapses the *stored* table (optionally per
   directory / day / range via `--by-dir`, `--by-date`, `--before`,
   `--after`) to match.
