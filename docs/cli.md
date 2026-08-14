@@ -1,143 +1,146 @@
-# kavkash CLI — the main `kavkash` command (implemented in the dispatcher
-# branch; this doc is the design + roadmap it was built from)
+# kavkash CLI — the main `kavkash` command
+
+**Status: implemented.** The dispatcher lives on the `dispatcher`
+branch (2 commits ahead of `main`, not yet released — `main` is at
+v0.5.3; VERSION on this branch is still 0.5.3). This doc is the
+design + the current state of the code; "Remaining work" at the end
+is what is still outstanding.
 
 The flat scripts in `~/.local/share/kavkash/` are internal (hook.sh,
 processor.sh, query.sh, picker.sh, delete.sh, server.sh). User-facing
-operations need one entry point, like `atuin` / `git`: a `kavkash`
-dispatch script with subcommands. Implemented step by step from this
-plan.
+operations go through one entry point, like `atuin` / `git`: the
+`kavkash` dispatch script with subcommands.
 
 ## Wiring
 
 - `kavkash` lives at the install dir root; `~/.local/bin/kavkash` is a
   **symlink** to it, so `realpath "$0"` resolves the install dir (the
   pattern every existing script already uses). install.sh creates the
-  symlink, uninstall.sh removes it; the demo image adds `~/.local/bin`
-  to PATH.
+  symlink (KAVKASH_NO_SYMLINK opt-out), uninstall.sh removes it; the
+  demo image adds `~/.local/bin` to PATH; release.yml bundles
+  `kavkash` + `backup.sh`.
 - Dispatch: `case "$1"` over subcommands; light ops are inline, heavy
-  ops delegate to the existing scripts (`import` → `import.sh`,
-  `backup` → `backup.sh`, …). Internal scripts stay invisible.
+  ops delegate to existing scripts (`import` → `import.sh`,
+  `backup` → `backup.sh`). Internal scripts stay invisible. No args
+  (and `help`/`-h`/`--help`) print the usage; unknown commands →
+  usage + exit 2.
 
-## Subcommands
+## Subcommands (current)
 
 | Command              | What |
 |----------------------|------|
-| `kavkash status`     | daemon running? db rows/size, socket, version |
-| `kavkash info`       | install dir, db/socket/pid paths, installed revision, shell-hook status |
+| `kavkash status`     | daemon running? version, rows/distinct, db size |
+| `kavkash info`       | data/db/socket/pid/log-file paths, version, installed revision, shell-hook status |
 | `kavkash backup [dir]` | `.backup` snapshot of history.db (consistent, live-safe); keep newest 7, prune the rest |
-| `kavkash restore FILE` | stop daemon → replace history.db → start |
-| `kavkash import`     | `import.sh --all` (idempotent) |
-| `kavkash prune FLAGS` | remove history from the edges: `--oldest=N` / `--newest=N` (count) and `--older-than=WHEN` / `--newer-than=WHEN` (age/date, e.g. `30d`, `8w`, `2mo`, `2026-06-01`); spans union, `VACUUM` after; no default — bare `prune` prints its own help |
-| `kavkash compact`    | `VACUUM` + `PRAGMA integrity_check` |
-| `kavkash stats`      | totals + top commands (the GROUP BY dedup already exists) |
-| `kavkash log`        | tail `server.log` |
+| `kavkash restore FILE` | stop daemon → replace history.db → start (previous db kept as history.db.pre-restore) |
+| `kavkash import [ARGS]` | `import.sh` passthrough (idempotent; install.sh passes --all) |
+| `kavkash update`       | re-run the installer against the latest release (fetch install.sh from GitHub, same flow as the README one-liner) |
+| `kavkash prune FLAGS [--mean-it]` | **dry run by default** — shows what would be removed, changes nothing; `--mean-it` applies it. Removes from the edges: `--oldest=N` / `--newest=N` (count), `--older-than=WHEN` / `--newer-than=WHEN` (age/date) |
+| `kavkash compact`    | `PRAGMA integrity_check` then `VACUUM` |
+| `kavkash dedup [OPTIONS] [--mean-it]` | collapse repeated commands to one row each; key/scope options: `--by-dir[=/PATH]`, `--by-date[=DAY]`, `--before=DAY`, `--after=DAY`; **dry run by default** — `--mean-it` applies |
+| `kavkash stats`      | totals + top 10 commands (GROUP BY count) |
+| `kavkash log [N]`    | tail `server.log` (default 50 lines) |
 | `kavkash version`    | cat VERSION |
 
-Notes:
+## Per-command details (as implemented)
 
-- **No `kavkash dedup`** — dedup is already automatic (save-time
-  consecutive collapse + query-time GROUP BY); the manual maintenance
-  command is `compact`.
+- `status` — daemon via `kill -0 $(pidfile)`; version; `count(*)` /
+  `count(DISTINCT command)` + db size via sqlite
+- `info` — paths from includes.sh (data/db/socket/pid/log), `VERSION`,
+  `INSTALLED_REVISION` first line, hook status (grep rc files for
+  `source … functions.{bash,zsh,fish}` lines — comment-aware)
+- `backup [dir]` — delegates to `backup.sh`: `sqlite3 .backup`
+  (consistent even while the daemon writes — the DB is in `delete`
+  journal mode, so a plain `cp` could catch a mid-transaction state),
+  target `history.db.YYYY-MM-DD` in `dir` (default data dir), keeps the
+  newest 7 snapshots
+- `restore FILE` — validates FILE is a sqlite db → stops the daemon
+  (systemd unit if installed, else pid TERM + wait) → moves the current
+  db aside to `history.db.pre-restore` (never destroys the only copy) →
+  copies FILE in → starts the daemon (systemd, else backgrounded
+  server.sh)
+- `import` — `exec "$_SCRIPT_DIR/import.sh" "$@"`
+- `update` — fetches install.sh from `$KAVKASH_REPO` (default
+  altunyurt/kavkash, same default as install.sh) via curl into a temp
+  file, verifies the fetch succeeded (a pipe would mask curl's rc),
+  then runs it — the installer overwrites KAV_DATA_HOME, re-creates the
+  symlink, offers the re-import, and prints the daemon-restart note.
+  Failure to fetch → `kav_die`, nothing changed, temp removed.
+- `prune FLAGS [--mean-it]` — remove = the verb; **dry run by default**
+  (validates everything, prints the would-remove count + spans,
+  changes nothing); `--mean-it` applies. Spans union in one DELETE,
+  `PRAGMA busy_timeout=5000`, then `VACUUM`. Bare `prune` (even with
+  `--mean-it` and no spans) prints its own help + exit 2; invalid /
+  unknown args die before touching the DB.
+  - WHEN grammar is closed (no blind passthrough to GNU date):
+    - durations: `30d` / `12h` / `8w` / `2mo` / `45m` / `30min` / `1y`
+      — always "N unit ago", inherently past (`45m` and `30min` are
+      minutes, `2mo` months, `1y` years)
+    - dates: strict whitelist `YYYY-MM-DD`, `YYYY-MM-DD HH:MM[:SS]`,
+      `yesterday`, `today` — nothing else reaches `date -d` (its magic
+      words like "next tuesday" / "5pm" / "1 week" can resolve to
+      future times); `yesterday`/`today` are matched before the `*y`
+      unit branch (they end in "y")
+    - future boundaries are refused (a future `--older-than` line would
+      delete everything; use `--newest=N` for recent cleanup)
+    - local timezone, matching the ns ids
+- `compact` — `integrity_check` must be `ok`, then `VACUUM`
+- `dedup [OPTIONS] [--mean-it]` — the picker already displays one row per
+  command (GROUP BY); dedup makes what's STORED match. Default: one row
+  per distinct command across the whole table (keeps the newest
+  occurrence, `MAX(id)` — the picker's ordering). The dedup KEY extends:
+  `--by-dir` (+ cwd), `--by-date` (+ local calendar day via
+  `strftime('%F', id/1e9, 'unixepoch', 'localtime')`), both. The SCOPE
+  narrows which rows are eligible — everything outside is never touched:
+  `--by-dir=/PATH` (repeatable, OR), `--by-date=DAY`,
+  `--before=WHEN`/`--after=WHEN` (prune's full WHEN grammar — durations
+  `30d`/`12h`/`8w`/`2mo`/`45m`/`30min`/`1y`, `yesterday`/`today`, strict
+  `YYYY-MM-DD [HH:MM[:SS]]` — resolved to the local day, so `--after=30d`
+  means "days after the day 30 days ago"; band between when both). The
+  scope gates BOTH the outer DELETE and the kept-set
+  subquery, so out-of-scope rows can't be caught by `NOT IN`.
+  `--before`/`--after` are mutually exclusive with `--by-date`; a bare
+  `--by-dir` cannot combine with `--by-dir=VALUE`. `--by-date` is strict
+  `YYYY-MM-DD`; `--before`/`--after` take prune's full WHEN grammar
+  (resolved to a day). Dry run shows the scoped
+  group count; `--mean-it` applies; VACUUM after; idempotent.
+- `stats` — totals line + top 10 by usage
+- `log [N]` — `tail -n N "$KAV_RUNTIME_DIR/server.log"`
+
+## Notes
+
+- **Dedup is mostly automatic** — save-time consecutive collapse and
+  display-time `GROUP BY`; `kavkash dedup --mean-it` is the manual
+  maintenance command that collapses the *stored* table (optionally per
+  directory / day / range via `--by-dir`, `--by-date`, `--before`,
+  `--after`) to match.
 - `backup`/`restore` cover the real data-loss risk: a week of active
   history far exceeds what the capped shell files (~/.bash_history
   2000, zsh 1000) retain, and exit codes/durations/sessions only ever
   live in history.db.
-- Backups and restores use `sqlite3 .backup` (consistent even while the
-  daemon writes; the DB is in `delete` journal mode, so a plain `cp`
-  could catch a mid-transaction state). Restore requires the daemon
-  stopped.
 
-## Implementation plan — the `kavkash` base script
+## Remaining work
 
-One self-contained POSIX-sh dispatcher at the install-dir root,
-symlinked onto PATH:
+1. **Release process** — merge `dispatcher` → `main`, bump VERSION →
+   0.5.4, tag `v0.5.4` (repo convention), then push (nothing has been
+   pushed yet).
+2. **uninstall.sh `--purge` backup hook** — from the backup design:
+   before deleting history.db on purge, write an automatic backup
+   (never destroy the only copy of live-recorded history). Not yet
+   implemented (uninstall.sh currently has no backup step).
+3. Deliberately out of scope (decided during design): no periodic
+   backup timer, no config file.
 
-```
-~/.local/share/kavkash/kavkash        ← the real script
-~/.local/bin/kavkash → (symlink)      ← install.sh creates, uninstall.sh removes
-```
+## Test plan (executed)
 
-It sources `includes.sh` via `dirname -- "$(realpath -- "$0")"` (the
-existing pattern — the symlink resolves back to the install dir, so
-`KAV_DATA_HOME`/`KAV_DB_FILE`/`KAV_SOCK_FILE`/`KAV_PID_FILE` come from
-includes.sh). All commands are functions inside the one file
-(`kav_cmd_*`), with the heavy ops delegating where a script already
-exists (`import` → `import.sh`).
-
-```
-#!/bin/sh
-. "$(dirname -- "$(realpath -- "$0")")/includes.sh"
-set -eu
-
-usage() { … }                        # table above
-
-kav_cmd_status() { … }
-kav_cmd_info() { … }
-… (one function per subcommand)
-
-cmd=${1:-help}; shift 2>/dev/null || true
-case "$cmd" in
-    status)  kav_cmd_status ;;
-    info)    kav_cmd_info ;;
-    backup)  kav_cmd_backup "$@" ;;
-    restore) kav_cmd_restore "$@" ;;
-    import)  exec "$SCRIPT_DIR/import.sh" "$@" ;;   # pass-through (default --all)
-    prune)   kav_cmd_prune "$@" ;;
-    compact) kav_cmd_compact ;;
-    stats)   kav_cmd_stats ;;
-    log)     kav_cmd_log "$@" ;;
-    version) cat "$KAV_DATA_HOME/VERSION" ;;
-    help|-h|--help) usage ;;
-    *) usage >&2; exit 2 ;;
-esac
-```
-
-Per-command behavior:
-
-- `status` — daemon: `kill -0 $(pidfile)` + socket exists; `version`;
-  `rows/distinct` + db size via sqlite
-- `info` — paths (data/db/socket/pid), `VERSION`, `INSTALLED_REVISION`,
-  hook status (grep rc files for the `source` lines)
-- `backup [dir]` — delegate to `backup.sh` (`.backup` + keep-newest-7)
-- `restore FILE` — validate FILE is a sqlite db → stop daemon (systemctl
-  unit if present, else pid TERM + wait) → move current db aside to
-  `history.db.pre-restore` → copy FILE in → start daemon
-- `import` — `exec import.sh "$@"`
-- `prune FLAGS` — remove = the verb: `--oldest=N` / `--newest=N` remove N
-  from each end; `--older-than=WHEN` / `--newer-than=WHEN` remove by
-  age/date (compact durations `30d`/`12h`/`8w`/`2mo`/`45m` → GNU `date -d`
-  phrases, or any date `date -d` accepts; local tz, ns ids). Spans union
-  in one DELETE; bare `prune` prints its own help; invalid/unknown args
-  die
-- `compact` — `PRAGMA integrity_check` then `VACUUM`
-- `stats` — totals + top 10 commands (GROUP BY count)
-- `log [N]` — `tail -n N server.log` (default 50)
-- `version` — `cat VERSION`
-
-Wiring changes:
-
-- install.sh — after `install_files`: `install -d "$HOME/.local/bin"` +
-  `ln -sfn "$KAV_DATA_HOME/kavkash" "$HOME/.local/bin/kavkash"`; mention
-  `kavkash status` in the summary
-- uninstall.sh — `rm -f "$HOME/.local/bin/kavkash"`
-- demo.sh — Dockerfile gains `ENV PATH="/root/.local/bin:$PATH"`
-- release.yml — add `kavkash` to the bundle
-
-Test plan:
-
-- Symlink → `realpath` resolution works from any CWD
-- Each subcommand against a scratch install (`XDG_DATA_HOME` override):
-  status/info/version correct; backup creates + prunes to 7; restore
-  round-trip (seeded DB → backup → wipe → restore → rows back, daemon
-  restarted); prune/compact/stats on a seeded DB; `import` passes args
-- Error paths: unknown command → usage + exit 2; `restore` with a
-  missing/invalid file → `kav_die`; `prune 0` refused
-- install/uninstall symlink create/remove (scratch `~/.local/bin`)
-
-Order of work:
-
-1. `kavkash` dispatcher with the inline commands (status/info/version/
-   log/stats/prune/compact/import) — no `backup`/`restore` yet
-2. `backup.sh` + the `backup`/`restore` cases
-3. install/uninstall/demo/release wiring
-4. Tests + docs
+- Symlink → `realpath` resolution from any CWD ✓
+- Every subcommand against a scratch install (XDG overrides): status /
+  info / version correct ✓; backup creates + prunes to 7 ✓; restore
+  round-trip (rows back, pre-restore kept, daemon restarted) ✓;
+  prune dry-run vs `--mean-it` counts match ✓; compact/stats on seeded
+  data ✓; `import` passthrough ✓
+- Error paths: unknown command → usage + exit 2 ✓; restore with a
+  missing/invalid file → `kav_die` ✓; prune bare / bad values / magic
+  words / future dates → die or help, DB untouched ✓
+- install/uninstall symlink create/remove (syntax-checked; live
+  install verified via the symlink) ✓

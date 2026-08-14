@@ -26,10 +26,15 @@ usage: kavkash COMMAND [ARGS]
                          keep the newest 7 snapshots
   restore FILE           stop daemon, replace history.db with FILE, start it
   import [ARGS]          re-import shell/atuin history (import.sh passthrough)
+  update                 re-run the installer: fetch the latest release
+                         and install it over this one
   prune FLAGS [--mean-it]   show what would be removed (dry run by default);
                          --mean-it applies it — removes from the edges:
                          --oldest=N, --newest=N, --older-than=WHEN,
                          --newer-than=WHEN
+  dedup [--by-dir[=/PATH]] [--by-date[=DAY]] [--before=DAY] [--after=DAY]
+                       [--mean-it] — collapse repeated commands to one row
+                       each (dry run by default; key/scope options narrow it)
   compact                PRAGMA integrity_check, then VACUUM
   stats                  totals + most-used commands
   log [N]                tail the daemon log (default 50 lines)
@@ -80,6 +85,27 @@ kav_cmd_info() {
 
 kav_cmd_import() {
     exec "$_SCRIPT_DIR/import.sh" "$@"
+}
+
+kav_cmd_update() {
+    repo="${KAVKASH_REPO:-altunyurt/kavkash}"
+    url="https://raw.githubusercontent.com/$repo/main/install.sh"
+    printf 'kavkash: current version %s — running the installer against the latest release\n' \
+        "$(cat "$KAV_DATA_HOME/VERSION" 2> /dev/null || printf unknown)"
+    printf 'kavkash: fetching %s\n' "$url"
+    kav_have curl || kav_die 'update: curl is required (or run the installer manually: see README)'
+    tmp=$(mktemp "${TMPDIR:-/tmp}/kavkash-update.XXXXXX") || kav_die 'update: cannot create a temp file'
+    if ! curl -fsSL "$url" -o "$tmp"; then
+        rm -f "$tmp"
+        kav_die "update: failed to fetch $url (network down? repo wrong?) — nothing changed"
+    fi
+    # The installer re-installs over KAV_DATA_HOME (same flow as the README's
+    # curl|sh one-liner): overwrites the scripts, offers the re-import, and
+    # prints the restart note for the daemon. Its exit code passes through.
+    dash "$tmp"
+    rc=$?
+    rm -f "$tmp"
+    exit "$rc"
 }
 
 kav_prune_help() {
@@ -221,6 +247,191 @@ kav_cmd_compact() {
     printf 'ok: integrity check passed, database vacuumed\n'
 }
 
+kav_dedup_help() {
+    cat <<'EOF'
+kavkash dedup — collapse repeated commands to one row each
+
+usage: kavkash dedup [OPTIONS] [--mean-it]
+
+By default one row per distinct command across the whole table (keeps
+the newest occurrence per group). Options extend the dedup key or
+narrow the scope; rows outside the scope are never touched.
+
+  --by-dir              key += working directory (ls in /tmp and in /etc
+                        stay separate)
+  --by-dir=/PATH        only dedup commands whose cwd is /PATH
+                        (repeatable: --by-dir=/a --by-dir=/b = either)
+  --by-date             key += calendar day (one row per command per day,
+                        local time)
+  --by-date=YYYY-MM-DD  only dedup commands on that day
+  --before=WHEN         only dedup rows strictly before WHEN's day
+  --after=WHEN          only dedup rows strictly after WHEN's day
+  --before=A --after=B  only the band between them (both exclusive)
+
+WHEN (for --before/--after) accepts everything prune does: durations
+30d, 12h, 8w, 2mo, 45m, 30min, 1y ("N unit ago"), yesterday, today,
+and YYYY-MM-DD [HH:MM[:SS]] (durations and words resolve to their
+local day).
+
+--before/--after are mutually exclusive with --by-date; --by-dir=VALUE
+cannot combine with bare --by-dir. Dry run by default — --mean-it
+applies. Vacuums afterwards.
+EOF
+}
+
+_kav_dedup_date_ok() {
+    case "$1" in
+        [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) : ;;
+        *) return 1 ;;
+    esac
+    [ "$(date -d "$1" +%F 2> /dev/null)" = "$1" ]
+}
+
+# WHEN (prune grammar: durations, yesterday/today, strict dates) -> the
+# LOCAL DAY string YYYY-MM-DD. Dedup's --before/--after bounds are days,
+# so durations/words collapse to their day (30d -> the day 30 days ago).
+# The whitelist mirrors prune: nothing else reaches GNU date.
+_kav_dedup_when_day() {
+    when=$1
+    [ -n "$when" ] || kav_die 'dedup: empty WHEN — use e.g. 30d, 12h, 8w, 2mo, 45m, 30min, 1y or a date'
+    num=""
+    unit=""
+    case "$when" in
+        yesterday | today) day=$(date -d "$when" +%F 2> /dev/null) || kav_die "dedup: cannot parse time: '$when'"
+            printf '%s\n' "$day"; return 0 ;;
+        *min) num=${when%min}; unit=minutes ;;
+        *mo)  num=${when%mo};  unit=months ;;
+        *m)   num=${when%m};   unit=minutes ;;
+        *d)   num=${when%d};   unit=days ;;
+        *h)   num=${when%h};   unit=hours ;;
+        *w)   num=${when%w};   unit=weeks ;;
+        *y)   num=${when%y};   unit=years ;;
+    esac
+    if [ -n "$unit" ]; then
+        case "$num" in '' | *[!0-9]*) kav_die "dedup: invalid duration: '$when' (use e.g. 30d, 12h, 8w, 2mo, 45m, 30min, 1y or a date)";; esac
+        day=$(date -d "$num $unit ago" +%F 2> /dev/null) || kav_die "dedup: cannot parse time: '$when'"
+        printf '%s\n' "$day"
+    else
+        case "$when" in
+            [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) : ;;
+            [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]" "[0-9][0-9]:[0-9][0-9]) : ;;
+            [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]" "[0-9][0-9]:[0-9][0-9]:[0-9][0-9]) : ;;
+            *) kav_die "dedup: '$when' is not a recognized duration (30d, 12h, 8w, 2mo, 45m, 30min, 1y) or date (YYYY-MM-DD [HH:MM[:SS]], yesterday, today)" ;;
+        esac
+        day=$(date -d "$when" +%F 2> /dev/null) || kav_die "dedup: cannot parse time: '$when'"
+        printf '%s\n' "$day"
+    fi
+}
+
+kav_cmd_dedup() {
+    mean_it=0
+    by_dir=""        # "" none · "key" bare (key += cwd) · "val" scoped to a cwd
+    dir_vals=""      # | -separated cwd values for --by-dir=... (sep is char 31)
+    by_date=""       # "" none · "key" (key += day) · "val" scoped to one day
+    day_val=""
+    before=""
+    after=""
+    sep=$(printf '\037')
+    while [ "$#" -gt 0 ]; do
+        arg=$1
+        case "$arg" in
+            --mean-it) mean_it=1 ;;
+            --by-dir)
+                [ "$by_dir" = val ] && kav_die 'dedup: cannot combine --by-dir=VALUE with bare --by-dir'
+                by_dir=key
+                ;;
+            --by-dir=*)
+                [ "$by_dir" = key ] && kav_die 'dedup: cannot combine bare --by-dir with --by-dir=VALUE'
+                by_dir=val
+                v=${arg#--by-dir=}
+                [ -n "$v" ] || kav_die 'dedup: empty --by-dir= (use --by-dir=/PATH)'
+                dir_vals="${dir_vals}${dir_vals:+$sep}${v}"
+                ;;
+            --by-date)   by_date=key ;;
+            --by-date=*)
+                by_date=val
+                day_val=${arg#--by-date=}
+                _kav_dedup_date_ok "$day_val" || kav_die "dedup: --by-date must be a valid date YYYY-MM-DD (got '$day_val')"
+                ;;
+            --before=*)
+                before=$(_kav_dedup_when_day "${arg#--before=}")
+                ;;
+            --after=*)
+                after=$(_kav_dedup_when_day "${arg#--after=}")
+                ;;
+            -h|--help) kav_dedup_help; exit 0 ;;
+            *) kav_die "dedup: unknown argument: $arg" ;;
+        esac
+        shift
+    done
+    [ -n "$by_date" ] && { [ -n "$before" ] || [ -n "$after" ]; } \
+        && kav_die 'dedup: --by-date cannot combine with --before/--after'
+    kav_have sqlite3 || kav_die 'dedup: sqlite3 is required'
+    [ -f "$KAV_DB_FILE" ] || kav_die "dedup: no database at $KAV_DB_FILE"
+
+    dayexpr="strftime('%F', id/1000000000, 'unixepoch', 'localtime')"
+    # dedup key: what "the same" means within the scope
+    key="command"
+    [ "$by_dir" = key ] && key="$key, cwd"
+    [ "$by_date" = key ] && key="$key, $dayexpr"
+    # scope: only matching rows are deduped; the rest are never touched
+    scope=""
+    scope_desc=""
+    if [ "$by_dir" = val ]; then
+        dir_conds=""
+        dir_disp=""
+        oldifs=$IFS; IFS=$sep
+        for d in $dir_vals; do
+            esc=$(printf '%s' "$d" | sed "s/'/''/g")
+            dir_conds="${dir_conds}${dir_conds:+ OR }cwd = '$esc'"
+            dir_disp="${dir_disp}${dir_disp:+, }$d"
+        done
+        IFS=$oldifs
+        scope="${scope}${scope:+ AND }($dir_conds)"
+        scope_desc="${scope_desc}${scope_desc:+; }cwd: $dir_disp"
+    fi
+    if [ "$by_date" = val ]; then
+        esc=$(printf '%s' "$day_val" | sed "s/'/''/g")
+        scope="${scope}${scope:+ AND }$dayexpr = '$esc'"
+        scope_desc="${scope_desc}${scope_desc:+; }day: $day_val"
+    fi
+    if [ -n "$before" ]; then
+        scope="${scope}${scope:+ AND }$dayexpr < '$before'"
+        scope_desc="${scope_desc}${scope_desc:+; }before $before"
+    fi
+    if [ -n "$after" ]; then
+        scope="${scope}${scope:+ AND }$dayexpr > '$after'"
+        scope_desc="${scope_desc}${scope_desc:+; }after $after"
+    fi
+
+    where=""
+    [ -n "$scope" ] && where="WHERE $scope"
+    total=$(sqlite3 "$KAV_DB_FILE" "SELECT count(*) FROM history $where;")
+    groups=$(sqlite3 "$KAV_DB_FILE" "SELECT count(*) FROM (SELECT 1 FROM history $where GROUP BY $key);")
+    dup=$((total - groups))
+
+    key_desc="command"
+    [ "$by_dir" = key ] && key_desc="$key_desc, cwd"
+    [ "$by_date" = key ] && key_desc="$key_desc, day"
+    if [ "$mean_it" -eq 0 ]; then
+        printf 'dry run: would remove %s of %s rows (%s groups by %s%s)\n' \
+            "$dup" "$total" "$groups" "$key_desc" "${scope_desc:+; scope: $scope_desc}"
+        printf '         nothing was changed — rerun with --mean-it to apply\n'
+        return 0
+    fi
+
+    sqlite3 "$KAV_DB_FILE" 'PRAGMA busy_timeout=5000;' > /dev/null
+    if [ -n "$scope" ]; then
+        sqlite3 "$KAV_DB_FILE" "DELETE FROM history WHERE $scope AND id NOT IN (SELECT MAX(id) FROM history WHERE $scope GROUP BY $key);"
+    else
+        sqlite3 "$KAV_DB_FILE" "DELETE FROM history WHERE id NOT IN (SELECT MAX(id) FROM history GROUP BY $key);"
+    fi
+    sqlite3 "$KAV_DB_FILE" 'VACUUM;'
+    after_rows=$(sqlite3 "$KAV_DB_FILE" "SELECT count(*) FROM history $where;")
+    printf 'deduped: %s -> %s rows in scope (kept the newest occurrence per %s%s)\n' \
+        "$total" "$after_rows" "$key_desc" "${scope_desc:+; scope: $scope_desc}"
+}
+
 kav_cmd_stats() {
     kav_have sqlite3 || kav_die 'stats: sqlite3 is required'
     [ -f "$KAV_DB_FILE" ] || kav_die "stats: no database at $KAV_DB_FILE"
@@ -288,7 +499,9 @@ case "$cmd" in
     backup)  exec "$_SCRIPT_DIR/backup.sh" "$@" ;;
     restore) kav_cmd_restore "$@" ;;
     import)  kav_cmd_import "$@" ;;
+    update)  kav_cmd_update ;;
     prune)   kav_cmd_prune "$@" ;;
+    dedup)   kav_cmd_dedup "$@" ;;
     compact) kav_cmd_compact ;;
     stats)   kav_cmd_stats ;;
     log)     kav_cmd_log "$@" ;;
