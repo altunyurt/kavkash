@@ -11,8 +11,9 @@ curl -fsSL https://raw.githubusercontent.com/altunyurt/kavkash/main/install.sh |
 ```
 
 Installs to `${XDG_DATA_HOME:-~/.local/share}/kavkash` (Unix socket under
-`XDG_RUNTIME_DIR`). No config file. Useful overrides (full list in the
-installer's header):
+`XDG_RUNTIME_DIR`) and puts `kavkash` on PATH via a symlink at
+`~/.local/bin/kavkash` (keep `~/.local/bin` on your PATH). No config
+file. Useful overrides (full list in the installer's header):
 
 - `KAVKASH_IMPORT=1` — import existing bash/zsh/fish history and atuin
   (atuin history is read via the `atuin` CLI — the store layout varies
@@ -126,6 +127,52 @@ files are never touched — remove the `source` line yourself.
   full fzf syntax (`!`, `'exact'`, `a|b`), no per-keystroke DB hits.
   Multi-line commands display natively.
 
+## Command line
+
+`kavkash` is the dispatcher for everything outside the shells —
+`kavkash help` lists all commands, `kavkash CMD --help` explains one.
+
+- `kavkash status` — daemon up? version, rows/distinct commands, db size
+- `kavkash info` — install paths (data/db/socket/pid/log), version, revision, shell hooks
+- `kavkash backup [DIR]` — snapshot history.db (safe while the daemon
+  writes); named `history.db.TIMESTAMP` in DIR (default the data dir), newest 7 kept
+- `kavkash restore FILE` — stop the daemon, swap FILE in as history.db
+  (the current db is kept as `history.db.pre-restore`), start again
+- `kavkash update` — re-run the installer against the latest release
+- `kavkash log [N]` — tail the daemon log (default 50 lines)
+- `kavkash version` — print the installed version
+- `kavkash history ...` — operations on the stored history:
+
+  - **`history prune`** — remove history from the edges. Dry run by
+    default (shows what would be removed, changes nothing);
+    `--mean-it` applies it.
+    - `--oldest=N` / `--newest=N` — remove the N oldest / newest commands
+    - `--older-than=WHEN` / `--newer-than=WHEN` — remove everything older /
+      newer than WHEN: a duration (`30d`, `8w`, `2mo`, `45min`, `1y` —
+      `2mo` is months, `45min` is minutes) or a date (`2026-06-01`,
+      `yesterday`); future boundaries are refused
+    - flags combine — `prune --older-than=90d --newer-than=7d --mean-it`
+      removes both ends, keeping the middle band
+  - **`history dedup`** — collapse repeated commands to one row each
+    (keeps the newest occurrence). Dry run by default; `--mean-it`
+    applies it.
+    - `--all` — the whole table by command (exclusive with the rest)
+    - `--by-dir[=/PATH]` — also group by directory; with a value, only
+      commands in that cwd (repeatable)
+    - `--by-date[=DAY]` — also group by calendar day; with a value, only
+      that day
+    - `--before=WHEN` / `--after=WHEN` — only rows before / after WHEN
+      (mutually exclusive with `--by-date`)
+  - **`history stats`** — totals + the 10 most-used commands
+  - **`history compact`** — `PRAGMA integrity_check`, then `VACUUM`
+  - **`history import [ARGS]`** — re-import shell/atuin history
+    (idempotent; `--all` imports everything)
+
+Trailing whitespace on commands is trimmed on save — `ls ` and `ls`
+are the same command, and dedup folds any old variants.
+
+`rm -f ~/.local/share/kavkash/history.db` wipes everything; the daemon
+recreates the schema on its next start.
 
 ## Requirements
 
@@ -171,28 +218,6 @@ shell picker shift-delete → delete.sh ─────────────�
   atuin (read via the `atuin` CLI: the store layout varies by version
   and v18+ stores are PASETO-encrypted, so the CLI is the only stable
   reader — it decrypts with your key).
-
-## Pruning
-
-Remove history from the edges — everything else stays. **Prune is a dry
-run by default**: it shows what would be removed and changes nothing.
-`--mean-it` actually applies it.
-
-```sh
-kavkash history prune --older-than=30d          # dry run: preview only
-kavkash history prune --older-than=30d --mean-it  # actually remove it
-kavkash history prune --newest=100 --mean-it    # remove the 100 most recent commands
-```
-
-`--oldest=N` / `--newest=N` remove by count; `--older-than` /
-`--newer-than` remove by age or date (`30d`, `8w`, `2mo`, `2026-06-01`,
-`yesterday` — future boundaries are refused). Flags combine
-(`prune --older-than=90d --newer-than=7d --mean-it` removes both ends,
-keeping the middle band); `kavkash history prune` alone prints the
-command's help.
-
-`rm -f ~/.local/share/kavkash/history.db` wipes everything; the daemon
-recreates the schema on its next start.
 
 ## License
 
