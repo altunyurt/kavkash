@@ -81,6 +81,12 @@ case "$TYPE" in
         # epoch: the row's timestamp, so id order == chronological. Exit and
         # duration are unknown until the precmd hook sends a U for id.
         cmd="$1"
+        # Trailing whitespace off the stored command — "ls " and "ls<TAB>"
+        # must be "ls": otherwise the picker's GROUP BY and dedup keep
+        # each variant as its own row (they'd survive dedup forever).
+        # A command that is only whitespace is nothing — drop it.
+        cmd=$(printf '%s' "$cmd" | sed 's/[ \t\r]*$//')
+        [ -n "$cmd" ] || exit 0
         cwd="$2"
         id="$3"
         session="$4"

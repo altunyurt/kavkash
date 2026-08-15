@@ -180,6 +180,8 @@ DAY is strict YYYY-MM-DD. WHEN takes the prune grammar (30d, 12h, 8w,
 2mo, 45min, 1y, yesterday, today, YYYY-MM-DD [HH:MM[:SS]]) and
 resolves to its local day. --before/--after are mutually exclusive
 with --by-date; --by-dir=/PATH cannot combine with bare --by-dir.
+Trailing whitespace on commands is folded ("ls " = "ls") — new saves
+are trimmed by the daemon; dedup also normalizes surviving rows.
 Rows are vacuumed afterwards.
 EOF
 }
@@ -507,8 +509,11 @@ kav_cmd_dedup() {
     [ -f "$KAV_DB_FILE" ] || kav_die "dedup: no database at $KAV_DB_FILE"
 
     dayexpr="strftime('%F', id/1000000000, 'unixepoch', 'localtime')"
-    # dedup key: what "the same" means within the scope
-    key="command"
+    # dedup key: what "the same" means within the scope. The command is
+    # rtrimmed (trailing whitespace folded) so "ls "/"ls<TAB>" merge
+    # with "ls" — save-time (processor W) already trims new rows, this
+    # converges pre-existing variants.
+    key="rtrim(command, ' \t')"
     [ "$by_dir" = key ] && key="$key, cwd"
     [ "$by_date" = key ] && key="$key, $dayexpr"
     # scope: only matching rows are deduped; the rest are never touched
@@ -562,6 +567,14 @@ kav_cmd_dedup() {
         sqlite3 "$KAV_DB_FILE" "DELETE FROM history WHERE $scope AND id NOT IN (SELECT MAX(id) FROM history WHERE $scope GROUP BY $key);"
     else
         sqlite3 "$KAV_DB_FILE" "DELETE FROM history WHERE id NOT IN (SELECT MAX(id) FROM history GROUP BY $key);"
+    fi
+    # Normalize the surviving rows' command text: trailing whitespace was
+    # folded into the key, so write the clean form back (in-scope rows
+    # only — out-of-scope rows are never touched).
+    if [ -n "$scope" ]; then
+        sqlite3 "$KAV_DB_FILE" "UPDATE history SET command = rtrim(command, ' \t') WHERE $scope;"
+    else
+        sqlite3 "$KAV_DB_FILE" "UPDATE history SET command = rtrim(command, ' \t');"
     fi
     sqlite3 "$KAV_DB_FILE" 'VACUUM;'
     after_rows=$(sqlite3 "$KAV_DB_FILE" "SELECT count(*) FROM history $where;")
