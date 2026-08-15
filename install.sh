@@ -414,15 +414,17 @@ print_summary() {
     say "installed to: $KAV_DATA_HOME"
     say "version:      $(cat "$KAV_DATA_HOME/VERSION" 2> /dev/null || echo unknown)"
     say "revision:     $KAV_DATA_HOME/INSTALLED_REVISION"
-    if [ "$verified" != "yes" ]; then
+    if [ "$verified" != "yes" ] && [ "$verified" != "local" ]; then
         say "              (checksum NOT verified against an upstream-published value —"
         say "               see INSTALLED_REVISION for the tarball_sha256 that was installed)"
     fi
     say ""
     say "next steps:"
 
-    say "  kavkash status — daemon, version, and history overview (try it!)"
-    say "  kavkash help   — all subcommands (backup, restore, prune, stats, ...)"
+    say "  kavkash status   — daemon, version, and history overview (try it!)"
+    say "  kavkash backup   — snapshot your history (recommended now)"
+    say "  kavkash history  — history data: prune, dedup, stats, compact, import"
+    say '  kavkash help     — every subcommand; kavkash CMD --help for details'
 
     say "  1. start the daemon:"
     if [ "$systemd_enabled" = "yes" ]; then
@@ -462,8 +464,8 @@ print_summary() {
     esac
 
     say "  3. existing history (bash/zsh/fish files, atuin DB):"
-    say "       import now, or any time later:"
-    say "       $KAV_DATA_HOME/import.sh   (idempotent — safe to re-run)"
+    say "       import now, or any time later (idempotent — safe to re-run):"
+    say "       kavkash history import --all"
     say "       re-running this installer also offers the import again"
 
     say "  4. start from scratch (clear all stored history):"
@@ -487,12 +489,26 @@ main() {
     KAV_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/kavkash"
     SYSTEMD_USER_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 
-    have curl || have wget || die "need curl or wget to download kavkash"
-    have tar || die "need tar to unpack kavkash"
+    # Local clone mode: when this installer runs from a git checkout of
+    # kavkash, install from the working tree instead of fetching the
+    # latest release from GitHub (set KAVKASH_FORCE_REMOTE=1 to override).
+    SCRIPT_DIR=$(cd "$(dirname -- "$0")" 2> /dev/null && pwd 2> /dev/null || true)
+    if [ -z "${KAVKASH_FORCE_REMOTE:-}" ] && [ -n "$SCRIPT_DIR" ] && [ -d "$SCRIPT_DIR/.git" ]; then
+        say "local git checkout detected — installing from $SCRIPT_DIR"
+        say "(not from GitHub; KAVKASH_FORCE_REMOTE=1 forces the remote flow)"
+        src="$SCRIPT_DIR"
+        verified="local"
+        tag="local working tree"
+        resolved_sha=$(git -C "$SCRIPT_DIR" rev-parse HEAD 2> /dev/null || echo unknown)
+        url="local clone: $SCRIPT_DIR"
+    else
+        have curl || have wget || die "need curl or wget to download kavkash"
+        have tar || die "need tar to unpack kavkash"
+        resolve_source
+        fetch_and_verify
+        unpack
+    fi
 
-    resolve_source
-    fetch_and_verify
-    unpack
     install_files
 
     # Put `kavkash` on PATH: ~/.local/bin/kavkash is a symlink to the
