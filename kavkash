@@ -121,9 +121,11 @@ kavkash update — update to the latest release
 
 usage: kavkash update
 
-Fetches the installer from GitHub (KAVKASH_REPO, default
-altunyurt/kavkash) and runs it: the latest release is downloaded,
-checksum-verified, and installed over this one. Offers a re-import.
+Compares the installed version against the latest release tag on GitHub
+(KAVKASH_REPO, default altunyurt/kavkash) and returns early — "already
+up to date" — when they match. Otherwise fetches the installer and runs
+it: the latest release is downloaded, checksum-verified, and installed
+over this one. Offers a re-import.
 EOF
 }
 
@@ -271,10 +273,26 @@ kav_cmd_import() {
 kav_cmd_update() {
     repo="${KAVKASH_REPO:-altunyurt/kavkash}"
     url="https://raw.githubusercontent.com/$repo/main/install.sh"
-    printf 'kavkash: current version %s — running the installer against the latest release\n' \
-        "$(cat "$KAV_DATA_HOME/VERSION" 2> /dev/null || printf unknown)"
-    printf 'kavkash: fetching %s\n' "$url"
+    current=$(cat "$KAV_DATA_HOME/VERSION" 2> /dev/null || printf unknown)
     kav_have curl || kav_die 'update: curl is required (or run the installer manually: see README)'
+    # Short-circuit: if the installed version matches the latest release
+    # tag, there is nothing to do (the installer would just re-install
+    # the same release). Falls through when the check itself fails
+    # (offline, bad repo) — the installer fetch below then reports the
+    # real error.
+    latest=$(curl -fsSL "https://api.github.com/repos/$repo/releases/latest" 2> /dev/null \
+        | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+        | head -n 1)
+    if [ -n "$latest" ]; then
+        if [ "${latest#v}" = "$current" ]; then
+            printf 'kavkash: already up to date (version %s)\n' "$current"
+            exit 0
+        fi
+        printf 'kavkash: version %s installed, latest release is %s\n' "$current" "$latest"
+    else
+        printf 'kavkash: could not determine the latest release (network? repo?) — running the installer anyway\n'
+    fi
+    printf 'kavkash: fetching %s\n' "$url"
     tmp=$(mktemp "${TMPDIR:-/tmp}/kavkash-update.XXXXXX") || kav_die 'update: cannot create a temp file'
     if ! curl -fsSL "$url" -o "$tmp"; then
         rm -f "$tmp"
