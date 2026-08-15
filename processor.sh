@@ -103,12 +103,13 @@ case "$TYPE" in
         # exit/duration still pending the U) — instead of inserting a
         # duplicate. IS handles empty-session (NULL) matching. A shell
         # that dies mid-command leaves exit 0 / duration 0; ids are never
-        # reused; busy_timeout makes concurrent writers (several terminals
-        # at once) wait for the lock instead of failing with SQLITE_BUSY.
-        changed=$(sqlite3 "$db_file" "PRAGMA busy_timeout = 3000; UPDATE history SET id=$id, exit_code=0, duration_ms=0, session=NULLIF('$safe_session','') WHERE id=(SELECT id FROM history ORDER BY id DESC LIMIT 1) AND command='$safe_cmd' AND cwd='$safe_cwd' AND session IS NULLIF('$safe_session',''); SELECT changes();" 2> /dev/null | tail -1)
+        # reused; kav_db's .timeout makes concurrent writers (several
+        # terminals at once) wait for the lock instead of failing with
+        # SQLITE_BUSY.
+        changed=$(kav_db "$db_file" "UPDATE history SET id=$id, exit_code=0, duration_ms=0, session=NULLIF('$safe_session','') WHERE id=(SELECT id FROM history ORDER BY id DESC LIMIT 1) AND command='$safe_cmd' AND cwd='$safe_cwd' AND session IS NULLIF('$safe_session',''); SELECT changes();" 2> /dev/null | tail -1)
         case "$changed" in
             *[1-9]*) : ;;   # collapsed the previous consecutive repeat
-            *) sqlite3 "$db_file" "PRAGMA busy_timeout = 3000; INSERT INTO history (id, command, cwd, exit_code, duration_ms, session) VALUES ($id, '$safe_cmd', '$safe_cwd', 0, 0, NULLIF('$safe_session', ''));" ;;
+            *) kav_db "$db_file" "INSERT INTO history (id, command, cwd, exit_code, duration_ms, session) VALUES ($id, '$safe_cmd', '$safe_cwd', 0, 0, NULLIF('$safe_session', ''));" ;;
         esac
         ;;
     U)
@@ -125,7 +126,7 @@ case "$TYPE" in
         safe_id=$(printf '%s' "$id" | sed "s/'/''/g")
         n=0
         while [ "$n" -lt 5 ]; do
-            changed=$(sqlite3 "$db_file" "PRAGMA busy_timeout = 3000; UPDATE history SET exit_code=$exit_code, duration_ms=$duration WHERE id='$safe_id'; SELECT changes();" 2> /dev/null | tail -1)
+            changed=$(kav_db "$db_file" "UPDATE history SET exit_code=$exit_code, duration_ms=$duration WHERE id='$safe_id'; SELECT changes();" 2> /dev/null | tail -1)
             case "$changed" in *[1-9]*) break ;; esac
             n=$((n + 1))
             sleep 0.01 2> /dev/null || break
@@ -175,9 +176,10 @@ case "$TYPE" in
         # those hazards, so no embedded separator can tear a row. Rows are
         # rejoined with 0x1E via ORS and one tr converts to NUL (mawk printf
         # eats a literal \0 in formats).
-        # Read-only SELECT: no busy_timeout (a PRAGMA assignment would make
-        # the sqlite3 CLI echo "3000" into the picker stream).
-        sqlite3 -ascii "$db_file" "$sql" | LC_ALL=C awk '
+        # kav_db: the dot-command sets the lock wait on this connection
+        # and prints nothing — a PRAGMA would echo its value as a row
+        # into the picker stream.
+        kav_db -ascii "$db_file" "$sql" | LC_ALL=C awk '
         BEGIN { RS = "\036"; ORS = "\036" }
         {
             row = $0
@@ -193,6 +195,6 @@ case "$TYPE" in
         # one found at that id. Unknown ids delete nothing.
         id="$1"
         case "$id" in '' | *[!0-9]*) exit 0 ;; esac
-        sqlite3 "$db_file" "PRAGMA busy_timeout = 3000; DELETE FROM history WHERE command = (SELECT command FROM history WHERE id=$id);"
+        kav_db "$db_file" "DELETE FROM history WHERE command = (SELECT command FROM history WHERE id=$id);"
         ;;
 esac

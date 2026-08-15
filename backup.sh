@@ -24,7 +24,7 @@ while [ -e "$dir/$target" ]; do
     target="history.db.$stamp-$n"
 done
 # cd into the target dir so the .backup path needs no quoting gymnastics.
-(cd "$dir" && sqlite3 "$KAV_DB_FILE" ".backup '$target'") || kav_die 'backup: sqlite .backup failed'
+(cd "$dir" && kav_db "$KAV_DB_FILE" ".backup '$target'") || kav_die 'backup: sqlite .backup failed'
 printf 'backed up %s -> %s/%s\n' "$KAV_DB_FILE" "$dir" "$target"
 
 # Prune to the newest 7 snapshots (ls order == name == date order).

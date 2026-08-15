@@ -239,7 +239,7 @@ kav_cmd_status() {
     printf 'daemon:  %s\n' "$local_state"
     printf 'version: %s\n' "$(cat "$KAV_DATA_HOME/VERSION" 2> /dev/null || printf 'unknown')"
     if kav_have sqlite3 && [ -f "$KAV_DB_FILE" ]; then
-        stats=$(sqlite3 "$KAV_DB_FILE" 'SELECT count(*), count(DISTINCT command) FROM history;' 2> /dev/null || true)
+        stats=$(kav_db "$KAV_DB_FILE" 'SELECT count(*), count(DISTINCT command) FROM history;' 2> /dev/null || true)
         size=$(stat -c %s "$KAV_DB_FILE" 2> /dev/null || true)
         printf 'history: %s\n' "$stats" | awk -F'|' '{ printf "         %s rows, %s distinct commands\n", $1, $2 }'
         [ -n "$size" ] && printf 'db:      %.1f MB\n' "$(awk -v s="$size" 'BEGIN { printf "%.1f", s / 1048576 }')"
@@ -402,27 +402,26 @@ kav_cmd_prune() {
 
     if [ "$mean_it" -eq 0 ]; then
         # Dry run by default: show what WOULD be removed, change nothing.
-        would=$(sqlite3 "$KAV_DB_FILE" "SELECT count(*) FROM history WHERE $conds;")
-        total=$(sqlite3 "$KAV_DB_FILE" 'SELECT count(*) FROM history;')
+        would=$(kav_db "$KAV_DB_FILE" "SELECT count(*) FROM history WHERE $conds;")
+        total=$(kav_db "$KAV_DB_FILE" 'SELECT count(*) FROM history;')
         printf 'dry run: would remove %s of %s rows (removed: %s)\n' "$would" "$total" "$what"
         printf '         nothing was changed — rerun with --mean-it to apply\n'
         return 0
     fi
 
-    before=$(sqlite3 "$KAV_DB_FILE" 'SELECT count(*) FROM history;')
-    sqlite3 "$KAV_DB_FILE" 'PRAGMA busy_timeout=5000;' > /dev/null
-    sqlite3 "$KAV_DB_FILE" "DELETE FROM history WHERE $conds;"
-    sqlite3 "$KAV_DB_FILE" 'VACUUM;'
-    after=$(sqlite3 "$KAV_DB_FILE" 'SELECT count(*) FROM history;')
+    before=$(kav_db "$KAV_DB_FILE" 'SELECT count(*) FROM history;')
+    kav_db "$KAV_DB_FILE" "DELETE FROM history WHERE $conds;"
+    kav_db "$KAV_DB_FILE" 'VACUUM;'
+    after=$(kav_db "$KAV_DB_FILE" 'SELECT count(*) FROM history;')
     printf 'pruned: %s -> %s rows (removed: %s)\n' "$before" "$after" "$what"
 }
 
 kav_cmd_compact() {
     kav_have sqlite3 || kav_die 'compact: sqlite3 is required'
     [ -f "$KAV_DB_FILE" ] || kav_die "compact: no database at $KAV_DB_FILE"
-    check=$(sqlite3 "$KAV_DB_FILE" 'PRAGMA integrity_check;' 2> /dev/null || true)
+    check=$(kav_db "$KAV_DB_FILE" 'PRAGMA integrity_check;' 2> /dev/null || true)
     [ "$check" = ok ] || kav_die "compact: integrity check failed: $check"
-    sqlite3 "$KAV_DB_FILE" 'VACUUM;'
+    kav_db "$KAV_DB_FILE" 'VACUUM;'
     printf 'ok: integrity check passed, database vacuumed\n'
 }
 
@@ -566,8 +565,8 @@ kav_cmd_dedup() {
 
     where=""
     [ -n "$scope" ] && where="WHERE $scope"
-    total=$(sqlite3 "$KAV_DB_FILE" "SELECT count(*) FROM history $where;")
-    groups=$(sqlite3 "$KAV_DB_FILE" "SELECT count(*) FROM (SELECT 1 FROM history $where GROUP BY $key);")
+    total=$(kav_db "$KAV_DB_FILE" "SELECT count(*) FROM history $where;")
+    groups=$(kav_db "$KAV_DB_FILE" "SELECT count(*) FROM (SELECT 1 FROM history $where GROUP BY $key);")
     dup=$((total - groups))
 
     key_desc="command"
@@ -580,22 +579,21 @@ kav_cmd_dedup() {
         return 0
     fi
 
-    sqlite3 "$KAV_DB_FILE" 'PRAGMA busy_timeout=5000;' > /dev/null
     if [ -n "$scope" ]; then
-        sqlite3 "$KAV_DB_FILE" "DELETE FROM history WHERE $scope AND id NOT IN (SELECT MAX(id) FROM history WHERE $scope GROUP BY $key);"
+        kav_db "$KAV_DB_FILE" "DELETE FROM history WHERE $scope AND id NOT IN (SELECT MAX(id) FROM history WHERE $scope GROUP BY $key);"
     else
-        sqlite3 "$KAV_DB_FILE" "DELETE FROM history WHERE id NOT IN (SELECT MAX(id) FROM history GROUP BY $key);"
+        kav_db "$KAV_DB_FILE" "DELETE FROM history WHERE id NOT IN (SELECT MAX(id) FROM history GROUP BY $key);"
     fi
     # Normalize the surviving rows' command text: trailing whitespace was
     # folded into the key, so write the clean form back (in-scope rows
     # only — out-of-scope rows are never touched).
     if [ -n "$scope" ]; then
-        sqlite3 "$KAV_DB_FILE" "UPDATE history SET command = rtrim(command, ' \t') WHERE $scope;"
+        kav_db "$KAV_DB_FILE" "UPDATE history SET command = rtrim(command, ' \t') WHERE $scope;"
     else
-        sqlite3 "$KAV_DB_FILE" "UPDATE history SET command = rtrim(command, ' \t');"
+        kav_db "$KAV_DB_FILE" "UPDATE history SET command = rtrim(command, ' \t');"
     fi
-    sqlite3 "$KAV_DB_FILE" 'VACUUM;'
-    after_rows=$(sqlite3 "$KAV_DB_FILE" "SELECT count(*) FROM history $where;")
+    kav_db "$KAV_DB_FILE" 'VACUUM;'
+    after_rows=$(kav_db "$KAV_DB_FILE" "SELECT count(*) FROM history $where;")
     printf 'deduped: %s -> %s rows in scope (kept the newest occurrence per %s%s)\n' \
         "$total" "$after_rows" "$key_desc" "${scope_desc:+; scope: $scope_desc}"
 }
@@ -603,9 +601,9 @@ kav_cmd_dedup() {
 kav_cmd_stats() {
     kav_have sqlite3 || kav_die 'stats: sqlite3 is required'
     [ -f "$KAV_DB_FILE" ] || kav_die "stats: no database at $KAV_DB_FILE"
-    sqlite3 "$KAV_DB_FILE" 'SELECT count(*) || " total rows, " || count(DISTINCT command) || " distinct commands" FROM history;'
+    kav_db "$KAV_DB_FILE" 'SELECT count(*) || " total rows, " || count(DISTINCT command) || " distinct commands" FROM history;'
     printf '\nmost used commands:\n'
-    sqlite3 -separator '  ' "$KAV_DB_FILE" \
+    kav_db -separator '  ' "$KAV_DB_FILE" \
         'SELECT count(*) AS uses, command FROM history GROUP BY command ORDER BY uses DESC LIMIT 10;'
 }
 

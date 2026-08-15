@@ -30,10 +30,18 @@ kav_new_id() {
         || printf '%s000000' "$(date +%s%3N 2> /dev/null || date +%s)"
 }
 
+# sqlite3 with a lock wait on this connection. Bare sqlite3 calls race
+# the daemon's writes (journal mode is delete — readers block during a
+# write) and die with SQLITE_BUSY; .timeout is a dot-command that sets
+# the wait and prints nothing, unlike PRAGMA busy_timeout, which would
+# echo its value as a row into the result stream (and, run in its own
+# process, would die with that process anyway).
+kav_db() { sqlite3 -cmd '.timeout 5000' "$@"; }
+
 # Create the history table if missing. Idempotent — existing databases
 # are left untouched.
 kav_ensure_history_schema() {
-    sqlite3 "$KAV_DB_FILE" "CREATE TABLE IF NOT EXISTS history (id INTEGER PRIMARY KEY, command TEXT NOT NULL, cwd TEXT NOT NULL, exit_code INTEGER NOT NULL, duration_ms INTEGER NOT NULL, session TEXT);"
+    kav_db "$KAV_DB_FILE" "CREATE TABLE IF NOT EXISTS history (id INTEGER PRIMARY KEY, command TEXT NOT NULL, cwd TEXT NOT NULL, exit_code INTEGER NOT NULL, duration_ms INTEGER NOT NULL, session TEXT);"
 }
 
 

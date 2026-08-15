@@ -329,7 +329,7 @@ echo "parsed $total commands" >&2
 # id-ownership match. sqlite3 -separator with the 0x1F field separator
 # (a plain control char, no quoting worries).
 sep=$(printf '\037')
-sqlite3 -noheader -separator "$sep" "$DB" "SELECT id, replace(replace(command, char(39), char(39)||char(39)), char(10), char(1)) FROM history;" > "$DBMAP" 2> /dev/null || true
+kav_db -noheader -separator "$sep" "$DB" "SELECT id, replace(replace(command, char(39), char(39)||char(39)), char(10), char(1)) FROM history;" > "$DBMAP" 2> /dev/null || true
 
 # Bulk insert in one sqlite3 session, via one awk pass over ENTRIES.
 # atuin rows (src=A) first enrich any existing cwd-less row. Rows dedup
@@ -338,7 +338,7 @@ sqlite3 -noheader -separator "$sep" "$DB" "SELECT id, replace(replace(command, c
 # occurrence. ORDER BY id DESC == time order (INTEGER PRIMARY KEY = the
 # table's rowid).
 AWKPROG=$(mktemp "$tmpdir/kavkash-awk.XXXXXX")
-trap 'rm -f "$ENTRIES" "$SQLOUT" "$AWKPROG" "$ATUINPARSE" "$DBMAP" "$DAYS" "$OFFS"; [ -n "${KAV_TMP_IDX:-}" ] && sqlite3 "$DB" "DROP INDEX IF EXISTS idx_import_cmd;"' EXIT
+trap 'rm -f "$ENTRIES" "$SQLOUT" "$AWKPROG" "$ATUINPARSE" "$DBMAP" "$DAYS" "$OFFS"; [ -n "${KAV_TMP_IDX:-}" ] && kav_db "$DB" "DROP INDEX IF EXISTS idx_import_cmd;"' EXIT
 cat > "$AWKPROG" <<'EOF'
 BEGIN {
     RS = "\n"     # map lines: "id\x1fcommand" — command is SQL-escaped
@@ -424,12 +424,12 @@ echo "inserting $total commands" >&2
 # command='...' — a plain command index turns that from a full scan per
 # row into a lookup; dropped after the load so the live daemon pays no
 # maintenance, built only when atuin rows are present.
-sqlite3 "$DB" "DROP INDEX IF EXISTS idx_import_dedup;"
+kav_db "$DB" "DROP INDEX IF EXISTS idx_import_dedup;"
 if grep -q '^UPDATE history SET' "$SQLOUT"; then
-    sqlite3 "$DB" "CREATE INDEX IF NOT EXISTS idx_import_cmd ON history(command);"
+    kav_db "$DB" "CREATE INDEX IF NOT EXISTS idx_import_cmd ON history(command);"
     KAV_TMP_IDX=1
 fi
-n_before=$(sqlite3 "$DB" "SELECT count(*) FROM history;")
+n_before=$(kav_db "$DB" "SELECT count(*) FROM history;")
 {
     echo "BEGIN;"
     if kav_have pv; then
@@ -438,8 +438,8 @@ n_before=$(sqlite3 "$DB" "SELECT count(*) FROM history;")
         cat "$SQLOUT"
     fi
     echo "COMMIT;"
-} | sqlite3 "$DB"
-if [ -n "${KAV_TMP_IDX:-}" ]; then sqlite3 "$DB" "DROP INDEX IF EXISTS idx_import_cmd;"; fi
-n_after=$(sqlite3 "$DB" "SELECT count(*) FROM history;")
+} | kav_db "$DB"
+if [ -n "${KAV_TMP_IDX:-}" ]; then kav_db "$DB" "DROP INDEX IF EXISTS idx_import_cmd;"; fi
+n_after=$(kav_db "$DB" "SELECT count(*) FROM history;")
 new=$((n_after - n_before))
 printf 'imported %d commands into %s\n' "$new" "$DB"
