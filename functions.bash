@@ -37,20 +37,17 @@ _hist_warn_daemon_widget() {            # bind -x widgets — leading newline so
 }
 
 # --- atuin-borrowed: readline macro-chain for native accept-line ---
-# (atuin: crates/atuin/src/shell/atuin.bash, __atuin_bind_impl / __atuin_widget_run)
-# bind -x widgets can't call accept-line, so atuin dispatches via a two-step
-# macro chain: the user key is a string macro queuing a sentinel chain
-# (\C-r -> "\C-x\C-_A1\a\C-x\C-_A0\a"); the head is bind -x'd to the widget,
-# and on Enter the widget swaps the tail between its default no-op "" and
-# accept-line. Readline then accepts the line natively — history, prompt,
-# $?, the DEBUG-trap preexec and PROMPT_COMMAND precmd all fire exactly as
-# for a typed command (real exit code + duration). Tab/cancel leave the tail
-# "" and the line on the buffer.
-# Deviation: atuin re-binds only the triggering keymap; we rebind all three
-# standard keymaps — the sentinel chain is never typed by humans, so a stale
-# accept-line binding is unreachable. bash >= 4.3 (multi-byte bind -x
-# keyseqs) and non-ble.sh required; both fall back to atuin's
-# __atuin_accept_line print+eval in _hist_picker.
+# bind -x widgets can't call accept-line, so the user key queues a
+# two-step macro chain (\C-r -> "\C-x\C-_A1\a\C-x\C-_A0\a"): the head is
+# bind -x'd to the widget, and on Enter the widget swaps the tail between
+# its default no-op "" and accept-line. Readline then accepts the line
+# natively — history, prompt, $?, the DEBUG-trap preexec and
+# PROMPT_COMMAND precmd all fire exactly as for a typed command (real
+# exit code + duration). Tab/cancel leave the tail "" and the line on the
+# buffer. All three standard keymaps are rebound — the sentinel chain is
+# never typed by humans, so a stale accept-line binding is unreachable.
+# bash >= 4.3 (multi-byte bind -x keyseqs) and non-ble.sh required; both
+# fall back to print+eval in _hist_picker.
 _hist_macro_bash=0
 if ((BASH_VERSINFO[0] >= 5 || BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 3)) \
     && [[ -z ${BLE_ATTACHED-} ]]; then
@@ -86,11 +83,10 @@ _hist_bind_widget() {
 #               the search text in-memory. The server deduplicates: one
 #               row per distinct command, newest occurrence first (GROUP
 #               BY command, MAX(id)).
-# Design: loads ALL distinct commands up front (count=0 = no LIMIT) via
-# start:reload-sync — no window, no paging — and fzf filters in-memory
-# (no per-keystroke DB trips, full fzf syntax). Scope switches (F6-F8)
-# re-query server-side via picker.sh switch. Commands go over the wire
-# raw — multi-line rows display natively (fzf >= 0.53).
+# The full distinct set loads once via start:reload-sync and fzf filters
+# in-memory (no per-keystroke DB trips, full fzf syntax). Scope switches
+# (F6-F8) re-query server-side via picker.sh switch. Commands go over the
+# wire raw — multi-line rows display natively.
 _hist_picker() {
     local count="$1" init_q="${2:-}" cwd="${3:-}" session="${4:-}"
     local picked key cmd scope_file prompt picker header
@@ -127,8 +123,7 @@ _hist_picker() {
     header="search · F6 all F7 dir F8 sess · shift-del delete · tab paste · enter run"
     # fzf stderr must stay on the terminal (2>/dev/null blanks the UI);
     # </dev/null keeps the tty out of its stdin — start:reload drives the
-    # list. count=0 = ALL distinct commands, loaded once (no window, no
-    # paging); fzf filters the search text in-memory. Scope lives in
+    # list; fzf filters the search text in-memory. Scope lives in
     # SCOPE_FILE; F6/F7/F8 switch it via picker.sh switch, which rewrites
     # the file and prints change-prompt + reload-sync for transform.
     # print()+accept NUL-frames "key\0<cmd>\0"; awk turns that into
@@ -223,20 +218,16 @@ _hist_picker() {
     _hist_armed=1 # re-arm on every exit path: the next typed line records again
 }
 
-# Up/Down: walk ALL history one command per press — Up steps back one (no
-# cap — the server's OFFSET on the rowid index makes deep steps cheap),
-# Down steps forward and blanks the line at the bottom. The index resets
-# on every new prompt (kav_precmd_record), so a fresh Up always starts at
-# the newest command.
+# Up/Down: walk all of history one distinct command per press — Up steps
+# back, Down steps forward and blanks the line at the bottom. The index
+# resets on every new prompt (kav_precmd_record), so a fresh Up always
+# starts at the newest command.
 #
-# Commands are prefetched in batches of 50: a bind -x widget clears the
-# line before running and redraws after, so a per-press daemon round trip
-# sat visibly between clear and redraw (flicker), and key-repeat presses
-# queued faster than ~15ms-per-press queries could drain (the line kept
-# stepping after the key was released). A cache hit is a pure memory read,
-# so clear+redraw go out in one write batch. The cache also makes the walk
-# a stable snapshot: a command recorded mid-walk can't shift the OFFSET
-# under the user's feet.
+# Commands are prefetched into _hist_step_cache in batches of 50, so a
+# press is a pure memory read with no daemon round trip; Down never
+# queries at all. The cache resets with the index on every prompt, and
+# the walk is a stable snapshot — a command recorded mid-walk can't
+# shift the OFFSET under the user's feet.
 _hist_step_idx=0
 _hist_step_cache=()
 _hist_step_eof=0
@@ -302,20 +293,12 @@ _hist_scope_sess() { _hist_picker 0 "$READLINE_LINE" "" "$_hist_sess"; }
 # --- capture: preexec (DEBUG trap) + precmd (PROMPT_COMMAND) ---
 #
 # bash has no preexec event, so kavkash synthesizes one with a DEBUG trap
-# (the same trick bash-preexec uses). Empirically, in interactive bash:
-#   - the trap fires before EVERY simple command, but NOT recursively (no
-#     re-entry inside the trap body) and NOT in subshells
-#   - it fires once per simple command of a line (`a && b` twice) and for
-#     commands in PROMPT_COMMAND — filtered by the history-index check
-#   - it fires for bind -x widget invocations (e.g. the picker) — filtered
-#     the same way, since history doesn't grow
-#   - it does NOT fire for function definitions — but the PROMPT_COMMAND
-#     fire at the next prompt sees the history growth and records the line
-#     then (real exit code, prompt-sized duration); the precmd fallback
-#     below is only the safety net
-#   - leading-space commands never reach history (HISTCONTROL=ignorespace)
-#     and BASH_COMMAND only holds the current simple command, so they can't
-#     be captured with the full line — documented limitation
+# (the same trick bash-preexec uses). In interactive bash the trap fires
+# before every simple command — but not recursively (no re-entry inside
+# the trap body), not in subshells, and not for function definitions
+# (the next prompt's history-growth check records those). Leading-space
+# commands never reach history (HISTCONTROL=ignorespace) — documented
+# limitation.
 #
 # Two guards:
 #   _hist_armed — set ONLY at the end of PROMPT_COMMAND, so startup files

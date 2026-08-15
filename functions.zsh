@@ -52,8 +52,7 @@ _hist_picker() {
     header="search · F6 all F7 dir F8 sess · shift-del delete · tab paste · enter run"
     # fzf stderr must stay on the terminal (2>/dev/null blanks the UI);
     # </dev/null keeps the tty out of its stdin — start:reload drives the
-    # list. count=0 = ALL distinct commands, loaded once (no window, no
-    # paging); fzf filters the search text in-memory; F6-F8 re-query the
+    # list; fzf filters the search text in-memory; F6-F8 re-query the
     # scope server-side via picker.sh switch. print()+accept NUL-frames
     # "key\0<cmd>\0"; awk turns that into "key\n<cmd>".
     picked=$(fzf --height 15 --no-sort --track --sync --highlight-line \
@@ -92,12 +91,12 @@ _hist_picker() {
     return 0
 }
 
-# Up/Down: walk ALL history one command per press — Up steps back one (no
-# cap — the server's OFFSET on the rowid index makes deep steps cheap),
-# Down steps forward and blanks the line at the bottom. The index resets
-# in _hist_precmd (every new prompt), so a fresh Up always starts at the
-# newest command. Commands are prefetched in batches of 50 — a per-press
-# daemon round trip made every repaint lag (see functions.bash).
+# Up/Down: walk all of history one distinct command per press — Up steps
+# back, Down steps forward and blanks the line at the bottom. The index
+# resets in _hist_precmd (every new prompt), so a fresh Up always starts
+# at the newest command. Commands are prefetched into _hist_step_cache in
+# batches of 50 — a press is a pure memory read with no daemon round trip
+# (see functions.bash for the cache design).
 typeset -g _hist_step_idx=0
 typeset -ga _hist_step_cache
 typeset -g _hist_step_eof=0

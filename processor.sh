@@ -9,13 +9,13 @@
 #   U id exit_code dur_ms   update (precmd)
 #   Q search query count cwd session
 #                           query -> NUL-separated rows; cwd/session scope
-#                           BEFORE the LIMIT (client-side filtering would
-#                           miss old rows past the window cut). cwd matches
-#                           the dir + subtree; "/" is a no-op.
+#                           BEFORE the LIMIT (filtering after the LIMIT
+#                           would miss matching rows). cwd matches the
+#                           dir + subtree; "/" is a no-op.
 # Rows carry raw command text — multi-line commands pass through intact
-# (fzf >= 0.53 renders them natively); only 0x1E/0x1F (sqlite3 -ascii
-# hazards) and \r are stripped. NUL framing is safe: command text can
-# never contain NUL.
+# (fzf renders them natively); only 0x1E/0x1F (sqlite3 -ascii hazards)
+# and \r are stripped. NUL framing is safe: command text can never
+# contain NUL.
 db_file="${KAV_DB_FILE:-$1}" # computed by includes.sh (sourced above); $1 fallback for manual invocation
 
 # Bound input size: a client that never sends a valid netstring would
@@ -134,13 +134,11 @@ case "$TYPE" in
     Q)
         # Query: newest `count` DISTINCT commands matching the scope at
         # `offset`, NUL-framed raw rows (GROUP BY command — one row per
-        # unique command, ordered by its newest occurrence). The picker
-        # always sends an empty query — fzf filters the loaded window
-        # in-memory — so the query field is accepted for protocol stability
-        # and ignored. The Up/Down stepper sends count=1 and walks the
-        # offset. cwd/session scope (empty = no filter) applies BEFORE the
-        # LIMIT: the picker's window is "newest N distinct commands
-        # matching the scope".
+        # unique command, ordered by its newest occurrence). The query
+        # field is accepted for protocol stability and ignored — fzf
+        # filters client-side. cwd/session scope (empty = no filter)
+        # applies BEFORE the LIMIT: the result is the newest N distinct
+        # commands matching the scope.
         action="$1"
         count="$3"
         cwd="$4"
@@ -167,14 +165,8 @@ case "$TYPE" in
         # hundreds of "ls") into one row per distinct command, ordered by
         # each command's newest occurrence (MAX(id)); consecutive repeats
         # were already collapsed at save time (W). The scope WHERE applies
-        # before the GROUP, so the window is "newest N distinct commands
-        # matching the scope".
-        # Dedup: GROUP BY command folds interspersed repeats (e.g.
-        # hundreds of "ls") into one row per distinct command, ordered by
-        # each command's newest occurrence (MAX(id)); consecutive repeats
-        # were already collapsed at save time (W). The scope WHERE applies
-        # before the GROUP, so the window is "newest N distinct commands
-        # matching the scope". The payload is command + its MAX(id) so the
+        # before the GROUP, so the result is the newest N distinct commands
+        # matching the scope. The payload is command + its MAX(id) so the
         # picker can act on the row (delete) while displaying only the
         # command (fzf --with-nth).
         sql="SELECT REPLACE(REPLACE(REPLACE(command, char(30), ''), char(31), ''), char(13), '') || char(31) || MAX(id) FROM history${where:+ WHERE $where} GROUP BY command ORDER BY MAX(id) DESC LIMIT $count OFFSET $offset;"

@@ -210,10 +210,12 @@ shell picker shift-delete → delete.sh ─────────────�
   via the `D` action, then reloads. Dir/session scope is applied
   server-side, so a scope switch (F6-F8) re-queries the whole scoped set.
   The scope lives in a temp file because fzf transforms run in a subshell.
-- Up/Down step through ALL history one distinct command per press: each
-  press is a `count=1` query at an increasing/decreasing `OFFSET` over
-  the deduplicated set — cheap, since the rowid index makes the OFFSET
-  scan a reverse leaf walk.
+- Up/Down step through all of history one distinct command per press,
+  served from an in-shell cache: the first press queries a batch of 50
+  (increasing `OFFSET` over the deduplicated set — cheap, since the
+  rowid index makes the OFFSET scan a reverse leaf walk) and later
+  presses read from memory. Down never queries; the cache resets at
+  every prompt.
 - `import.sh` — idempotent import from bash/zsh/fish history files and
   atuin (read via the `atuin` CLI: the store layout varies by version
   and v18+ stores are PASETO-encrypted, so the CLI is the only stable
