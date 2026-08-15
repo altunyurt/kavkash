@@ -5,6 +5,9 @@
 _SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 . "$_SCRIPT_DIR/includes.sh"
 
+# Version for the picker border label (read once per shell session).
+_hist_version=$(cat "$KAV_DATA_HOME/VERSION" 2> /dev/null || printf '?')
+
 # Interactive tty settings at shell start (before readline engages). fzf
 # leaves readline's raw mode behind; an eval'd command that reads the tty
 # needs echo/line editing/signals back — restore this before running it.
@@ -22,13 +25,13 @@ _hist_sock_up() {
     fi
     return 1
 }
-_hist_warn_daemon() {               # record path (preexec) — plain message
-    (( _hist_daemon_warned )) && return 0
+_hist_warn_daemon() { # record path (preexec) — plain message
+    ((_hist_daemon_warned)) && return 0
     _hist_daemon_warned=1
     printf 'kavkash: daemon not running — history is not being saved. Start it with: systemctl --user start kavkash (or run %s/server.sh &)\n' "$_SCRIPT_DIR" >&2
 }
-_hist_warn_daemon_widget() {        # bind -x widgets — leading newline so
-    (( _hist_daemon_warned )) && return 0   # readline's redraw can't eat it
+_hist_warn_daemon_widget() {            # bind -x widgets — leading newline so
+    ((_hist_daemon_warned)) && return 0 # readline's redraw can't eat it
     _hist_daemon_warned=1
     printf '\nkavkash: daemon not running — history is not being saved. Start it with: systemctl --user start kavkash (or run %s/server.sh &)\n' "$_SCRIPT_DIR" >&2
 }
@@ -49,10 +52,10 @@ _hist_warn_daemon_widget() {        # bind -x widgets — leading newline so
 # keyseqs) and non-ble.sh required; both fall back to atuin's
 # __atuin_accept_line print+eval in _hist_picker.
 _hist_macro_bash=0
-if (( BASH_VERSINFO[0] >= 5 || BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 3 )) \
-        && [[ -z ${BLE_ATTACHED-} ]]; then
+if ((BASH_VERSINFO[0] >= 5 || BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 3)) \
+    && [[ -z ${BLE_ATTACHED-} ]]; then
     _hist_macro_bash=1
-    _hist_macro_sentinel='\C-x\C-_A0\a'   # tail: no-op "", or accept-line on Enter
+    _hist_macro_sentinel='\C-x\C-_A0\a' # tail: no-op "", or accept-line on Enter
     _hist_macro_n=0
     for _hist_km in emacs vi-insert vi-command; do
         bind -m "$_hist_km" "\"$_hist_macro_sentinel\": \"\""
@@ -90,16 +93,16 @@ _hist_bind_widget() {
 # raw — multi-line rows display natively (fzf >= 0.53).
 _hist_picker() {
     local count="$1" init_q="${2:-}" cwd="${3:-}" session="${4:-}"
-    local picked key cmd scope_file label prompt picker
+    local picked key cmd scope_file prompt picker header
     if ! _hist_sock_up; then
         _hist_warn_daemon_widget
         return 0
     fi
-    _hist_armed=0   # disarm during the widget: the trap must not record the
-                    # widget's own commands (incl. the fallback's eval'd
-                    # command); the native-accept path re-arms at the end so
-                    # the accepted line records normally
-    if (( _hist_macro_bash )); then
+    _hist_armed=0 # disarm during the widget: the trap must not record the
+    # widget's own commands (incl. the fallback's eval'd
+    # command); the native-accept path re-arms at the end so
+    # the accepted line records normally
+    if ((_hist_macro_bash)); then
         # reset the sentinel tail to no-op for this run — a previous Enter
         # run left it bound to accept-line, and the queued sentinel after
         # this widget would otherwise execute instead of paste
@@ -109,11 +112,11 @@ _hist_picker() {
         unset _hist_km
     fi
     if [[ -n "$cwd" ]]; then
-        label="dir $cwd"; prompt="dir> "
+        prompt="dir> "
     elif [[ -n "$session" ]]; then
-        label="session"; prompt="sess> "
+        prompt="sess> "
     else
-        label="all"; prompt="search> "
+        prompt="search> "
     fi
     scope_file=$(mktemp) || {
         _hist_armed=1
@@ -121,6 +124,7 @@ _hist_picker() {
     }
     printf '%s\n%s\n' "$cwd" "$session" > "$scope_file"
     picker="$_SCRIPT_DIR/picker.sh"
+    header="search · F6 all F7 dir F8 sess · shift-del delete · tab paste · enter run"
     # fzf stderr must stay on the terminal (2>/dev/null blanks the UI);
     # </dev/null keeps the tty out of its stdin — start:reload drives the
     # list. count=0 = ALL distinct commands, loaded once (no window, no
@@ -132,7 +136,9 @@ _hist_picker() {
     picked=$(fzf --height 15 --no-sort --track --sync --highlight-line \
         --prompt "$prompt" --query "$init_q" --read0 --print0 \
         --delimiter $'\x1f' --with-nth 1 --accept-nth 1 \
-        --header "search · all · $label · F6 all F7 dir F8 sess · shift-del delete · tab paste · enter run" \
+        --header "$header" \
+        --border \
+        --border-label "kavkash v$_hist_version" \
         --bind "start:reload-sync:$picker load $count $scope_file" \
         --bind "shift-delete:execute-silent($_SCRIPT_DIR/delete.sh {2})+reload-sync:$picker load $count $scope_file" \
         --bind "f6:transform:$picker switch $scope_file '' '' all $count" \
@@ -150,7 +156,7 @@ _hist_picker() {
         cmd="${picked#*$'\n'}"
         if [[ -n "$cmd" ]]; then
             if [[ -z "$key" ]]; then
-                if (( _hist_macro_bash )); then
+                if ((_hist_macro_bash)); then
                     # Enter: native accept via the macro chain (machinery
                     # above) — set the buffer, swap the queued sentinel to
                     # accept-line. Readline accepts after this widget
@@ -179,7 +185,7 @@ _hist_picker() {
                         prompt_repr='$ '
                     fi
                     # strip bash's \[ \] markers (/) from the prompt
-                    prompt_repr=${prompt_repr//[$'\001\002']}
+                    prompt_repr=${prompt_repr//[$'\001\002']/}
                     printf '%s\n' "$prompt_repr$cmd"
                     history -s "$cmd"
                     READLINE_LINE=""
@@ -214,7 +220,7 @@ _hist_picker() {
             fi
         fi
     fi
-    _hist_armed=1   # re-arm on every exit path: the next typed line records again
+    _hist_armed=1 # re-arm on every exit path: the next typed line records again
 }
 
 # Up/Down: walk ALL history one command per press — Up steps back one (no
@@ -231,12 +237,12 @@ _hist_step_up() {
     fi
     _hist_step_idx=$((_hist_step_idx + 1))
     cmd=$("$_SCRIPT_DIR/query.sh" 1 "" "" "" $((_hist_step_idx - 1)) | tr '\0' '\n')
-    cmd=${cmd%$'\x1f'*}   # drop the \x1f<id> payload (Q now carries it)
+    cmd=${cmd%$'\x1f'*} # drop the \x1f<id> payload (Q now carries it)
     if [[ -n "$cmd" ]]; then
         READLINE_LINE="$cmd"
         READLINE_POINT=${#READLINE_LINE}
     else
-        _hist_step_idx=$((_hist_step_idx - 1))   # history exhausted — stay put
+        _hist_step_idx=$((_hist_step_idx - 1)) # history exhausted — stay put
     fi
 }
 _hist_step_down() {
@@ -245,7 +251,7 @@ _hist_step_down() {
         _hist_warn_daemon_widget
         return 0
     fi
-    if (( _hist_step_idx <= 1 )); then
+    if ((_hist_step_idx <= 1)); then
         _hist_step_idx=0
         READLINE_LINE=""
         READLINE_POINT=0
@@ -253,12 +259,12 @@ _hist_step_down() {
     fi
     _hist_step_idx=$((_hist_step_idx - 1))
     cmd=$("$_SCRIPT_DIR/query.sh" 1 "" "" "" $((_hist_step_idx - 1)) | tr '\0' '\n')
-    cmd=${cmd%$'\x1f'*}   # drop the \x1f<id> payload (Q now carries it)
+    cmd=${cmd%$'\x1f'*} # drop the \x1f<id> payload (Q now carries it)
     if [[ -n "$cmd" ]]; then
         READLINE_LINE="$cmd"
         READLINE_POINT=${#READLINE_LINE}
     else
-        _hist_step_idx=0   # defensive: the fetch came up empty
+        _hist_step_idx=0 # defensive: the fetch came up empty
         READLINE_LINE=""
         READLINE_POINT=0
     fi
@@ -310,7 +316,7 @@ _kav_hist_idx() {
 }
 
 kav_preexec_record() {
-    (( _hist_armed )) || return 0
+    ((_hist_armed)) || return 0
     # Daemon down: warn (throttled) and stay armed — the next command after
     # a restart records normally instead of silently losing history.
     if ! _hist_sock_up; then
@@ -321,7 +327,7 @@ kav_preexec_record() {
     line=$(HISTTIMEFORMAT='' builtin history 1)
     idx=$(_kav_hist_idx)
     [[ "$idx" =~ ^[0-9]+$ ]] || return 0
-    (( idx > _hist_last_idx )) || return 0   # bind -x widget / prompt noise
+    ((idx > _hist_last_idx)) || return 0 # bind -x widget / prompt noise
     cmd="${line#*[[:digit:]][* ] }"
     [[ -n "$cmd" ]] || return 0
     _hist_last_idx=$idx
@@ -337,8 +343,8 @@ kav_preexec_record() {
 }
 
 kav_precmd_record() {
-    local _hist_exit=$?    # capture FIRST — anything else clobbers it
-    _hist_step_idx=0       # Up/Down stepper starts fresh at every prompt
+    local _hist_exit=$? # capture FIRST — anything else clobbers it
+    _hist_step_idx=0    # Up/Down stepper starts fresh at every prompt
     if [[ -n "$_hist_corr" ]]; then
         local _now=$(date +%s%3N 2> /dev/null || date +%s)
         "$_SCRIPT_DIR/hook.sh" U "$_hist_corr" "$_hist_exit" "$((_now - _hist_t0))"
@@ -352,7 +358,7 @@ kav_precmd_record() {
     local line idx cmd
     line=$(HISTTIMEFORMAT='' builtin history 1)
     idx=$(_kav_hist_idx)
-    if (( _hist_initialized )); then
+    if ((_hist_initialized)); then
         cmd="${line#*[[:digit:]][* ] }"
         if [[ "$idx" =~ ^[0-9]+$ && $idx -gt _hist_last_idx && -n "$cmd" ]]; then
             _hist_last_idx=$idx
@@ -393,24 +399,24 @@ trap kav_preexec_record DEBUG
 #
 # fzf >= 0.54 required — older versions can't render the raw multi-line
 # rows the server sends; the picker is disabled, not degraded.
-_kav_fzf_ver=$(fzf --version 2>/dev/null | awk 'NR == 1 { print $1 }')
-if [ -n "$_kav_fzf_ver" ] && printf '%s\n' "$_kav_fzf_ver" | \
-        awk -F. 'NR == 1 { exit ($1 > 0 || $2 >= 54) ? 0 : 1 }'; then
-    if (( _hist_macro_bash )); then
+_kav_fzf_ver=$(fzf --version 2> /dev/null | awk 'NR == 1 { print $1 }')
+if [ -n "$_kav_fzf_ver" ] && printf '%s\n' "$_kav_fzf_ver" \
+    | awk -F. 'NR == 1 { exit ($1 > 0 || $2 >= 54) ? 0 : 1 }'; then
+    if ((_hist_macro_bash)); then
         # Macro-chain dispatch (atuin-borrowed, machinery above): the key
         # queues the sentinel chain; on Enter the widget swaps the tail to
         # accept-line and the command runs natively.
         _hist_bind_widget '\C-r' _hist_search
-        _hist_bind_widget '\e[17~' _hist_scope_all   # F6
-        _hist_bind_widget '\e[18~' _hist_scope_dir   # F7
-        _hist_bind_widget '\e[19~' _hist_scope_sess  # F8
+        _hist_bind_widget '\e[17~' _hist_scope_all  # F6
+        _hist_bind_widget '\e[18~' _hist_scope_dir  # F7
+        _hist_bind_widget '\e[19~' _hist_scope_sess # F8
     else
         # bash < 4.3 or ble.sh: direct bind -x + the print+eval Enter
         # fallback in _hist_picker (atuin's __atuin_accept_line).
         bind -x '"\C-r": _hist_search'
-        bind -x '"\e[17~": _hist_scope_all'   # F6
-        bind -x '"\e[18~": _hist_scope_dir'   # F7
-        bind -x '"\e[19~": _hist_scope_sess'  # F8
+        bind -x '"\e[17~": _hist_scope_all'  # F6
+        bind -x '"\e[18~": _hist_scope_dir'  # F7
+        bind -x '"\e[19~": _hist_scope_sess' # F8
     fi
     # Up/Down need no macro chain: the stepper only sets the line, Enter is
     # readline's default accept (no eval, no hook calls).

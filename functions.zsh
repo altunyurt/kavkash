@@ -1,7 +1,10 @@
 # kavkash zsh integration — source from .zshrc.
 # Shared paths from includes.sh (same dir as this file).
-_SCRIPT_DIR=${0:A:h}      # kavkash root, where hook.sh/query.sh/picker.sh live
+_SCRIPT_DIR=${0:A:h} # kavkash root, where hook.sh/query.sh/picker.sh live
 . "$_SCRIPT_DIR/includes.sh"
+
+# Version for the picker border label (read once per shell session).
+typeset -g _hist_version=$(cat "$KAV_DATA_HOME/VERSION" 2> /dev/null || printf '?')
 
 # Daemon liveness: every client call guards on the socket first — a dead
 # daemon must never die silently (recording stops, Up/Ctrl+R do nothing).
@@ -15,13 +18,13 @@ _hist_sock_up() {
     fi
     return 1
 }
-_hist_warn_daemon() {               # record path (preexec) — plain message
-    (( _hist_daemon_warned )) && return 0
+_hist_warn_daemon() { # record path (preexec) — plain message
+    ((_hist_daemon_warned)) && return 0
     _hist_daemon_warned=1
     printf 'kavkash: daemon not running — history is not being saved. Start it with: systemctl --user start kavkash (or run %s/server.sh &)\n' "$_SCRIPT_DIR" >&2
 }
-_hist_warn_daemon_widget() {        # zle widgets — leading newline so the
-    (( _hist_daemon_warned )) && return 0   # redraw can't eat the message
+_hist_warn_daemon_widget() {            # zle widgets — leading newline so the
+    ((_hist_daemon_warned)) && return 0 # redraw can't eat the message
     _hist_daemon_warned=1
     printf '\nkavkash: daemon not running — history is not being saved. Start it with: systemctl --user start kavkash (or run %s/server.sh &)\n' "$_SCRIPT_DIR" >&2
 }
@@ -31,21 +34,22 @@ _hist_warn_daemon_widget() {        # zle widgets — leading newline so the
 # RUNS the picked command — zsh can from a widget).
 _hist_picker() {
     local count="$1" init_q="${2:-}" cwd="${3:-}" session="${4:-}"
-    local picked key cmd scope_file label prompt picker
+    local picked key cmd scope_file prompt picker header
     if ! _hist_sock_up; then
         _hist_warn_daemon_widget
         return 0
     fi
     if [[ -n "$cwd" ]]; then
-        label="dir $cwd"; prompt="dir> "
+        prompt="dir> "
     elif [[ -n "$session" ]]; then
-        label="session"; prompt="sess> "
+        prompt="sess> "
     else
-        label="all"; prompt="search> "
+        prompt="search> "
     fi
     scope_file=$(mktemp) || return 0
     printf '%s\n%s\n' "$cwd" "$session" > "$scope_file"
     picker="$_SCRIPT_DIR/picker.sh"
+    header="search · F6 all F7 dir F8 sess · shift-del delete · tab paste · enter run"
     # fzf stderr must stay on the terminal (2>/dev/null blanks the UI);
     # </dev/null keeps the tty out of its stdin — start:reload drives the
     # list. count=0 = ALL distinct commands, loaded once (no window, no
@@ -55,7 +59,9 @@ _hist_picker() {
     picked=$(fzf --height 15 --no-sort --track --sync --highlight-line \
         --prompt "$prompt" --query "$init_q" --read0 --print0 \
         --delimiter $'\x1f' --with-nth 1 --accept-nth 1 \
-        --header "search · all · $label · F6 all F7 dir F8 sess · shift-del delete · tab paste · enter run" \
+        --header "$header" \
+        --border \
+        --border-label "kavkash v$_hist_version" \
         --bind "start:reload-sync:$picker load $count $scope_file" \
         --bind "shift-delete:execute-silent($_SCRIPT_DIR/delete.sh {2})+reload-sync:$picker load $count $scope_file" \
         --bind "f6:transform:$picker switch $scope_file '' '' all $count" \
@@ -100,12 +106,12 @@ _hist_step_up() {
     fi
     _hist_step_idx=$((_hist_step_idx + 1))
     cmd=$("$_SCRIPT_DIR/query.sh" 1 "" "" "" $((_hist_step_idx - 1)) | tr '\0' '\n')
-    cmd=${cmd%$'\x1f'*}   # drop the \x1f<id> payload (Q now carries it)
+    cmd=${cmd%$'\x1f'*} # drop the \x1f<id> payload (Q now carries it)
     if [ -n "$cmd" ]; then
         BUFFER="$cmd"
         CURSOR=${#BUFFER}
     else
-        _hist_step_idx=$((_hist_step_idx - 1))   # history exhausted — stay put
+        _hist_step_idx=$((_hist_step_idx - 1)) # history exhausted — stay put
     fi
 }
 _hist_step_down() {
@@ -114,7 +120,7 @@ _hist_step_down() {
         _hist_warn_daemon_widget
         return 0
     fi
-    if (( _hist_step_idx <= 1 )); then
+    if ((_hist_step_idx <= 1)); then
         _hist_step_idx=0
         BUFFER=""
         CURSOR=0
@@ -122,12 +128,12 @@ _hist_step_down() {
     fi
     _hist_step_idx=$((_hist_step_idx - 1))
     cmd=$("$_SCRIPT_DIR/query.sh" 1 "" "" "" $((_hist_step_idx - 1)) | tr '\0' '\n')
-    cmd=${cmd%$'\x1f'*}   # drop the \x1f<id> payload (Q now carries it)
+    cmd=${cmd%$'\x1f'*} # drop the \x1f<id> payload (Q now carries it)
     if [ -n "$cmd" ]; then
         BUFFER="$cmd"
         CURSOR=${#BUFFER}
     else
-        _hist_step_idx=0   # defensive: the fetch came up empty
+        _hist_step_idx=0 # defensive: the fetch came up empty
         BUFFER=""
         CURSOR=0
     fi
@@ -146,9 +152,9 @@ _hist_scope_sess() { _hist_picker 0 "$BUFFER" "" "$_hist_sess"; }
 #
 # fzf >= 0.54 required — older versions can't render the raw multi-line
 # rows the server sends; the widgets are not registered.
-_kav_fzf_ver=$(fzf --version 2>/dev/null | awk 'NR == 1 { print $1 }')
-if [ -n "$_kav_fzf_ver" ] && printf '%s\n' "$_kav_fzf_ver" | \
-        awk -F. 'NR == 1 { exit ($1 > 0 || $2 >= 54) ? 0 : 1 }'; then
+_kav_fzf_ver=$(fzf --version 2> /dev/null | awk 'NR == 1 { print $1 }')
+if [ -n "$_kav_fzf_ver" ] && printf '%s\n' "$_kav_fzf_ver" \
+    | awk -F. 'NR == 1 { exit ($1 > 0 || $2 >= 54) ? 0 : 1 }'; then
     zle -N kavkash-search _hist_search
     zle -N kavkash-step-up _hist_step_up
     zle -N kavkash-step-down _hist_step_down
@@ -159,9 +165,9 @@ if [ -n "$_kav_fzf_ver" ] && printf '%s\n' "$_kav_fzf_ver" | \
     bindkey '^R' kavkash-search
     bindkey '^[[A' kavkash-step-up
     bindkey '^[[B' kavkash-step-down
-    bindkey '^[[17~' kavkash-scope-all   # F6
-    bindkey '^[[18~' kavkash-scope-dir   # F7
-    bindkey '^[[19~' kavkash-scope-sess  # F8
+    bindkey '^[[17~' kavkash-scope-all  # F6
+    bindkey '^[[18~' kavkash-scope-dir  # F7
+    bindkey '^[[19~' kavkash-scope-sess # F8
 else
     printf 'kavkash: fzf >= 0.54 required (found %s) — picker disabled; Up/Ctrl-R keep shell defaults\n' \
         "${_kav_fzf_ver:-not installed}" >&2
@@ -190,15 +196,15 @@ _hist_preexec() {
         _hist_warn_daemon
         return 0
     fi
-    _hist_t0=$(date +%s%3N 2>/dev/null || echo "$(date +%s)000")
+    _hist_t0=$(date +%s%3N 2> /dev/null || echo "$(date +%s)000")
     _hist_corr=$("$_SCRIPT_DIR/hook.sh" W "$1" "$PWD" "$_hist_sess")
 }
 
 _hist_precmd() {
     local _hist_exit=$?
-    _hist_step_idx=0       # Up/Down stepper starts fresh at every prompt
+    _hist_step_idx=0 # Up/Down stepper starts fresh at every prompt
     if [ -n "$_hist_corr" ]; then
-        local _now=$(date +%s%3N 2>/dev/null || echo "$(date +%s)000")
+        local _now=$(date +%s%3N 2> /dev/null || echo "$(date +%s)000")
         "$_SCRIPT_DIR/hook.sh" U "$_hist_corr" "$_hist_exit" "$((_now - _hist_t0))"
         _hist_corr=""
     fi

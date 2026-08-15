@@ -13,6 +13,11 @@ end
 set -g _HIST_SCRIPT_DIR (dirname (status filename))
 set -g _HIST_HOOK (realpath "$_HIST_SCRIPT_DIR/hook.sh")
 set -g _HIST_PICKER (realpath "$_HIST_SCRIPT_DIR/picker.sh")
+# Version for the picker border label (read once per shell session).
+set -g _hist_version (cat "$_HIST_SCRIPT_DIR/VERSION" 2>/dev/null)
+if test -z "$_hist_version"
+    set -g _hist_version '?'
+end
 
 # Daemon liveness: every client call guards on the socket first — a dead
 # daemon must never die silently (recording stops, Up/Ctrl+R do nothing).
@@ -41,19 +46,17 @@ function _hist_picker
         _kav_warn_daemon
         return 0
     end
-    set -l label all
     set -l prompt "search> "
     if test -n "$cwd"
-        set label "dir $cwd"
         set prompt "dir> "
     else if test -n "$session"
-        set label "session"
         set prompt "sess> "
     end
     set -l scope_file (mktemp)
     or return 0
-    printf '%s\n%s\n' "$cwd" "$session" > "$scope_file"
+    printf '%s\n%s\n' "$cwd" "$session" >"$scope_file"
     set -l picker $_HIST_PICKER
+    set -l header "search · F6 all F7 dir F8 sess · shift-del delete · tab paste · enter run"
     # fzf stderr must stay on the terminal (2>/dev/null blanks the UI);
     # </dev/null keeps the tty out of its stdin — start:reload drives the
     # list. count=0 = ALL distinct commands, loaded once (no window, no
@@ -66,14 +69,15 @@ function _hist_picker
     fzf --height 15 --no-sort --track --sync --highlight-line \
         --prompt "$prompt" --query "$init_q" --read0 --print0 \
         --delimiter "\x1f" --with-nth 1 --accept-nth 1 \
-        --header "search · all · $label · F6 all F7 dir F8 sess · shift-del delete · tab paste · enter run" \
+        --header "$header" \
+        --border \
+        --border-label "kavkash v$_hist_version" \
         --bind "start:reload-sync:$picker load $count $scope_file" \
         --bind "shift-delete:execute-silent($_HIST_SCRIPT_DIR/delete.sh {2})+reload-sync:$picker load $count $scope_file" \
         --bind "f6:transform:$picker switch $scope_file '' '' all $count" \
         --bind "f7:transform:$picker switch $scope_file '$PWD' '' dir $count" \
         --bind "f8:transform:$picker switch $scope_file '' '$_hist_sess' sess $count" \
-        --bind 'enter:print()+accept,tab:print(tab)+accept' \
-        < /dev/null \
+        --bind 'enter:print()+accept,tab:print(tab)+accept' </dev/null \
         | awk 'BEGIN { RS = "\0" }
             NR == 1 { key = $0; next }
             NR == 2 { printf "%s\n%s", key, $0 }' | read -z picked
@@ -86,12 +90,12 @@ function _hist_picker
     test -n "$picked"; or return 0
     set -l key (printf '%s' "$picked" | head -n1)
     set -l cmd
-    printf '%s' "$picked" | sed '1d' | read -z cmd
+    printf '%s' "$picked" | sed 1d | read -z cmd
     test -n "$cmd"; or return 0
     # read -z keeps trailing newlines — awk above omits the final one, or
     # the buffer would end with a blank, prompt-less line.
     commandline -r "$cmd"
-    if test "$key" = "tab"
+    if test "$key" = tab
         # Tab: paste only, edit, then Enter runs it.
     else
         # Enter: paste and run.
@@ -113,12 +117,12 @@ function _hist_step_up
     set -g _kav_step_idx (math $_kav_step_idx + 1)
     set -l cmd ""
     "$_HIST_SCRIPT_DIR/query.sh" 1 "" "" "" (math $_kav_step_idx - 1) | read -z cmd
-    set -l cmd (string replace -r '\x1f.*' '' "$cmd" | string collect)   # drop the \x1f<id> payload
+    set -l cmd (string replace -r '\x1f.*' '' "$cmd" | string collect) # drop the \x1f<id> payload
     if test -n "$cmd"
         commandline -r "$cmd"
         commandline -f repaint
     else
-        set -g _kav_step_idx (math $_kav_step_idx - 1)   # history exhausted — stay put
+        set -g _kav_step_idx (math $_kav_step_idx - 1) # history exhausted — stay put
     end
 end
 
@@ -137,12 +141,12 @@ function _hist_step_down
     set -g _kav_step_idx (math $_kav_step_idx - 1)
     set -l cmd ""
     "$_HIST_SCRIPT_DIR/query.sh" 1 "" "" "" (math $_kav_step_idx - 1) | read -z cmd
-    set -l cmd (string replace -r '\x1f.*' '' "$cmd" | string collect)   # drop the \x1f<id> payload
+    set -l cmd (string replace -r '\x1f.*' '' "$cmd" | string collect) # drop the \x1f<id> payload
     if test -n "$cmd"
         commandline -r "$cmd"
         commandline -f repaint
     else
-        set -g _kav_step_idx 0   # defensive: the fetch came up empty
+        set -g _kav_step_idx 0 # defensive: the fetch came up empty
         commandline -r ""
         commandline -f repaint
     end
@@ -198,7 +202,7 @@ end
 # exit code — captured FIRST before anything else runs.
 function _hist_postexec --on-event fish_postexec
     set -l s $status
-    set -e _kav_step_idx   # Up/Down stepper starts fresh after every command
+    set -e _kav_step_idx # Up/Down stepper starts fresh after every command
     if test -n "$__hist_corr"
         set -l now (date +%s%3N 2>/dev/null)
         [ -n "$now" ]; or set now (date +%s)000
