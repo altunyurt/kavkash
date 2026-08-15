@@ -228,22 +228,43 @@ _hist_picker() {
 # Down steps forward and blanks the line at the bottom. The index resets
 # on every new prompt (kav_precmd_record), so a fresh Up always starts at
 # the newest command.
+#
+# Commands are prefetched in batches of 50: a bind -x widget clears the
+# line before running and redraws after, so a per-press daemon round trip
+# sat visibly between clear and redraw (flicker), and key-repeat presses
+# queued faster than ~15ms-per-press queries could drain (the line kept
+# stepping after the key was released). A cache hit is a pure memory read,
+# so clear+redraw go out in one write batch. The cache also makes the walk
+# a stable snapshot: a command recorded mid-walk can't shift the OFFSET
+# under the user's feet.
 _hist_step_idx=0
+_hist_step_cache=()
+_hist_step_eof=0
+_hist_step_batch=50
 _hist_step_up() {
     local cmd
     if ! _hist_sock_up; then
         _hist_warn_daemon_widget
         return 0
     fi
-    _hist_step_idx=$((_hist_step_idx + 1))
-    cmd=$("$_SCRIPT_DIR/query.sh" 1 "" "" "" $((_hist_step_idx - 1)) | tr '\0' '\n')
-    cmd=${cmd%$'\x1f'*} # drop the \x1f<id> payload (Q now carries it)
-    if [[ -n "$cmd" ]]; then
-        READLINE_LINE="$cmd"
-        READLINE_POINT=${#READLINE_LINE}
-    else
-        _hist_step_idx=$((_hist_step_idx - 1)) # history exhausted — stay put
+    # Refill when stepping past the cache (one daemon call per 50 presses).
+    if ((_hist_step_eof == 0 && _hist_step_idx >= ${#_hist_step_cache[@]})); then
+        local -a _hist_batch=()
+        local _hist_item
+        while IFS= read -r -d '' _hist_item; do
+            _hist_batch+=("${_hist_item%$'\x1f'*}") # drop the \x1f<id> payload
+        done < <("$_SCRIPT_DIR/query.sh" "$_hist_step_batch" "" "" "" "$_hist_step_idx")
+        if ((${#_hist_batch[@]} == 0)); then
+            _hist_step_eof=1
+            return 0 # history exhausted — stay put
+        fi
+        ((${#_hist_batch[@]} < _hist_step_batch)) && _hist_step_eof=1
+        _hist_step_cache+=("${_hist_batch[@]}")
     fi
+    cmd=${_hist_step_cache[_hist_step_idx]}
+    _hist_step_idx=$((_hist_step_idx + 1))
+    READLINE_LINE="$cmd"
+    READLINE_POINT=${#READLINE_LINE}
 }
 _hist_step_down() {
     local cmd
@@ -258,13 +279,13 @@ _hist_step_down() {
         return
     fi
     _hist_step_idx=$((_hist_step_idx - 1))
-    cmd=$("$_SCRIPT_DIR/query.sh" 1 "" "" "" $((_hist_step_idx - 1)) | tr '\0' '\n')
-    cmd=${cmd%$'\x1f'*} # drop the \x1f<id> payload (Q now carries it)
+    # No query here: Down only re-treads ground Up already fetched.
+    cmd=${_hist_step_cache[_hist_step_idx - 1]}
     if [[ -n "$cmd" ]]; then
         READLINE_LINE="$cmd"
         READLINE_POINT=${#READLINE_LINE}
     else
-        _hist_step_idx=0 # defensive: the fetch came up empty
+        _hist_step_idx=0 # defensive: the cache was cleared mid-walk
         READLINE_LINE=""
         READLINE_POINT=0
     fi
@@ -345,6 +366,8 @@ kav_preexec_record() {
 kav_precmd_record() {
     local _hist_exit=$? # capture FIRST — anything else clobbers it
     _hist_step_idx=0    # Up/Down stepper starts fresh at every prompt
+    _hist_step_cache=()
+    _hist_step_eof=0
     if [[ -n "$_hist_corr" ]]; then
         local _now=$(date +%s%3N 2> /dev/null || date +%s)
         "$_SCRIPT_DIR/hook.sh" U "$_hist_corr" "$_hist_exit" "$((_now - _hist_t0))"

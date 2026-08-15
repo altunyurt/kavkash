@@ -96,23 +96,37 @@ _hist_picker() {
 # cap — the server's OFFSET on the rowid index makes deep steps cheap),
 # Down steps forward and blanks the line at the bottom. The index resets
 # in _hist_precmd (every new prompt), so a fresh Up always starts at the
-# newest command.
+# newest command. Commands are prefetched in batches of 50 — a per-press
+# daemon round trip made every repaint lag (see functions.bash).
 typeset -g _hist_step_idx=0
+typeset -ga _hist_step_cache
+typeset -g _hist_step_eof=0
+typeset -g _hist_step_batch=50
 _hist_step_up() {
     local cmd
     if ! _hist_sock_up; then
         _hist_warn_daemon_widget
         return 0
     fi
-    _hist_step_idx=$((_hist_step_idx + 1))
-    cmd=$("$_SCRIPT_DIR/query.sh" 1 "" "" "" $((_hist_step_idx - 1)) | tr '\0' '\n')
-    cmd=${cmd%$'\x1f'*} # drop the \x1f<id> payload (Q now carries it)
-    if [ -n "$cmd" ]; then
-        BUFFER="$cmd"
-        CURSOR=${#BUFFER}
-    else
-        _hist_step_idx=$((_hist_step_idx - 1)) # history exhausted — stay put
+    # Refill when stepping past the cache (one daemon call per 50 presses).
+    if ((_hist_step_eof == 0 && _hist_step_idx >= ${#_hist_step_cache[@]})); then
+        local _hist_item
+        local -a _hist_batch
+        _hist_batch=()
+        while IFS= read -r -d '' _hist_item; do
+            _hist_batch+=("${_hist_item%$'\x1f'*}") # drop the \x1f<id> payload
+        done < <("$_SCRIPT_DIR/query.sh" "$_hist_step_batch" "" "" "" "$_hist_step_idx")
+        if ((${#_hist_batch[@]} == 0)); then
+            _hist_step_eof=1
+            return 0 # history exhausted — stay put
+        fi
+        ((${#_hist_batch[@]} < _hist_step_batch)) && _hist_step_eof=1
+        _hist_step_cache+=("${_hist_batch[@]}")
     fi
+    cmd=${_hist_step_cache[_hist_step_idx + 1]} # zsh arrays are 1-based
+    _hist_step_idx=$((_hist_step_idx + 1))
+    BUFFER="$cmd"
+    CURSOR=${#BUFFER}
 }
 _hist_step_down() {
     local cmd
@@ -127,13 +141,13 @@ _hist_step_down() {
         return
     fi
     _hist_step_idx=$((_hist_step_idx - 1))
-    cmd=$("$_SCRIPT_DIR/query.sh" 1 "" "" "" $((_hist_step_idx - 1)) | tr '\0' '\n')
-    cmd=${cmd%$'\x1f'*} # drop the \x1f<id> payload (Q now carries it)
+    # No query here: Down only re-treads ground Up already fetched.
+    cmd=${_hist_step_cache[_hist_step_idx]} # 1-based
     if [ -n "$cmd" ]; then
         BUFFER="$cmd"
         CURSOR=${#BUFFER}
     else
-        _hist_step_idx=0 # defensive: the fetch came up empty
+        _hist_step_idx=0 # defensive: the cache was cleared mid-walk
         BUFFER=""
         CURSOR=0
     fi
@@ -203,6 +217,8 @@ _hist_preexec() {
 _hist_precmd() {
     local _hist_exit=$?
     _hist_step_idx=0 # Up/Down stepper starts fresh at every prompt
+    _hist_step_cache=()
+    _hist_step_eof=0
     if [ -n "$_hist_corr" ]; then
         local _now=$(date +%s%3N 2> /dev/null || echo "$(date +%s)000")
         "$_SCRIPT_DIR/hook.sh" U "$_hist_corr" "$_hist_exit" "$((_now - _hist_t0))"

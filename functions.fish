@@ -104,26 +104,46 @@ function _hist_picker
 end
 
 # Up/Down: walk ALL history one command per press — Up steps back one (no
-# cap — the server's OFFSET on the rowid index makes deep steps cheap),
-# Down steps forward and blanks the line at the bottom. The index resets
-# after every executed command (_hist_postexec) and on Ctrl+C, so a fresh
-# Up always starts at the newest command.
+# cap), Down steps forward and blanks the line at the bottom. The index
+# resets after every executed command (_hist_postexec) and on Ctrl+C, so a
+# fresh Up always starts at the newest command.
+#
+# Commands are prefetched in batches of 50: a per-press daemon round trip
+# made every repaint lag, and key-repeat presses queued faster than the
+# queries could drain. Cache hits are pure memory reads. The cache also
+# makes the walk a stable snapshot: a command recorded mid-walk can't
+# shift the OFFSET under the user's feet.
 function _hist_step_up
     _kav_sock_up; or begin
         _kav_warn_daemon
         return 0
     end
     set -q _kav_step_idx; or set -g _kav_step_idx 0
-    set -g _kav_step_idx (math $_kav_step_idx + 1)
-    set -l cmd ""
-    "$_HIST_SCRIPT_DIR/query.sh" 1 "" "" "" (math $_kav_step_idx - 1) | read -z cmd
-    set -l cmd (string replace -r '\x1f.*' '' "$cmd" | string collect) # drop the \x1f<id> payload
-    if test -n "$cmd"
-        commandline -r "$cmd"
-        commandline -f repaint
-    else
-        set -g _kav_step_idx (math $_kav_step_idx - 1) # history exhausted — stay put
+    set -q _kav_step_cache; or set -g _kav_step_cache
+    set -q _kav_step_eof; or set -g _kav_step_eof 0
+    # Refill when stepping past the cache (one daemon call per 50 presses).
+    # fish vars can't hold NUL, so the NUL-framed batch is staged through a
+    # temp file and read back one record per `read -z`; awk strips the
+    # \x1f<id> payload while the framing is still NUL-safe.
+    if test $_kav_step_idx -ge (count $_kav_step_cache)
+        test $_kav_step_eof -eq 1; and return 0
+        set -l _kav_tmp (mktemp)
+        "$_HIST_SCRIPT_DIR/query.sh" 50 "" "" "" $_kav_step_idx \
+            | awk 'BEGIN { RS = ORS = "\0" } { sub(/\x1f[^\x1f]*$/, ""); print }' >$_kav_tmp
+        set -l _kav_have (count $_kav_step_cache)
+        while read -z _kav_item
+            set -a _kav_step_cache $_kav_item
+        end <$_kav_tmp
+        rm -f $_kav_tmp
+        if test (math (count $_kav_step_cache) - $_kav_have) -lt 50
+            set -g _kav_step_eof 1
+        end
+        if test $_kav_step_idx -ge (count $_kav_step_cache)
+            return 0 # history exhausted — stay put
+        end
     end
+    set -g _kav_step_idx (math $_kav_step_idx + 1)
+    commandline -r $_kav_step_cache[$_kav_step_idx]
 end
 
 function _hist_step_down
@@ -135,20 +155,15 @@ function _hist_step_down
     if test $_kav_step_idx -le 1
         set -g _kav_step_idx 0
         commandline -r ""
-        commandline -f repaint
         return
     end
     set -g _kav_step_idx (math $_kav_step_idx - 1)
-    set -l cmd ""
-    "$_HIST_SCRIPT_DIR/query.sh" 1 "" "" "" (math $_kav_step_idx - 1) | read -z cmd
-    set -l cmd (string replace -r '\x1f.*' '' "$cmd" | string collect) # drop the \x1f<id> payload
-    if test -n "$cmd"
-        commandline -r "$cmd"
-        commandline -f repaint
+    # No query here: Down only re-treads ground Up already fetched.
+    if set -q _kav_step_cache[$_kav_step_idx]
+        commandline -r $_kav_step_cache[$_kav_step_idx]
     else
-        set -g _kav_step_idx 0 # defensive: the fetch came up empty
+        set -g _kav_step_idx 0 # defensive: the cache was cleared mid-walk
         commandline -r ""
-        commandline -f repaint
     end
 end
 
@@ -203,6 +218,8 @@ end
 function _hist_postexec --on-event fish_postexec
     set -l s $status
     set -e _kav_step_idx # Up/Down stepper starts fresh after every command
+    set -e _kav_step_cache
+    set -g _kav_step_eof 0
     if test -n "$__hist_corr"
         set -l now (date +%s%3N 2>/dev/null)
         [ -n "$now" ]; or set now (date +%s)000
@@ -254,8 +271,8 @@ if test -n "$_kav_fzf_ver"; and printf '%s\n' "$_kav_fzf_ver" | awk -F. 'NR == 1
         bind --user -M insert \e\[19~ _hist_scope_sess
         # Ctrl+C: cancel AND reset the stepper index (postexec doesn't fire
         # for a cancelled line); bound in both default and insert modes.
-        bind --user \cc "set -e _kav_step_idx; commandline -f cancel-commandline"
-        bind --user -M insert \cc "set -e _kav_step_idx; commandline -f cancel-commandline"
+        bind --user \cc "set -e _kav_step_idx _kav_step_cache; set -g _kav_step_eof 0; commandline -f cancel-commandline"
+        bind --user -M insert \cc "set -e _kav_step_idx _kav_step_cache; set -g _kav_step_eof 0; commandline -f cancel-commandline"
     end
 
     # Apply bindings now: fish only auto-calls fish_user_key_bindings at
