@@ -28,6 +28,13 @@ case "$MODE" in
         SESSION="${4:-}"
         # Skip empty commands (defensive — shouldn't happen but harmless).
         [ -z "$CMD" ] && exit 0
+        # Shell convention: a command starting with whitespace is never
+        # saved (bash's HISTCONTROL=ignorespace, fish's built-in skip).
+        # Only the first character decides — indented continuation lines
+        # of a multi-line command are unaffected.
+        case "$CMD" in
+            ' '* | '	'*) exit 0 ;;
+        esac
         ID=$(kav_new_id)
         # Wire: cmd, cwd, id, session — id stays 3rd so a pre-session hook
         # (no session field) still decodes correctly on this server.

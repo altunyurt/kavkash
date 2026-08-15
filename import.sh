@@ -146,6 +146,12 @@ emit() {
     exit=${5:-}
     src=${6:-}
     [ -n "$cmd" ] || return 0
+    # Shell convention: a command starting with whitespace is never saved
+    # (see hook.sh W). Only the first character decides — indented
+    # continuation lines of a multi-line command are unaffected.
+    case "$cmd" in
+        ' '* | '	'*) return 0 ;;
+    esac
     case "$ts" in '' | *[!0-9]*) ts=$(((PSEUDO_BASE + counter) * 1000000)) ;; esac
     printf '%s\037%s\037%s\037%s\037%s\037%s\036' "$ts" "$cmd" "$cwd" "$dur" "$exit" "$src" >&3
 }

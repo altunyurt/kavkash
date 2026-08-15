@@ -297,8 +297,8 @@ _hist_scope_sess() { _hist_picker 0 "$READLINE_LINE" "" "$_hist_sess"; }
 # before every simple command — but not recursively (no re-entry inside
 # the trap body), not in subshells, and not for function definitions
 # (the next prompt's history-growth check records those). Leading-space
-# commands never reach history (HISTCONTROL=ignorespace) — documented
-# limitation.
+# commands never reach history (HISTCONTROL=ignorespace) — and hook.sh
+# skips them anyway, so they are never saved.
 #
 # Two guards:
 #   _hist_armed — set ONLY at the end of PROMPT_COMMAND, so startup files

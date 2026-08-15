@@ -169,7 +169,10 @@ files are never touched — remove the `source` line yourself.
     (idempotent; `--all` imports everything)
 
 Trailing whitespace on commands is trimmed on save — `ls ` and `ls`
-are the same command, and dedup folds any old variants.
+are the same command, and dedup folds any old variants. A command
+starting with whitespace is never saved (the shell convention —
+`HISTCONTROL=ignorespace` / fish's built-in skip), in live recording
+and in imports alike.
 
 `rm -f ~/.local/share/kavkash/history.db` wipes everything; the daemon
 recreates the schema on its next start.
