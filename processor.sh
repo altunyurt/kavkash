@@ -95,6 +95,7 @@ case "$TYPE" in
         # the response id must not be delayed, and stdout is the response
         # channel — silenced; stderr still reaches the server log).
         ( kav_maybe_backup "$_SCRIPT_DIR/backup.sh" > /dev/null ) &
+        kav_rotate_log   # cap server.log (raw handler stderr also lands there)
         cwd="$2"
         id="$3"
         session="$4"
@@ -129,6 +130,7 @@ case "$TYPE" in
                     n=$((n + 1))
                     [ "$n" -lt 100 ] || break
                 done
+                [ "$n" -lt 100 ] || kav_log "write failed after $n id-bump retries (insert error)"
                 ;;
         esac
         ;;

@@ -10,7 +10,7 @@ _SCRIPT_DIR="$(dirname -- "$(realpath -- "$0")")"
 if [ -f "$KAV_PID_FILE" ]; then
     old_pid=$(cat "$KAV_PID_FILE" 2> /dev/null || true)
     if [ -n "$old_pid" ] && kill -0 "$old_pid" 2> /dev/null; then
-        printf "kavkash: a daemon is already running (pid %s) — leaving it as is\n" "$old_pid" >&2
+        kav_log "a daemon is already running (pid $old_pid) — leaving it as is"
         # Exit 0 ("success"): the service is satisfied — another instance is
         # live. An exit 1 here would make systemd's Restart=on-abnormal unit
         # retry every RestartSec until the foreign daemon dies (a hot
@@ -35,14 +35,16 @@ kav_ensure_history_schema
 if kav_db "$KAV_DB_FILE" 'PRAGMA integrity_check;' 2> /dev/null | grep -qx ok; then
     rm -f "$KAV_RUNTIME_DIR/integrity_failed"
 else
-    echo "kavkash: integrity check FAILED for $KAV_DB_FILE — the database may be corrupt" >&2
-    echo "kavkash: restore the newest snapshot with: kavkash restore <history.db.TIMESTAMP>" >&2
+    kav_log "integrity check FAILED for $KAV_DB_FILE — the database may be corrupt"
+    kav_log "restore the newest snapshot with: kavkash restore <history.db.TIMESTAMP>"
     : > "$KAV_RUNTIME_DIR/integrity_failed"
 fi
 
 # Daily snapshot at boot (the per-command trigger covers days without a
 # restart).
 kav_maybe_backup "$_SCRIPT_DIR/backup.sh"
+# Cap server.log at boot (the per-W call covers the rest of the day).
+kav_rotate_log
 
 # Remove stale socket file from a previous crash
 rm -f "$KAV_SOCK_FILE"

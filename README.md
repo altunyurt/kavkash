@@ -73,6 +73,9 @@ journalctl --user -u kavkash.service -f     # logs
 Note: without `loginctl enable-linger <user>`, the service stops when
 you log out of every session.
 
+Daemon messages are also forwarded to syslog/journald (via `logger`)
+when available; `server.log` keeps the raw error stream, capped at 1 MB.
+
 **Without systemd** (`KAVKASH_NO_SYSTEMD=1`, containers, …): start the
 daemon once per login session:
 

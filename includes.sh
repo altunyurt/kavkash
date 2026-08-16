@@ -38,6 +38,25 @@ kav_new_id() {
 # process, would die with that process anyway).
 kav_db() { sqlite3 -cmd '.timeout 5000' "$@"; }
 
+# Cap server.log at 1 MB — the raw stderr of per-connection handlers also
+# lands there (socat 2>>), outside kav_log's own check. Called at daemon
+# boot and on every W, so the file can't grow unbounded; journald rotates
+# its own side of the logs.
+kav_rotate_log() {
+    [ -f "$KAV_RUNTIME_DIR/server.log" ] || return 0
+    size=$(stat -c %s "$KAV_RUNTIME_DIR/server.log" 2> /dev/null || echo 0)
+    [ "${size:-0}" -gt 1048576 ] && : > "$KAV_RUNTIME_DIR/server.log"
+}
+
+# kav_log — daemon logging. Writes to stderr (the daemon's log stream:
+# server.log under socat, journald under systemd) and forwards to
+# syslog/journald via `logger` when available.
+kav_log() {
+    kav_rotate_log
+    printf 'kavkash: %s\n' "$*" >&2
+    command -v logger > /dev/null 2>&1 && logger -t kavkash -- "$*"
+}
+
 # Daily snapshot, at most one per day — called at daemon boot and on
 # every recorded command, so a machine that is off for weeks still gets
 # a fresh snapshot on its first command (backup.sh also prunes to the
