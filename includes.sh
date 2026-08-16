@@ -41,7 +41,11 @@ kav_db() { sqlite3 -cmd '.timeout 5000' "$@"; }
 # Create the history table if missing. Idempotent — existing databases
 # are left untouched.
 kav_ensure_history_schema() {
-    kav_db "$KAV_DB_FILE" "CREATE TABLE IF NOT EXISTS history (id INTEGER PRIMARY KEY, command TEXT NOT NULL, cwd TEXT NOT NULL, exit_code INTEGER NOT NULL, duration_ms INTEGER NOT NULL, session TEXT);"
+    # WAL journal mode: readers never block writers (and vice versa),
+    # and a crash can't leave a stale rollback journal. Persistent per
+    # database file. The PRAGMA echoes a row — silenced; stderr still
+    # reaches the daemon log.
+    kav_db "$KAV_DB_FILE" "PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS history (id INTEGER PRIMARY KEY, command TEXT NOT NULL, cwd TEXT NOT NULL, exit_code INTEGER NOT NULL, duration_ms INTEGER NOT NULL, session TEXT);" > /dev/null
 }
 
 

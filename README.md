@@ -205,7 +205,8 @@ shell picker shift-delete → delete.sh ─────────────�
 - Each row stores the raw command (multi-line safe), cwd, exit code,
   duration, and a per-shell session token. The row id is ns-since-epoch:
   INTEGER PRIMARY KEY aliases the rowid, so the table is stored in time
-  order and `ORDER BY id DESC` is a reverse leaf scan.
+  order and `ORDER BY id DESC` is a reverse leaf scan. The database runs
+  in WAL mode, so readers never block the daemon's writes.
 - The picker (`functions.*`) loads ALL distinct commands via `query.sh`
   (count=0 = no limit) and fzf filters them in-memory. The server
   deduplicates (GROUP BY command, newest occurrence first) and appends

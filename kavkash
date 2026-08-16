@@ -639,11 +639,18 @@ kav_cmd_restore() {
         fi
     fi
 
+    # WAL mode: fold any pending WAL content into the old database and
+    # drop the sidecars, so the pre-restore copy is complete and no stale
+    # -wal/-shm can be applied to the restored file.
+    kav_db "$KAV_DB_FILE" 'PRAGMA wal_checkpoint(TRUNCATE);' > /dev/null 2>&1 || true
+    rm -f "$KAV_DB_FILE-wal" "$KAV_DB_FILE-shm" "$KAV_DB_FILE-journal"
+
     # Swap the database in; never destroy the only copy.
     if [ -f "$KAV_DB_FILE" ]; then
         mv -f "$KAV_DB_FILE" "$KAV_DB_FILE.pre-restore"
     fi
     cp "$file" "$KAV_DB_FILE"
+    rm -f "$KAV_DB_FILE-wal" "$KAV_DB_FILE-shm" "$KAV_DB_FILE-journal"
 
     # Start the daemon again (systemd unit if installed, else background).
     if [ -f "$HOME/.config/systemd/user/kavkash.service" ] && kav_have systemctl; then
