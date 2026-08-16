@@ -113,7 +113,7 @@ files are never touched — remove the `source` line yourself.
   prefix narrows the walk: `git ` + Up cycles only `git …` commands,
   more Ups go further back, Down steps forward and returns to what you
   typed. An empty line walks everything.
-- **Ctrl+R** (`search> `) — where the real thing begins: search ALL
+- **Ctrl+R** (`all> `) — where the real thing begins: search ALL
   distinct commands, seeded with the current line.
 - **F6** (`all> `) · **F7** (`dir> `) · **F8** (`sess> `) — scope the
   search: global, current dir + subdirs, or this shell session. They

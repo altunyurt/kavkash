@@ -44,7 +44,7 @@ _hist_picker() {
     elif [[ -n "$session" ]]; then
         prompt="sess> "
     else
-        prompt="search> "
+        prompt="all> "
     fi
     scope_file=$(mktemp) || return 0
     printf '%s\n%s\n' "$cwd" "$session" > "$scope_file"

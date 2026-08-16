@@ -46,7 +46,7 @@ function _hist_picker
         _kav_warn_daemon
         return 0
     end
-    set -l prompt "search> "
+    set -l prompt "all> "
     if test -n "$cwd"
         set prompt "dir> "
     else if test -n "$session"

@@ -112,7 +112,7 @@ _hist_picker() {
     elif [[ -n "$session" ]]; then
         prompt="sess> "
     else
-        prompt="search> "
+        prompt="all> "
     fi
     scope_file=$(mktemp) || {
         _hist_armed=1
