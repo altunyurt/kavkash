@@ -109,9 +109,10 @@ files are never touched — remove the `source` line yourself.
 
 ## Usage
 
-- **Up / Down** — walk all of history back and forth: Up brings the
-  previous command to the line, more Ups go further back, Down steps
-  forward again — no popup.
+- **Up / Down** — walk history back and forth, no popup. A typed
+  prefix narrows the walk: `git ` + Up cycles only `git …` commands,
+  more Ups go further back, Down steps forward and returns to what you
+  typed. An empty line walks everything.
 - **Ctrl+R** (`search> `) — where the real thing begins: search ALL
   distinct commands, seeded with the current line.
 - **F6** (`all> `) · **F7** (`dir> `) · **F8** (`sess> `) — scope the

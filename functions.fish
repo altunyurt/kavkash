@@ -103,7 +103,8 @@ function _hist_picker
 end
 
 # Up/Down: walk all of history one distinct command per press — Up steps
-# back, Down steps forward and blanks the line at the bottom. The index
+# back, Down steps forward. A typed prefix narrows the walk: `git ` + Up
+# cycles only `git …` commands; an empty line walks everything. The index
 # resets after every executed command (_hist_postexec) and on Ctrl+C, so
 # a fresh Up always starts at the newest command.
 #
@@ -119,14 +120,29 @@ function _hist_step_up
     set -q _kav_step_idx; or set -g _kav_step_idx 0
     set -q _kav_step_cache; or set -g _kav_step_cache
     set -q _kav_step_eof; or set -g _kav_step_eof 0
-    # Refill when stepping past the cache (one daemon call per 50 presses).
-    # fish vars can't hold NUL, so the NUL-framed batch is staged through a
-    # temp file and read back one record per `read -z`; awk strips the
+    set -q _kav_step_prefix; or set -g _kav_step_prefix ""
+    set -q _kav_step_orig; or set -g _kav_step_orig ""
+    set -q _kav_step_last; or set -g _kav_step_last ""
+    # An edited line starts a fresh search: when the buffer differs from
+    # what the stepper last displayed, the previous walk is abandoned and
+    # the line becomes the new prefix — clearing the line mid-walk thus
+    # resets the offset. Untouched lines continue the same walk.
+    set -l buf (commandline -b)[1]
+    if test "$buf" != "$_kav_step_last"
+        set -g _kav_step_prefix $buf
+        set -g _kav_step_orig $buf
+        set -g _kav_step_cache
+        set -g _kav_step_eof 0
+        set -g _kav_step_idx 0
+    end
+    # Refill when stepping past the cache (one daemon call per 50
+    # presses). fish vars can't hold NUL, so the batch is staged through
+    # a temp file and read back one record per `read -z`; awk strips the
     # \x1f<id> payload while the framing is still NUL-safe.
     if test $_kav_step_idx -ge (count $_kav_step_cache)
         test $_kav_step_eof -eq 1; and return 0
         set -l _kav_tmp (mktemp)
-        "$_HIST_SCRIPT_DIR/query.sh" 50 "" "" "" $_kav_step_idx \
+        "$_HIST_SCRIPT_DIR/query.sh" 50 "$_kav_step_prefix" "" "" $_kav_step_idx \
             | awk 'BEGIN { RS = ORS = "\0" } { sub(/\x1f[^\x1f]*$/, ""); print }' >$_kav_tmp
         set -l _kav_have (count $_kav_step_cache)
         while read -z _kav_item
@@ -142,6 +158,7 @@ function _hist_step_up
     end
     set -g _kav_step_idx (math $_kav_step_idx + 1)
     commandline -r $_kav_step_cache[$_kav_step_idx]
+    set -g _kav_step_last $_kav_step_cache[$_kav_step_idx]
 end
 
 function _hist_step_down
@@ -150,18 +167,32 @@ function _hist_step_down
         return 0
     end
     set -q _kav_step_idx; or set -g _kav_step_idx 0
-    if test $_kav_step_idx -le 1
+    set -q _kav_step_orig; or set -g _kav_step_orig ""
+    set -q _kav_step_last; or set -g _kav_step_last ""
+    # An edited line abandons the walk: Down on a dirty line only resets
+    # the offset (the user's text is kept; the next Up starts fresh).
+    set -l buf (commandline -b)[1]
+    if test "$buf" != "$_kav_step_last"
         set -g _kav_step_idx 0
-        commandline -r ""
+        return 0
+    end
+    if test $_kav_step_idx -le 1
+        # Bottom of the search: restore what the user typed (empty when
+        # the walk had no prefix — today's behavior).
+        set -g _kav_step_idx 0
+        commandline -r $_kav_step_orig
+        set -g _kav_step_last $_kav_step_orig
         return
     end
     set -g _kav_step_idx (math $_kav_step_idx - 1)
     # No query here: Down only re-treads ground Up already fetched.
     if set -q _kav_step_cache[$_kav_step_idx]
         commandline -r $_kav_step_cache[$_kav_step_idx]
+        set -g _kav_step_last $_kav_step_cache[$_kav_step_idx]
     else
         set -g _kav_step_idx 0 # defensive: the cache was cleared mid-walk
-        commandline -r ""
+        commandline -r $_kav_step_orig
+        set -g _kav_step_last $_kav_step_orig
     end
 end
 
@@ -218,6 +249,7 @@ function _hist_postexec --on-event fish_postexec
     set -e _kav_step_idx # Up/Down stepper starts fresh after every command
     set -e _kav_step_cache
     set -g _kav_step_eof 0
+    set -e _kav_step_prefix _kav_step_orig _kav_step_last
     if test -n "$__hist_corr"
         set -l now (date +%s%3N 2>/dev/null)
         [ -n "$now" ]; or set now (date +%s)000
@@ -269,8 +301,8 @@ if test -n "$_kav_fzf_ver"; and printf '%s\n' "$_kav_fzf_ver" | awk -F. 'NR == 1
         bind --user -M insert \e\[19~ _hist_scope_sess
         # Ctrl+C: cancel AND reset the stepper index (postexec doesn't fire
         # for a cancelled line); bound in both default and insert modes.
-        bind --user \cc "set -e _kav_step_idx _kav_step_cache; set -g _kav_step_eof 0; commandline -f cancel-commandline"
-        bind --user -M insert \cc "set -e _kav_step_idx _kav_step_cache; set -g _kav_step_eof 0; commandline -f cancel-commandline"
+        bind --user \cc "set -e _kav_step_idx _kav_step_cache _kav_step_prefix _kav_step_orig _kav_step_last; set -g _kav_step_eof 0; commandline -f cancel-commandline"
+        bind --user -M insert \cc "set -e _kav_step_idx _kav_step_cache _kav_step_prefix _kav_step_orig _kav_step_last; set -g _kav_step_eof 0; commandline -f cancel-commandline"
     end
 
     # Apply bindings now: fish only auto-calls fish_user_key_bindings at

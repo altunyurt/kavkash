@@ -135,12 +135,14 @@ case "$TYPE" in
     Q)
         # Query: newest `count` DISTINCT commands matching the scope at
         # `offset`, NUL-framed raw rows (GROUP BY command — one row per
-        # unique command, ordered by its newest occurrence). The query
-        # field is accepted for protocol stability and ignored — fzf
-        # filters client-side. cwd/session scope (empty = no filter)
-        # applies BEFORE the LIMIT: the result is the newest N distinct
-        # commands matching the scope.
+        # unique command, ordered by its newest occurrence). QUERY is a
+        # prefix filter: the Up/Down stepper passes the typed line and
+        # gets only commands starting with it; empty = no filter (the
+        # picker sends an empty query and fzf filters client-side).
+        # cwd/session scope (empty = no filter) applies BEFORE the LIMIT:
+        # the result is the newest N distinct commands matching the scope.
         action="$1"
+        query="$2"
         count="$3"
         cwd="$4"
         session="$5"
@@ -161,6 +163,12 @@ case "$TYPE" in
         if [ -n "$session" ]; then
             ss=$(printf '%s' "$session" | sed "s/'/''/g")
             where="${where:+$where AND }session = '$ss'"
+        fi
+        if [ -n "$query" ]; then
+            # Anchored prefix match, case-insensitive (NOCASE). substr
+            # avoids LIKE wildcards: % and _ in the prefix are literal.
+            q=$(printf '%s' "$query" | sed "s/'/''/g")
+            where="${where:+$where AND }substr(command,1,length('$q')) = '$q' COLLATE NOCASE"
         fi
         # Dedup: GROUP BY command folds interspersed repeats (e.g.
         # hundreds of "ls") into one row per distinct command, ordered by

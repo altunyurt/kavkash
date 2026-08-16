@@ -219,9 +219,10 @@ _hist_picker() {
 }
 
 # Up/Down: walk all of history one distinct command per press — Up steps
-# back, Down steps forward and blanks the line at the bottom. The index
-# resets on every new prompt (kav_precmd_record), so a fresh Up always
-# starts at the newest command.
+# back, Down steps forward. A typed prefix narrows the walk: `git ` + Up
+# cycles only `git …` commands; an empty line walks everything (today's
+# behavior). The index resets on every new prompt (kav_precmd_record), so
+# a fresh Up always starts at the newest command.
 #
 # Commands are prefetched into _hist_step_cache in batches of 50, so a
 # press is a pure memory read with no daemon round trip; Down never
@@ -232,11 +233,25 @@ _hist_step_idx=0
 _hist_step_cache=()
 _hist_step_eof=0
 _hist_step_batch=50
+_hist_step_prefix="" # search prefix; "" = walk all history
+_hist_step_orig=""   # line as typed, restored at the bottom of the walk
+_hist_step_last=""   # last line the stepper displayed (edit detection)
 _hist_step_up() {
     local cmd
     if ! _hist_sock_up; then
         _hist_warn_daemon_widget
         return 0
+    fi
+    # An edited line starts a fresh search: when the buffer differs from
+    # what the stepper last displayed, the previous walk is abandoned and
+    # the line becomes the new prefix — clearing the line mid-walk thus
+    # resets the offset. Untouched lines continue the same walk.
+    if [[ "$READLINE_LINE" != "$_hist_step_last" ]]; then
+        _hist_step_prefix=$READLINE_LINE
+        _hist_step_orig=$READLINE_LINE
+        _hist_step_cache=()
+        _hist_step_eof=0
+        _hist_step_idx=0
     fi
     # Refill when stepping past the cache (one daemon call per 50 presses).
     if ((_hist_step_eof == 0 && _hist_step_idx >= ${#_hist_step_cache[@]})); then
@@ -244,7 +259,7 @@ _hist_step_up() {
         local _hist_item
         while IFS= read -r -d '' _hist_item; do
             _hist_batch+=("${_hist_item%$'\x1f'*}") # drop the \x1f<id> payload
-        done < <("$_SCRIPT_DIR/query.sh" "$_hist_step_batch" "" "" "" "$_hist_step_idx")
+        done < <("$_SCRIPT_DIR/query.sh" "$_hist_step_batch" "$_hist_step_prefix" "" "" "$_hist_step_idx")
         if ((${#_hist_batch[@]} == 0)); then
             _hist_step_eof=1
             return 0 # history exhausted — stay put
@@ -256,6 +271,7 @@ _hist_step_up() {
     _hist_step_idx=$((_hist_step_idx + 1))
     READLINE_LINE="$cmd"
     READLINE_POINT=${#READLINE_LINE}
+    _hist_step_last="$cmd"
 }
 _hist_step_down() {
     local cmd
@@ -263,10 +279,19 @@ _hist_step_down() {
         _hist_warn_daemon_widget
         return 0
     fi
-    if ((_hist_step_idx <= 1)); then
+    # An edited line abandons the walk: Down on a dirty line only resets
+    # the offset (the user's text is kept; the next Up starts fresh).
+    if [[ "$READLINE_LINE" != "$_hist_step_last" ]]; then
         _hist_step_idx=0
-        READLINE_LINE=""
-        READLINE_POINT=0
+        return 0
+    fi
+    if ((_hist_step_idx <= 1)); then
+        # Bottom of the search: restore what the user typed (empty when
+        # the walk had no prefix — today's behavior).
+        _hist_step_idx=0
+        READLINE_LINE="$_hist_step_orig"
+        READLINE_POINT=${#READLINE_LINE}
+        _hist_step_last="$_hist_step_orig"
         return
     fi
     _hist_step_idx=$((_hist_step_idx - 1))
@@ -275,10 +300,12 @@ _hist_step_down() {
     if [[ -n "$cmd" ]]; then
         READLINE_LINE="$cmd"
         READLINE_POINT=${#READLINE_LINE}
+        _hist_step_last="$cmd"
     else
         _hist_step_idx=0 # defensive: the cache was cleared mid-walk
-        READLINE_LINE=""
-        READLINE_POINT=0
+        READLINE_LINE="$_hist_step_orig"
+        READLINE_POINT=${#READLINE_LINE}
+        _hist_step_last="$_hist_step_orig"
     fi
 }
 
@@ -351,6 +378,9 @@ kav_precmd_record() {
     _hist_step_idx=0    # Up/Down stepper starts fresh at every prompt
     _hist_step_cache=()
     _hist_step_eof=0
+    _hist_step_prefix=""
+    _hist_step_orig=""
+    _hist_step_last=""
     if [[ -n "$_hist_corr" ]]; then
         local _now=$(date +%s%3N 2> /dev/null || date +%s)
         "$_SCRIPT_DIR/hook.sh" U "$_hist_corr" "$_hist_exit" "$((_now - _hist_t0))"

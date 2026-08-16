@@ -5,10 +5,11 @@
 # OFFSET (COUNT=0 = all of them — the server sends no LIMIT). The server
 # returns one row per unique command (GROUP BY, newest occurrence first).
 # The Ctrl+R picker loads the whole set (COUNT=0) and lets fzf filter
-# in-memory; the Up/Down stepper walks it in batches of 50. QUERY is
-# accepted for wire compatibility and ignored. CWD/SESSION scope the
-# server-side query (empty = global): cwd matches the dir + subtree,
-# session a per-shell token.
+# in-memory; the Up/Down stepper walks it in batches of 50, passing the
+# typed line as QUERY to restrict the walk to commands starting with it
+# (empty QUERY = no filter). CWD/SESSION scope the server-side query
+# (empty = global): cwd matches the dir + subtree, session a per-shell
+# token.
 #
 # Output: NUL-separated raw command rows (multi-line commands pass
 # through verbatim — fzf renders them natively).
