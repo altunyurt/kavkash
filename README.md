@@ -136,7 +136,9 @@ files are never touched — remove the `source` line yourself.
 - `kavkash status` — daemon up? version, rows/distinct commands, db size
 - `kavkash info` — install paths (data/db/socket/pid/log), version, revision, shell hooks
 - `kavkash backup [DIR]` — snapshot history.db (safe while the daemon
-  writes); named `history.db.TIMESTAMP` in DIR (default the data dir), newest 7 kept
+  writes); named `history.db.TIMESTAMP` in DIR (default the data dir),
+  newest 7 kept. The daemon also takes one snapshot per day
+  automatically — on its first recorded command of the day and at boot.
 - `kavkash restore FILE` — stop the daemon, swap FILE in as history.db
   (the current db is kept as `history.db.pre-restore`), start again
 - `kavkash update` — re-run the installer against the latest release

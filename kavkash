@@ -246,6 +246,10 @@ kav_cmd_status() {
     else
         printf 'history: database not found at %s\n' "$KAV_DB_FILE"
     fi
+    if [ -f "$KAV_RUNTIME_DIR/integrity_failed" ]; then
+        printf 'WARNING: the database failed its integrity check at daemon boot —\n'
+        printf '         restore a snapshot (see server.log for details) before relying on it\n'
+    fi
 }
 
 kav_cmd_info() {

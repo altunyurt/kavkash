@@ -38,6 +38,25 @@ kav_new_id() {
 # process, would die with that process anyway).
 kav_db() { sqlite3 -cmd '.timeout 5000' "$@"; }
 
+# Daily snapshot, at most one per day — called at daemon boot and on
+# every recorded command, so a machine that is off for weeks still gets
+# a fresh snapshot on its first command (backup.sh also prunes to the
+# newest 7). The mkdir lock serializes concurrent triggers; a lock older
+# than an hour is a killed backup and is cleared.
+kav_maybe_backup() {
+    backup_script="${1:-}"
+    [ -n "$backup_script" ] || return 0
+    [ -d "$KAV_DATA_HOME" ] || return 0
+    ls "$KAV_DATA_HOME"/history.db.$(date +%F).* > /dev/null 2>&1 && return 0
+    lock="$KAV_RUNTIME_DIR/backup.lock"
+    if [ -d "$lock" ] && [ -n "$(find "$lock" -mmin +60 2> /dev/null)" ]; then
+        rm -rf "$lock"
+    fi
+    mkdir "$lock" 2> /dev/null || return 0
+    "$backup_script"
+    rmdir "$lock" 2> /dev/null || true
+}
+
 # Create the history table if missing. Idempotent — existing databases
 # are left untouched.
 kav_ensure_history_schema() {

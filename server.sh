@@ -28,6 +28,22 @@ KAV_PROC_SCRIPT="${_SCRIPT_DIR}/processor.sh"
 # table is stored in time order); created by includes.sh.
 kav_ensure_history_schema
 
+# Boot integrity check: never write into a database silently beyond
+# repair. WAL recovery handles crashes; if the file still fails, warn
+# loudly (server.log + a marker that `kavkash status` surfaces) and keep
+# recording rather than going dark.
+if kav_db "$KAV_DB_FILE" 'PRAGMA integrity_check;' 2> /dev/null | grep -qx ok; then
+    rm -f "$KAV_RUNTIME_DIR/integrity_failed"
+else
+    echo "kavkash: integrity check FAILED for $KAV_DB_FILE — the database may be corrupt" >&2
+    echo "kavkash: restore the newest snapshot with: kavkash restore <history.db.TIMESTAMP>" >&2
+    : > "$KAV_RUNTIME_DIR/integrity_failed"
+fi
+
+# Daily snapshot at boot (the per-command trigger covers days without a
+# restart).
+kav_maybe_backup "$_SCRIPT_DIR/backup.sh"
+
 # Remove stale socket file from a previous crash
 rm -f "$KAV_SOCK_FILE"
 
