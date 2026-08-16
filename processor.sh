@@ -1,12 +1,16 @@
 #!/usr/bin/dash
 # processor.sh - Netstring protocol handler
 # Source includes.sh relative to THIS script (socat EXEC may have any CWD).
-. "$(dirname -- "$(realpath -- "$0")")/includes.sh"
+_SCRIPT_DIR=$(dirname -- "$(realpath -- "$0")")
+. "$_SCRIPT_DIR/includes.sh"
 #
 # Wire protocol: concatenated netstrings ("len:payload,").
 #   W cmd cwd id session    write (preexec; id = ns-since-epoch = row
 #                           timestamp, session = per-shell token, '' = none)
-#   U id exit_code dur_ms   update (precmd)
+#   U id exit_code dur_ms [cmd]
+#                           update (precmd; the optional command pins
+#                           the update to the right row when the id was
+#                           bumped on a collision)
 #   Q search query count cwd session
 #                           query -> NUL-separated rows; cwd/session scope
 #                           BEFORE the LIMIT (filtering after the LIMIT
@@ -87,6 +91,10 @@ case "$TYPE" in
         # A command that is only whitespace is nothing — drop it.
         cmd=$(printf '%s' "$cmd" | sed 's/[ \t\r]*$//')
         [ -n "$cmd" ] || exit 0
+        # Daily snapshot on the first command of a day (fire-and-forget:
+        # the response id must not be delayed, and stdout is the response
+        # channel — silenced; stderr still reaches the server log).
+        ( kav_maybe_backup "$_SCRIPT_DIR/backup.sh" > /dev/null ) &
         cwd="$2"
         id="$3"
         session="$4"
@@ -109,24 +117,47 @@ case "$TYPE" in
         changed=$(kav_db "$db_file" "UPDATE history SET id=$id, exit_code=0, duration_ms=0, session=NULLIF('$safe_session','') WHERE id=(SELECT id FROM history ORDER BY id DESC LIMIT 1) AND command='$safe_cmd' AND cwd='$safe_cwd' AND session IS NULLIF('$safe_session',''); SELECT changes();" 2> /dev/null | tail -1)
         case "$changed" in
             *[1-9]*) : ;;   # collapsed the previous consecutive repeat
-            *) kav_db "$db_file" "INSERT INTO history (id, command, cwd, exit_code, duration_ms, session) VALUES ($id, '$safe_cmd', '$safe_cwd', 0, 0, NULLIF('$safe_session', ''));" ;;
+            *)
+                # Insert with a PK-collision retry: ids are client-minted
+                # ns timestamps; on ms-resolution fallback clocks two
+                # commands in the same ms collide and the plain INSERT
+                # silently fails. Bump to the next free id (the row's
+                # timestamp ends up a few ns off — irrelevant).
+                n=0
+                while ! kav_db "$db_file" "INSERT INTO history (id, command, cwd, exit_code, duration_ms, session) VALUES ($id, '$safe_cmd', '$safe_cwd', 0, 0, NULLIF('$safe_session', ''));" 2> /dev/null; do
+                    id=$((id + 1))
+                    n=$((n + 1))
+                    [ "$n" -lt 100 ] || break
+                done
+                ;;
         esac
         ;;
     U)
         # Update: precmd reports $? and shell-measured duration for the id.
         # Bash fires W and U back-to-back in separate fire-and-forget
         # connections (zsh/fish run a whole command between them), so the U
-        # can win the race and find no row yet — retry briefly.
+        # can win the race and find no row yet — retry briefly. An
+        # optional 4th field (the command, trimmed like W) pins the update
+        # to the right row: a W that bumped its id on a collision lives at
+        # a different id than the shell holds, and a plain id update would
+        # overwrite the row that took the original id.
         id="$1"
         exit_code="$2"
         duration="$3"
+        cmd="${4:-}"
         [ -n "$id" ] || exit 0
         case "$exit_code" in '' | *[!0-9]*) exit_code=0 ;; esac
         case "$duration" in '' | *[!0-9]*) duration=0 ;; esac
         safe_id=$(printf '%s' "$id" | sed "s/'/''/g")
+        cmd_match=""
+        if [ -n "$cmd" ]; then
+            cmd=$(printf '%s' "$cmd" | sed 's/[ \t\r]*$//')
+            safe_cmd=$(printf '%s' "$cmd" | sed "s/'/''/g")
+            cmd_match=" AND command='$safe_cmd'"
+        fi
         n=0
         while [ "$n" -lt 5 ]; do
-            changed=$(kav_db "$db_file" "UPDATE history SET exit_code=$exit_code, duration_ms=$duration WHERE id='$safe_id'; SELECT changes();" 2> /dev/null | tail -1)
+            changed=$(kav_db "$db_file" "UPDATE history SET exit_code=$exit_code, duration_ms=$duration WHERE id='$safe_id'$cmd_match; SELECT changes();" 2> /dev/null | tail -1)
             case "$changed" in *[1-9]*) break ;; esac
             n=$((n + 1))
             sleep 0.01 2> /dev/null || break

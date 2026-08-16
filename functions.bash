@@ -200,7 +200,7 @@ _hist_picker() {
                     local id
                     id=$("$_SCRIPT_DIR/hook.sh" W "$cmd" "$PWD" "$_hist_sess")
                     if [[ -n "$id" ]]; then
-                        "$_SCRIPT_DIR/hook.sh" U "$id" "$_hist_exit" 0
+                        "$_SCRIPT_DIR/hook.sh" U "$id" "$_hist_exit" 0 "$cmd"
                     fi
                     # precmd won't run for this line (bind -x callbacks
                     # don't re-display the prompt), so sync the index
@@ -341,6 +341,7 @@ _hist_initialized=0
 _hist_corr=""
 _hist_t0=0
 _hist_last_idx=0
+_hist_last_cmd=""
 
 _kav_hist_idx() {
     HISTTIMEFORMAT='' builtin history 1 | sed -n '1s/^[[:space:]]*\([0-9][0-9]*\).*/\1/p'
@@ -371,6 +372,7 @@ kav_preexec_record() {
     fi
     _hist_t0=$(date +%s%3N 2> /dev/null || date +%s)
     _hist_corr=$("$_SCRIPT_DIR/hook.sh" W "$cmd" "$PWD" "$_hist_sess")
+    _hist_last_cmd=$cmd
 }
 
 kav_precmd_record() {
@@ -383,7 +385,7 @@ kav_precmd_record() {
     _hist_step_last=""
     if [[ -n "$_hist_corr" ]]; then
         local _now=$(date +%s%3N 2> /dev/null || date +%s)
-        "$_SCRIPT_DIR/hook.sh" U "$_hist_corr" "$_hist_exit" "$((_now - _hist_t0))"
+        "$_SCRIPT_DIR/hook.sh" U "$_hist_corr" "$_hist_exit" "$((_now - _hist_t0))" "$_hist_last_cmd"
         _hist_corr=""
     fi
     # Baseline the history index on the first prompt: history loads only
@@ -400,7 +402,7 @@ kav_precmd_record() {
             _hist_last_idx=$idx
             local id
             id=$("$_SCRIPT_DIR/hook.sh" W "$cmd" "$PWD" "$_hist_sess")
-            [[ -n "$id" ]] && "$_SCRIPT_DIR/hook.sh" U "$id" "$_hist_exit" 0
+            [[ -n "$id" ]] && "$_SCRIPT_DIR/hook.sh" U "$id" "$_hist_exit" 0 "$cmd"
         fi
     elif [[ "$idx" =~ ^[0-9]+$ ]]; then
         _hist_last_idx=$idx

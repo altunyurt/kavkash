@@ -3,7 +3,10 @@
 #   W CMD CWD SESSION            mint an ns-since-epoch id, store the command
 #                                (+ the caller's session token), PRINT the id
 #                                (correlation key for the later U)
-#   U ID EXIT DURATION           store the real exit code and duration
+#   U ID EXIT DURATION [CMD]    store the real exit code and duration
+#                                (the optional command pins the update to
+#                                the right row — a W that bumped its id
+#                                on a collision lives at a different id)
 # A 5th W argument "sync" delivers in the foreground (bash's `exit` would
 # kill the backgrounded socat before it connects).
 # The id is the row's primary key AND timestamp: ns since epoch, so
@@ -53,13 +56,22 @@ case "$MODE" in
         ID="$2"
         EXIT="$3"
         DURATION="$4"
+        CMD="${5:-}"
         [ -n "$ID" ] || exit 0
         [ -n "$EXIT" ] || EXIT=0
         [ -n "$DURATION" ] || DURATION=0
-        MSG=$(printf '1:U,%s:%s,%s:%s,%s:%s,' \
-            "$(_ns_len "$ID")" "$ID" \
-            "$(_ns_len "$EXIT")" "$EXIT" \
-            "$(_ns_len "$DURATION")" "$DURATION")
+        if [ -n "$CMD" ]; then
+            MSG=$(printf '1:U,%s:%s,%s:%s,%s:%s,%s:%s,' \
+                "$(_ns_len "$ID")" "$ID" \
+                "$(_ns_len "$EXIT")" "$EXIT" \
+                "$(_ns_len "$DURATION")" "$DURATION" \
+                "$(_ns_len "$CMD")" "$CMD")
+        else
+            MSG=$(printf '1:U,%s:%s,%s:%s,%s:%s,' \
+                "$(_ns_len "$ID")" "$ID" \
+                "$(_ns_len "$EXIT")" "$EXIT" \
+                "$(_ns_len "$DURATION")" "$DURATION")
+        fi
         ;;
     *)
         exit 1

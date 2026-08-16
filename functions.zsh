@@ -223,6 +223,7 @@ autoload -Uz add-zsh-hook
 
 typeset -g _hist_corr=""
 typeset -g _hist_t0=0
+typeset -g _hist_last_cmd=""
 
 # Session token: one per interactive shell, minted at source time (rc files
 # re-run on `exec`, so the new shell gets a fresh token — never inherit).
@@ -238,6 +239,7 @@ _hist_preexec() {
     fi
     _hist_t0=$(date +%s%3N 2> /dev/null || echo "$(date +%s)000")
     _hist_corr=$("$_SCRIPT_DIR/hook.sh" W "$1" "$PWD" "$_hist_sess")
+    _hist_last_cmd="$1"
 }
 
 _hist_precmd() {
@@ -250,7 +252,7 @@ _hist_precmd() {
     _hist_step_last=""
     if [ -n "$_hist_corr" ]; then
         local _now=$(date +%s%3N 2> /dev/null || echo "$(date +%s)000")
-        "$_SCRIPT_DIR/hook.sh" U "$_hist_corr" "$_hist_exit" "$((_now - _hist_t0))"
+        "$_SCRIPT_DIR/hook.sh" U "$_hist_corr" "$_hist_exit" "$((_now - _hist_t0))" "$_hist_last_cmd"
         _hist_corr=""
     fi
 }

@@ -217,6 +217,7 @@ end
 # spawns (e.g. fzf inside _hist_picker) so only typed commands are stored.
 set -g __hist_corr ""
 set -g __hist_t0 0
+set -g __hist_cmd ""
 
 # Session token: one per interactive shell, minted at source time (rc files
 # re-run on `exec`, so the new shell gets a fresh token — never inherit).
@@ -240,6 +241,7 @@ function _hist_preexec --on-event fish_preexec
     [ -n "$t0" ]; or set t0 (date +%s)000
     set -g __hist_t0 $t0
     set -g __hist_corr ("$_HIST_HOOK" W "$argv[1]" "$PWD" "$_hist_sess")
+    set -g __hist_cmd $argv[1]
 end
 
 # fish_postexec fires after a command line finishes; $status is the line's
@@ -253,8 +255,9 @@ function _hist_postexec --on-event fish_postexec
     if test -n "$__hist_corr"
         set -l now (date +%s%3N 2>/dev/null)
         [ -n "$now" ]; or set now (date +%s)000
-        "$_HIST_HOOK" U "$__hist_corr" "$s" (math "$now - $__hist_t0") &
+        "$_HIST_HOOK" U "$__hist_corr" "$s" (math "$now - $__hist_t0") "$__hist_cmd" &
         set -g __hist_corr ""
+        set -e __hist_cmd
     end
 end
 
