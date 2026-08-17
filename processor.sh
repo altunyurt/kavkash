@@ -103,9 +103,9 @@ case "$TYPE" in
         # (garbage on the wire).
         case "$id" in '' | *[!0-9]*) exit 0 ;; esac
 
-        safe_cmd=$(printf '%s' "$cmd" | sed "s/'/''/g")
-        safe_cwd=$(printf '%s' "$cwd" | sed "s/'/''/g")
-        safe_session=$(printf '%s' "$session" | sed "s/'/''/g")
+        safe_cmd=$(kav_sql_quote "$cmd")
+        safe_cwd=$(kav_sql_quote "$cwd")
+        safe_session=$(kav_sql_quote "$session")
         # Consecutive-repeat collapse: a W whose (command, cwd, session)
         # matches the latest row updates that row in place — the row
         # becomes the newest occurrence (id = this command's timestamp;
@@ -150,11 +150,11 @@ case "$TYPE" in
         [ -n "$id" ] || exit 0
         case "$exit_code" in '' | *[!0-9]*) exit_code=0 ;; esac
         case "$duration" in '' | *[!0-9]*) duration=0 ;; esac
-        safe_id=$(printf '%s' "$id" | sed "s/'/''/g")
+        safe_id=$(kav_sql_quote "$id")
         cmd_match=""
         if [ -n "$cmd" ]; then
             cmd=$(printf '%s' "$cmd" | sed 's/[ \t\r]*$//')
-            safe_cmd=$(printf '%s' "$cmd" | sed "s/'/''/g")
+            safe_cmd=$(kav_sql_quote "$cmd")
             cmd_match=" AND command='$safe_cmd'"
         fi
         n=0
@@ -186,18 +186,18 @@ case "$TYPE" in
         esac
         where=""
         if [ -n "$cwd" ] && [ "$cwd" != "/" ]; then
-            sc=$(printf '%s' "$cwd" | sed "s/'/''/g")
+            sc=$(kav_sql_quote "$cwd")
             # the dir itself + subtree; "/" (everything) is a no-op above
             where="(cwd = '$sc' OR cwd LIKE '$sc/%')"
         fi
         if [ -n "$session" ]; then
-            ss=$(printf '%s' "$session" | sed "s/'/''/g")
+            ss=$(kav_sql_quote "$session")
             where="${where:+$where AND }session = '$ss'"
         fi
         if [ -n "$query" ]; then
             # Anchored prefix match, case-insensitive (NOCASE). substr
             # avoids LIKE wildcards: % and _ in the prefix are literal.
-            q=$(printf '%s' "$query" | sed "s/'/''/g")
+            q=$(kav_sql_quote "$query")
             where="${where:+$where AND }substr(command,1,length('$q')) = '$q' COLLATE NOCASE"
         fi
         # Dedup: the self-join picks each distinct command's newest row

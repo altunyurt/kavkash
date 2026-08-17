@@ -44,6 +44,14 @@ kav_new_id() {
 # which are created through the same helper.
 kav_db() { ( umask 077; sqlite3 -cmd '.timeout 5000' "$@" ); }
 
+# SQL literal escaping — the single source of truth. The sqlite3 CLI
+# takes no bind parameters, so every value interpolated into a query
+# string (processor.sh W/U/Q) must have its quotes doubled here first;
+# a literal `sed "s/'/''/g"` in a query path is a bug. import.sh's awk
+# esc() mirrors this rule — it runs in its own process and can't call
+# this helper; keep the two in sync.
+kav_sql_quote() { printf '%s' "$1" | sed "s/'/''/g"; }
+
 # Cap server.log at 1 MB — raw handler stderr lands there via socat's
 # 2>> redirect, bypassing kav_log. Checked at boot and on every W;
 # journald rotates its own side.

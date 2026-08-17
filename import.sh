@@ -361,7 +361,9 @@ BEGIN {
     FS = "\037"   # 0x1F field separator
 }
 
-# SQL-escape a command/cwd field (doubled quotes).
+# SQL-escape a command/cwd field (doubled quotes) — same rule as
+# kav_sql_quote() in includes.sh; this awk runs in its own process and
+# can't call the shell helper, so keep the two in sync.
 function esc(s) { gsub(/'/, "''", s); return s }
 
 # +1 on a decimal string (19-digit ns exceeds awk's double precision, so

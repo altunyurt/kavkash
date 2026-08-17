@@ -24,6 +24,18 @@ ns_send W "$multi" "$PWD" 1000000000000000004 "s1"
 sleep 0.2
 t_eq "$multi" "$(kav_db "$KAV_DB_FILE" "SELECT command FROM history WHERE id=1000000000000000004;")" "command round-trips intact"
 
+# --- escaping: single quotes on every interpolation path (kav_sql_quote) ---
+t_begin "escaping: W stores a quoted command verbatim"
+ns_send W "it's 'quoted'" "$PWD" 1000000000000000005 "s1"
+sleep 0.2
+t_eq "it's 'quoted'" "$(kav_db "$KAV_DB_FILE" "SELECT command FROM history WHERE id=1000000000000000005;")" "stored verbatim"
+t_begin "escaping: U with a quoted command pins its row"
+ns_send U 1000000000000000005 5 100 "it's 'quoted'"
+sleep 0.3
+t_eq "5|100" "$(kav_db "$KAV_DB_FILE" "SELECT exit_code||'|'||duration_ms FROM history WHERE id=1000000000000000005;")" "pinned update applied"
+t_begin "escaping: Q prefix containing a quote matches"
+t_eq "it's 'quoted'" "$(q_rows 10 "it's")" "quoted prefix matches"
+
 # --- W: invalid id dropped ---
 t_begin "W: non-numeric id dropped"
 ns_send W "bogus id" "$PWD" "notanumber" "s1"
