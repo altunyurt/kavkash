@@ -1,0 +1,115 @@
+#!/bin/sh
+# t-protocol.sh — W/U/Q/D wire protocol against a sandbox daemon.
+. "$(dirname "$0")/lib.sh"
+sandbox_new
+daemon_start
+
+# --- W: basic write + trailing trim ---
+t_begin "W: basic write trims trailing whitespace"
+ns_send W "echo hello   " "$PWD" 1000000000000000001 "s1"
+sleep 0.2
+t_eq "echo hello" "$(kav_db "$KAV_DB_FILE" "SELECT command FROM history WHERE id=1000000000000000001;")" "trailing whitespace trimmed"
+
+# --- W: leading whitespace skipped (the gate is hook.sh, not the wire) ---
+t_begin "W: leading whitespace skipped (hook.sh)"
+out=$("$KAVKASH_DIR/hook.sh" W " secret" "$PWD" s1)
+sleep 0.3
+t_eq "" "$out" "no id minted for a leading-space command"
+t_eq "0" "$(kav_db "$KAV_DB_FILE" "SELECT count(*) FROM history WHERE command LIKE ' secret';")" "command not stored"
+
+# --- W: multiline + UTF-8 + quotes survive ---
+t_begin "W: multiline + UTF-8 + quotes survive"
+multi=$(printf 'line1\nline2 → ünïcode "quoted" it'"'"'s')
+ns_send W "$multi" "$PWD" 1000000000000000004 "s1"
+sleep 0.2
+t_eq "$multi" "$(kav_db "$KAV_DB_FILE" "SELECT command FROM history WHERE id=1000000000000000004;")" "command round-trips intact"
+
+# --- W: invalid id dropped ---
+t_begin "W: non-numeric id dropped"
+ns_send W "bogus id" "$PWD" "notanumber" "s1"
+sleep 0.2
+t_eq "0" "$(kav_db "$KAV_DB_FILE" "SELECT count(*) FROM history WHERE command='bogus id';")" "garbage id rejected"
+
+# --- W: consecutive-repeat collapse ---
+t_begin "W: consecutive repeat collapses into one row"
+ns_send W "repeat me" "$PWD" 1000000000000000100 "s1"
+sleep 0.1
+ns_send W "repeat me" "$PWD" 1000000000000000200 "s1"
+sleep 0.2
+t_eq "1" "$(kav_db "$KAV_DB_FILE" "SELECT count(*) FROM history WHERE command='repeat me';")" "one row"
+t_eq "1000000000000000200" "$(kav_db "$KAV_DB_FILE" "SELECT id FROM history WHERE command='repeat me';")" "row takes the newest id"
+
+# --- U: exit + duration ---
+t_begin "U: stores exit code and duration"
+ns_send W "u test" "$PWD" 1000000000000000300 "s1"
+sleep 0.2
+ns_send U 1000000000000000300 7 42
+sleep 0.3
+t_eq "7|42" "$(kav_db "$KAV_DB_FILE" "SELECT exit_code||'|'||duration_ms FROM history WHERE id=1000000000000000300;")" "exit+duration stored"
+
+# --- U: legacy 4-field form still works ---
+t_begin "U: legacy form (no command field) still works"
+ns_send U 1000000000000000300 3 9
+sleep 0.3
+t_eq "3|9" "$(kav_db "$KAV_DB_FILE" "SELECT exit_code||'|'||duration_ms FROM history WHERE id=1000000000000000300;")" "id-only update"
+
+# --- Q: dedup + order ---
+ns_send W "qalpha" "$PWD" 2000000000000000001 "s1"
+sleep 0.1
+ns_send W "qbeta" "$PWD" 2000000000000000002 "s1"
+sleep 0.1
+ns_send W "qalpha" "$PWD" 2000000000000000003 "s1"
+sleep 0.2
+t_begin "Q: dedup — one row per distinct command"
+rows=$(q_rows 10)
+t_eq "2" "$(printf '%s\n' "$rows" | grep -c '^q')" "distinct only"
+t_begin "Q: newest occurrence first"
+t_eq "qalpha" "$(printf '%s\n' "$rows" | sed -n '1p')" "newest run first"
+
+# --- Q: prefix filter ---
+t_begin "Q: anchored prefix filter"
+t_eq "qalpha" "$(q_rows 10 qa)" "prefix qa matches qalpha only"
+t_begin "Q: prefix is case-insensitive"
+t_eq "qalpha" "$(q_rows 10 QA)" "NOCASE match"
+t_begin "Q: LIKE wildcards in the prefix are literal"
+ns_send W "100% done" "$PWD" 2000000000000000004 "s1"
+sleep 0.2
+t_contains "100% done" "$(q_rows 10 '100%')" "percent is not a wildcard"
+ns_send W "under_score" "$PWD" 2000000000000000005 "s1"
+sleep 0.2
+t_eq "under_score" "$(q_rows 10 'under_s')" "underscore is not a wildcard"
+
+# --- Q: scope ---
+t_begin "Q: cwd scope matches dir + subtree"
+ns_send W "scoped cmd" "/tmp/kavsub" 2000000000000000006 "s1"
+sleep 0.2
+t_contains "scoped cmd" "$(q_rows 10 '' /tmp/kavsub)" "exact dir"
+t_contains "scoped cmd" "$(q_rows 10 '' /tmp)" "subtree"
+t_begin "Q: session scope"
+t_eq "scoped cmd" "$(q_rows 10 '' '' s1 | grep scoped)" "session filter"
+
+# --- Q: offset ---
+t_begin "Q: offset pages through the deduped set"
+first=$(q_rows 2 | sed -n '1p')
+second=$(q_rows 2 '' '' '' 2 | sed -n '1p')
+[ -n "$first" ] && [ -n "$second" ] && [ "$first" != "$second" ] && t_ok || t_fail "pages differ"
+
+# --- D: delete all occurrences ---
+t_begin "D: deletes every occurrence, others untouched"
+ns_send W "del me" "$PWD" 3000000000000000001 "s1"
+sleep 0.1
+ns_send W "keep me" "$PWD" 3000000000000000002 "s1"
+sleep 0.1
+ns_send W "del me" "$PWD" 3000000000000000003 "s1"
+sleep 0.2
+ns_send D 3000000000000000003
+sleep 0.3
+t_eq "0" "$(kav_db "$KAV_DB_FILE" "SELECT count(*) FROM history WHERE command='del me';")" "all occurrences gone"
+t_eq "1" "$(kav_db "$KAV_DB_FILE" "SELECT count(*) FROM history WHERE command='keep me';")" "other row untouched"
+t_begin "D: unknown id is a no-op"
+ns_send D 9999999999999999999
+sleep 0.3
+t_eq "1" "$(kav_db "$KAV_DB_FILE" "SELECT count(*) FROM history WHERE command='keep me';")" "rows untouched"
+
+daemon_stop
+t_summary

@@ -192,6 +192,20 @@ recreates the schema on its next start.
 
 Developed and tested on Debian trixie (dash, bash 5.2, zsh, fish 4).
 
+## Testing
+
+```sh
+./tests/run.sh              # native — needs bash/zsh/fish, socat, sqlite3, gawk, fzf
+./tests/run.sh protocol     # optional filter: only matching test files
+./tests/docker.sh           # hermetic: Debian trixie image, repo mounted read-only
+```
+
+Each test file gets a throwaway data/runtime dir (XDG overrides) with
+its own daemon — the developer's real history is never touched. The
+suite replays every regression fixed so far (lock waits, stepper
+cache, PK collisions, WAL sidecars, daily backups, …); CI runs it on
+every push (`tests/docker.sh`).
+
 ## How it works
 
 ```
