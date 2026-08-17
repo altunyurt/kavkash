@@ -24,7 +24,8 @@ kav_have() { command -v "$1" > /dev/null 2>&1; }
 # PRIMARY KEY aliases the rowid, so the table itself is stored in id
 # (== time) order: ORDER BY id DESC is a pure reverse leaf scan.
 # GNU date's %N (19 digits, int64-safe past year 2200); fallbacks keep
-# ms/seconds precision (id uniqueness then relies on command spacing).
+# ms/seconds precision (the PK retry in processor W absorbs any
+# collision).
 kav_new_id() {
     date +%s%N 2> /dev/null \
         || printf '%s000000' "$(date +%s%3N 2> /dev/null || date +%s)"

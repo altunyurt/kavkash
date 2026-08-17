@@ -39,8 +39,7 @@ case "$MODE" in
             ' '* | '	'*) exit 0 ;;
         esac
         ID=$(kav_new_id)
-        # Wire: cmd, cwd, id, session — id stays 3rd so a pre-session hook
-        # (no session field) still decodes correctly on this server.
+        # Wire: cmd, cwd, id, session.
         MSG=$(printf '1:W,%s:%s,%s:%s,%s:%s,%s:%s,' \
             "$(_ns_len "$CMD")" "$CMD" \
             "$(_ns_len "$CWD")" "$CWD" \

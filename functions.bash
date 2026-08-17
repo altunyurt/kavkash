@@ -287,7 +287,7 @@ _hist_step_down() {
     fi
     if ((_hist_step_idx <= 1)); then
         # Bottom of the search: restore what the user typed (empty when
-        # the walk had no prefix — today's behavior).
+        # the walk had no prefix).
         _hist_step_idx=0
         READLINE_LINE="$_hist_step_orig"
         READLINE_POINT=${#READLINE_LINE}

@@ -1,8 +1,7 @@
 # kavkash
 
-An Atuin inspired shell history engine entirely built with SQLite3, socat, fzf, and POSIX shell scripts. 
-
-Built with *extensive* LLM assistance, battle-tested in daily use.
+An Atuin inspired shell history engine entirely built with SQLite3,
+socat, fzf, and POSIX shell scripts.
 
 ## Install
 
@@ -47,13 +46,8 @@ straight from the repo, exactly like the installer:
 curl -fsSL https://raw.githubusercontent.com/altunyurt/kavkash/main/demo.sh | dash
 ```
 
-To import your history, demo.sh copies the history files of your shell(s) 
-into the image and mounts the atuin store as readonly, without breaking or 
-tainting your existing setup.
-
 `PERSIST=1 ./demo.sh` keeps `history.db` across restarts (volume
-`kavkash-demo-data`). 
-
+`kavkash-demo-data`).
 
 ## Run
 

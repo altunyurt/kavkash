@@ -178,7 +178,7 @@ function _hist_step_down
     end
     if test $_kav_step_idx -le 1
         # Bottom of the search: restore what the user typed (empty when
-        # the walk had no prefix — today's behavior).
+        # the walk had no prefix).
         set -g _kav_step_idx 0
         commandline -r $_kav_step_orig
         set -g _kav_step_last $_kav_step_orig
