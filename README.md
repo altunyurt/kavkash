@@ -223,6 +223,11 @@ shell picker shift-delete → delete.sh ─────────────�
   INTEGER PRIMARY KEY aliases the rowid, so the table is stored in time
   order and `ORDER BY id DESC` is a reverse leaf scan. The database runs
   in WAL mode, so readers never block the daemon's writes.
+- Everything on disk is owner-only (0600): the socket (socat `mode=`),
+  `history.db` (the db holds every command verbatim, so a lax umask
+  would leak it to local users — enforced on every sqlite3 call and
+  re-tightened at boot for pre-existing dbs), its WAL sidecars, and
+  `backup.sh` snapshots.
 - The picker (`functions.*`) loads ALL distinct commands via `query.sh`
   (count=0 = no limit) and fzf filters them in-memory. The server
   deduplicates (newest occurrence per distinct command) and appends

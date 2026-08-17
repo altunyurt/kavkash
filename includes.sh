@@ -36,7 +36,13 @@ kav_new_id() {
 # hit SQLITE_BUSY. .timeout is a dot-command — it prints nothing,
 # unlike PRAGMA busy_timeout, which would echo its value into the
 # result stream.
-kav_db() { sqlite3 -cmd '.timeout 5000' "$@"; }
+#
+# Owner-only files: sqlite3 applies the umask, so the default 022 would
+# leave the history db (and its -wal/-shm sidecars, which inherit the
+# db's mode) world-readable — every command verbatim. The subshell
+# confines the umask to this call; it also covers backup.sh snapshots,
+# which are created through the same helper.
+kav_db() { ( umask 077; sqlite3 -cmd '.timeout 5000' "$@" ); }
 
 # Cap server.log at 1 MB — raw handler stderr lands there via socat's
 # 2>> redirect, bypassing kav_log. Checked at boot and on every W;
@@ -83,6 +89,10 @@ kav_ensure_history_schema() {
     # database file. The PRAGMA echoes a row — silenced; stderr still
     # reaches the daemon log.
     kav_db "$KAV_DB_FILE" "PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS history (id INTEGER PRIMARY KEY, command TEXT NOT NULL, cwd TEXT NOT NULL, exit_code INTEGER NOT NULL, duration_ms INTEGER NOT NULL, session TEXT);" > /dev/null
+    # The db predates the umask guard in kav_db on upgraded installs:
+    # tighten it here, at every boot/import, so an old 0644 db (lax
+    # umask) doesn't stay world-readable.
+    chmod 600 "$KAV_DB_FILE"
 }
 
 
