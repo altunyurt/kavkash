@@ -7,12 +7,42 @@ on:
 
 permissions:
   contents: write
+  actions: read   # the test gate queries workflow runs
 
 jobs:
   release:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+
+      # Gate: never publish a release whose test suite failed. The Test
+      # workflow runs on the same tag push (on: push fires for tags);
+      # poll it and abort the release unless it succeeded.
+      - name: Wait for tests to pass
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sha="${{ github.sha }}"
+          status=""
+          conclusion=""
+          for i in $(seq 1 60); do
+            run=$(gh api "repos/${{ github.repository }}/actions/runs?event=push&head_sha=$sha" \
+              --jq '[.workflow_runs[] | select(.name == "Test")][0]')
+            status=$(printf '%s' "$run" | jq -r '.status // ""')
+            conclusion=$(printf '%s' "$run" | jq -r '.conclusion // ""')
+            [ "$status" = "completed" ] && break
+            sleep 10
+          done
+          if [ "$status" != "completed" ]; then
+            echo "::error::Test workflow did not finish in 10 minutes — release aborted"
+            exit 1
+          fi
+          if [ "$conclusion" != "success" ]; then
+            echo "::error::Tests failed ($conclusion) — release aborted"
+            exit 1
+          fi
+          echo "tests passed — proceeding with the release"
 
       - name: Bundle
         run: |
