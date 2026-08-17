@@ -143,7 +143,8 @@ _hist_picker() {
         < /dev/null \
         | awk 'BEGIN { RS = "\0" }
             NR == 1 { key = $0; next }
-            NR == 2 { i = index($0, "\035"); if (i) $0 = substr($0, i + 1); printf "%s\n%s\n", key, $0 }')
+            NR == 2 { i = index($0, "\035"); if (i) $0 = substr($0, i + 1)  # strip the "dur ✓/✗ age" prefix
+            printf "%s\n%s\n", key, $0 }')
     rm -f "$scope_file"
 
     if [[ -n "$picked" ]]; then

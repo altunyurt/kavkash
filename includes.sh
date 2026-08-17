@@ -31,18 +31,16 @@ kav_new_id() {
         || printf '%s000000' "$(date +%s%3N 2> /dev/null || date +%s)"
 }
 
-# sqlite3 with a lock wait on this connection. Bare sqlite3 calls race
-# the daemon's writes (journal mode is delete — readers block during a
-# write) and die with SQLITE_BUSY; .timeout is a dot-command that sets
-# the wait and prints nothing, unlike PRAGMA busy_timeout, which would
-# echo its value as a row into the result stream (and, run in its own
-# process, would die with that process anyway).
+# sqlite3 with a lock wait on this connection: writers serialize and
+# WAL has transient shm/checkpoint windows, so a bare call could still
+# hit SQLITE_BUSY. .timeout is a dot-command — it prints nothing,
+# unlike PRAGMA busy_timeout, which would echo its value into the
+# result stream.
 kav_db() { sqlite3 -cmd '.timeout 5000' "$@"; }
 
-# Cap server.log at 1 MB — the raw stderr of per-connection handlers also
-# lands there (socat 2>>), outside kav_log's own check. Called at daemon
-# boot and on every W, so the file can't grow unbounded; journald rotates
-# its own side of the logs.
+# Cap server.log at 1 MB — raw handler stderr lands there via socat's
+# 2>> redirect, bypassing kav_log. Checked at boot and on every W;
+# journald rotates its own side.
 kav_rotate_log() {
     [ -f "$KAV_RUNTIME_DIR/server.log" ] || return 0
     size=$(stat -c %s "$KAV_RUNTIME_DIR/server.log" 2> /dev/null || echo 0)

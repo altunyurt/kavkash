@@ -9,8 +9,7 @@
 #                                on a collision lives at a different id)
 # A 5th W argument "sync" delivers in the foreground (bash's `exit` would
 # kill the backgrounded socat before it connects).
-# The id is the row's primary key AND timestamp: ns since epoch, so
-# larger id == later command (ORDER BY id DESC == newest first).
+# The id is the row's primary key AND timestamp: ns since epoch.
 
 # Source includes.sh relative to THIS script, not CWD: hook.sh is launched
 # from interactive shells whose CWD is arbitrary.

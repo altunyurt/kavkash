@@ -3,7 +3,7 @@
 #
 # Asks the daemon for the newest COUNT DISTINCT commands starting at
 # OFFSET (COUNT=0 = all of them — the server sends no LIMIT). The server
-# returns one row per unique command (GROUP BY, newest occurrence first).
+# returns one row per unique command, newest occurrence first.
 # The Ctrl+R picker loads the whole set (COUNT=0) and lets fzf filter
 # in-memory; the Up/Down stepper walks it in batches of 50, passing the
 # typed line as QUERY to restrict the walk to commands starting with it
@@ -11,8 +11,9 @@
 # (empty = global): cwd matches the dir + subtree, session a per-shell
 # token.
 #
-# Output: NUL-separated raw command rows (multi-line commands pass
-# through verbatim — fzf renders them natively).
+# Output: NUL-separated rows — "dur ✓/✗ age\x1d" metadata + the raw
+# command (multi-line commands pass through verbatim; fzf renders them
+# natively).
 
 . "$(dirname -- "$(realpath -- "$0")")/includes.sh"
 

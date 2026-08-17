@@ -167,13 +167,10 @@ case "$TYPE" in
         ;;
     Q)
         # Query: newest `count` DISTINCT commands matching the scope at
-        # `offset`, NUL-framed raw rows (GROUP BY command — one row per
-        # unique command, ordered by its newest occurrence). QUERY is a
-        # prefix filter: the Up/Down stepper passes the typed line and
-        # gets only commands starting with it; empty = no filter (the
+        # `offset`, NUL-framed rows. QUERY is an anchored prefix filter
+        # (the stepper passes the typed line; empty = no filter — the
         # picker sends an empty query and fzf filters client-side).
-        # cwd/session scope (empty = no filter) applies BEFORE the LIMIT:
-        # the result is the newest N distinct commands matching the scope.
+        # cwd/session scope applies BEFORE the LIMIT.
         action="$1"
         query="$2"
         count="$3"
@@ -208,21 +205,16 @@ case "$TYPE" in
         # run's exit code and duration alongside the id — the picker
         # shows them as "dur ✓/✗ age" metadata (formatted in the awk
         # below). Consecutive repeats were already collapsed at save
-        # time (W); the result is the newest N distinct commands
-        # matching the scope.
+        # time (W).
         sql="SELECT REPLACE(REPLACE(REPLACE(h.command, char(30), ''), char(31), ''), char(13), '') || char(31) || h.id || char(31) || h.exit_code || char(31) || h.duration_ms FROM history h JOIN (SELECT command, MAX(id) AS mid FROM history${where:+ WHERE $where} GROUP BY command) m ON h.id = m.mid ORDER BY h.id DESC LIMIT $count OFFSET $offset;"
 
         # sqlite3 -ascii (0x1E rows / 0x1F cols); the SELECT already stripped
         # those hazards, so no embedded separator can tear a row. Rows are
         # rejoined with 0x1E via ORS and one tr converts to NUL (mawk printf
         # eats a literal \0 in formats).
-        # kav_db: the dot-command sets the lock wait on this connection
-        # and prints nothing — a PRAGMA would echo its value as a row
-        # into the picker stream.
-        # Field 1 becomes "dur ✓/✗ age\x1dcommand": the \x1d (GS) marks
-        # the metadata boundary — invisible in the display, stripped by
-        # the shells on accept, and never present in command text. The
-        # \x1e/\x1f framing stays untouched (\x1d is safe inside field 1).
+        # Field 1 = "dur ✓/✗ age\x1dcommand": \x1d (GS) marks the metadata
+        # boundary — untypable, invisible in the display, stripped by the
+        # shells on accept; the \x1e/\x1f framing is untouched.
         kav_db -ascii "$db_file" "$sql" | LC_ALL=C awk -v NOW="$(date +%s%N 2> /dev/null || echo 0)" '
         BEGIN { RS = "\036"; ORS = "\036" }
         {

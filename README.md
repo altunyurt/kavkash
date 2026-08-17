@@ -225,10 +225,11 @@ shell picker shift-delete → delete.sh ─────────────�
   in WAL mode, so readers never block the daemon's writes.
 - The picker (`functions.*`) loads ALL distinct commands via `query.sh`
   (count=0 = no limit) and fzf filters them in-memory. The server
-  deduplicates (GROUP BY command, newest occurrence first) and appends
-  each row's id to the payload — hidden from the display, but Shift+Delete
-  hands it to `delete.sh`, which removes every occurrence of the command
-  via the `D` action, then reloads. Dir/session scope is applied
+  deduplicates (newest occurrence per distinct command) and appends
+  each row's id and last-run metadata to the payload — the id is hidden
+  from the display but feeds Shift+Delete's `delete.sh`, which removes
+  every occurrence of the command via the `D` action, then reloads.
+  Dir/session scope is applied
   server-side, so a scope switch (F6-F8) re-queries the whole scoped set.
   The scope lives in a temp file because fzf transforms run in a subshell.
 - Up/Down step through all of history one distinct command per press,

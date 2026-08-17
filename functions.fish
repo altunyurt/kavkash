@@ -79,7 +79,8 @@ function _hist_picker
         --bind 'enter:print()+accept,tab:print(tab)+accept' </dev/null \
         | awk 'BEGIN { RS = "\0" }
             NR == 1 { key = $0; next }
-            NR == 2 { i = index($0, "\035"); if (i) $0 = substr($0, i + 1); printf "%s\n%s", key, $0 }' | read -z picked
+            NR == 2 { i = index($0, "\035"); if (i) $0 = substr($0, i + 1)  # strip the "dur ✓/✗ age" prefix
+            printf "%s\n%s", key, $0 }' | read -z picked
     rm -f "$scope_file"
 
     # fzf ran as a full-screen app inside this binding; fish's deferred
