@@ -123,7 +123,8 @@ files are never touched — remove the `source` line yourself.
 - The picker loads ALL distinct commands (each command appears once —
   hundreds of `ls` become a single entry) and filters them in-memory —
   full fzf syntax (`!`, `'exact'`, `a|b`), no per-keystroke DB hits.
-  Multi-line commands display natively.
+  Multi-line commands display natively. Each row also shows its last
+  run as `dur ✓/✗ age` — e.g. `42ms ✗ 3d git push origin main`.
 
 ## Command line
 
@@ -197,7 +198,9 @@ Developed and tested on Debian trixie (dash, bash 5.2, zsh, fish 4).
 Each test file gets a throwaway data/runtime dir (XDG overrides) with
 its own daemon — the developer's real history is never touched. The
 suite replays every regression fixed so far (lock waits, stepper
-cache, PK collisions, WAL sidecars, daily backups, …); CI runs it on
+cache, PK collisions, WAL sidecars, daily backups, …); `t-sync.sh`
+additionally verifies the installed copy matches the repo (the suite
+tests the repo, but your shells source the install). CI runs it on
 every push (`tests/docker.sh`).
 
 ## How it works
