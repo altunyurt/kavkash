@@ -26,7 +26,7 @@ file. Useful overrides (full list in the installer's header):
 
 A container with the whole app — daemon, shell hooks, fzf picker — with
 **your** shell histories copied into the image (bash/zsh/fish files; the
-atuin store and key are mounted read-only instead — see below). No
+atuin store and key are mounted read-only instead). No
 install, no rc edits — nothing is written to the host.
 
 ```sh
@@ -198,7 +198,8 @@ Developed and tested on Debian trixie (dash, bash 5.2, zsh, fish 4).
 Each test file gets a throwaway data/runtime dir (XDG overrides) with
 its own daemon — the developer's real history is never touched. The
 suite replays every regression fixed so far (lock waits, stepper
-cache, PK collisions, WAL sidecars, daily backups, …); `t-sync.sh`
+cache, PK collisions, daily backups, db permissions, idle-connection
+drops, …); `t-sync.sh`
 additionally verifies the installed copy matches the repo (the suite
 tests the repo, but your shells source the install). CI runs it on
 every push (`tests/docker.sh`).
@@ -225,11 +226,8 @@ shell picker shift-delete → delete.sh ─────────────�
   INTEGER PRIMARY KEY aliases the rowid, so the table is stored in time
   order and `ORDER BY id DESC` is a reverse leaf scan. The database runs
   in WAL mode, so readers never block the daemon's writes.
-- Everything on disk is owner-only (0600): the socket (socat `mode=`),
-  `history.db` (the db holds every command verbatim, so a lax umask
-  would leak it to local users — enforced on every sqlite3 call and
-  re-tightened at boot for pre-existing dbs), its WAL sidecars, and
-  `backup.sh` snapshots.
+- Everything on disk is owner-only (0600): the socket, `history.db`
+  (re-tightened at boot), its WAL sidecars, and `backup.sh` snapshots.
 - The picker (`functions.*`) loads ALL distinct commands via `query.sh`
   (count=0 = no limit) and fzf filters them in-memory. The server
   deduplicates (newest occurrence per distinct command) and appends
