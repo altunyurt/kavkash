@@ -79,7 +79,7 @@ function _hist_picker
         --bind 'enter:print()+accept,tab:print(tab)+accept' </dev/null \
         | awk 'BEGIN { RS = "\0" }
             NR == 1 { key = $0; next }
-            NR == 2 { printf "%s\n%s", key, $0 }' | read -z picked
+            NR == 2 { i = index($0, "\035"); if (i) $0 = substr($0, i + 1); printf "%s\n%s", key, $0 }' | read -z picked
     rm -f "$scope_file"
 
     # fzf ran as a full-screen app inside this binding; fish's deferred
@@ -143,7 +143,7 @@ function _hist_step_up
         test $_kav_step_eof -eq 1; and return 0
         set -l _kav_tmp (mktemp)
         "$_HIST_SCRIPT_DIR/query.sh" 50 "$_kav_step_prefix" "" "" $_kav_step_idx \
-            | awk 'BEGIN { RS = ORS = "\0" } { sub(/\x1f[^\x1f]*$/, ""); print }' >$_kav_tmp
+            | awk 'BEGIN { RS = ORS = "\0" } { i = index($0, "\035"); if (i) $0 = substr($0, i + 1); sub(/\x1f[^\x1f]*$/, ""); print }' >$_kav_tmp
         set -l _kav_have (count $_kav_step_cache)
         while read -z _kav_item
             set -a _kav_step_cache $_kav_item

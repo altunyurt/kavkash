@@ -70,7 +70,7 @@ _hist_picker() {
         < /dev/null \
         | awk 'BEGIN { RS = "\0" }
             NR == 1 { key = $0; next }
-            NR == 2 { printf "%s\n%s\n", key, $0 }')
+            NR == 2 { i = index($0, "\035"); if (i) $0 = substr($0, i + 1); printf "%s\n%s\n", key, $0 }')
     rm -f "$scope_file"
 
     # fzf ran as a full-screen app inside this widget; zle's incremental
@@ -128,7 +128,9 @@ _hist_step_up() {
         local -a _hist_batch
         _hist_batch=()
         while IFS= read -r -d '' _hist_item; do
-            _hist_batch+=("${_hist_item%$'\x1f'*}") # drop the \x1f<id> payload
+            _hist_item=${_hist_item%$'\x1f'*}   # drop the \x1f<id> payload
+            _hist_item=${_hist_item#*$'\x1d'}   # drop the "dur ✓/✗ age" metadata prefix
+            _hist_batch+=("$_hist_item")
         done < <("$_SCRIPT_DIR/query.sh" "$_hist_step_batch" "$_hist_step_prefix" "" "" "$_hist_step_idx")
         if ((${#_hist_batch[@]} == 0)); then
             _hist_step_eof=1

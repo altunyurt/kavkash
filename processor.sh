@@ -203,15 +203,14 @@ case "$TYPE" in
             q=$(printf '%s' "$query" | sed "s/'/''/g")
             where="${where:+$where AND }substr(command,1,length('$q')) = '$q' COLLATE NOCASE"
         fi
-        # Dedup: GROUP BY command folds interspersed repeats (e.g.
-        # hundreds of "ls") into one row per distinct command, ordered by
-        # each command's newest occurrence (MAX(id)); consecutive repeats
-        # were already collapsed at save time (W). The scope WHERE applies
-        # before the GROUP, so the result is the newest N distinct commands
-        # matching the scope. The payload is command + its MAX(id) so the
-        # picker can act on the row (delete) while displaying only the
-        # command (fzf --with-nth).
-        sql="SELECT REPLACE(REPLACE(REPLACE(command, char(30), ''), char(31), ''), char(13), '') || char(31) || MAX(id) FROM history${where:+ WHERE $where} GROUP BY command ORDER BY MAX(id) DESC LIMIT $count OFFSET $offset;"
+        # Dedup: the self-join picks each distinct command's newest row
+        # (MAX(id)) within the scope, so the payload carries that last
+        # run's exit code and duration alongside the id — the picker
+        # shows them as "dur ✓/✗ age" metadata (formatted in the awk
+        # below). Consecutive repeats were already collapsed at save
+        # time (W); the result is the newest N distinct commands
+        # matching the scope.
+        sql="SELECT REPLACE(REPLACE(REPLACE(h.command, char(30), ''), char(31), ''), char(13), '') || char(31) || h.id || char(31) || h.exit_code || char(31) || h.duration_ms FROM history h JOIN (SELECT command, MAX(id) AS mid FROM history${where:+ WHERE $where} GROUP BY command) m ON h.id = m.mid ORDER BY h.id DESC LIMIT $count OFFSET $offset;"
 
         # sqlite3 -ascii (0x1E rows / 0x1F cols); the SELECT already stripped
         # those hazards, so no embedded separator can tear a row. Rows are
@@ -220,13 +219,31 @@ case "$TYPE" in
         # kav_db: the dot-command sets the lock wait on this connection
         # and prints nothing — a PRAGMA would echo its value as a row
         # into the picker stream.
-        kav_db -ascii "$db_file" "$sql" | LC_ALL=C awk '
+        # Field 1 becomes "dur ✓/✗ age\x1dcommand": the \x1d (GS) marks
+        # the metadata boundary — invisible in the display, stripped by
+        # the shells on accept, and never present in command text. The
+        # \x1e/\x1f framing stays untouched (\x1d is safe inside field 1).
+        kav_db -ascii "$db_file" "$sql" | LC_ALL=C awk -v NOW="$(date +%s%N 2> /dev/null || echo 0)" '
         BEGIN { RS = "\036"; ORS = "\036" }
         {
             row = $0
             sub(/\n$/, "", row)   # strip sqlite3 trailing newline artifact, if any
             if (row == "") next   # sqlite3 -ascii trailing-separator artifact; real rows are never empty
-            print row
+            n = split(row, f, "\037")   # command \x1f id \x1f exit \x1f dur
+            if (n < 4) next
+            dur = f[4]
+            if (dur < 1000) d = dur "ms"
+            else if (dur < 60000) d = sprintf("%.1fs", dur / 1000)
+            else if (dur < 3600000) d = int(dur / 60000) "m"
+            else d = int(dur / 3600000) "h"
+            age = int((NOW - f[2]) / 1000000000)
+            if (age < 60) a = age "s"
+            else if (age < 3600) a = int(age / 60) "m"
+            else if (age < 86400) a = int(age / 3600) "h"
+            else a = int(age / 86400) "d"
+            mark = (f[3] == "0") ? "✓" : "✗"   # plain text: fzf strips item ANSI codes
+            meta = sprintf("%-6s %s %-4s", d, mark, a)
+            print meta "\035" f[1] "\037" f[2]   # print (not printf) so ORS\x1e frames the row
         }' | tr '\036' '\000'
         ;;
     D)

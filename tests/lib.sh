@@ -84,7 +84,11 @@ ns_send() { # ns_send TYPE FIELD...
     printf '%s' "$msg" | socat - UNIX-CONNECT:"$KAV_SOCK_FILE" > /dev/null 2>&1
 }
 
-# Q helper: rows as lines, \x1f<id> payload stripped.
+# Q helpers: rows as lines, payload stripped to the bare command
+# (\x1f<id> suffix, "dur ✓/✗ age\x1d" prefix).
 q_rows() { # q_rows COUNT [QUERY [CWD [SESSION [OFFSET]]]]
-    "$KAVKASH_DIR/query.sh" "$@" | tr '\0' '\n' | sed 's/\x1f.*//'
+    "$KAVKASH_DIR/query.sh" "$@" | tr '\0' '\n' | sed 's/\x1f.*//; s/^[^\x1d]*\x1d//'
+}
+q_raw() { # q_raw COUNT [QUERY [...]] — unstripped rows for payload asserts
+    "$KAVKASH_DIR/query.sh" "$@" | tr '\0' '\n'
 }

@@ -47,6 +47,15 @@ ns_send U 1000000000000000300 7 42
 sleep 0.3
 t_eq "7|42" "$(kav_db "$KAV_DB_FILE" "SELECT exit_code||'|'||duration_ms FROM history WHERE id=1000000000000000300;")" "exit+duration stored"
 
+# --- Q: payload carries last-run metadata ---
+t_begin "Q: payload carries last-run metadata"
+raw=$(q_raw 10 u | grep 'u test')
+t_contains "✗" "$raw" "failure marker for non-zero exit"
+t_contains "42ms" "$raw" "duration shown"
+t_contains "s" "$raw" "age shown"
+t_begin "Q: bare command survives the metadata strip"
+t_eq "u test" "$(q_rows 10 u)" "stripped row is the clean command"
+
 # --- U: legacy 4-field form still works ---
 t_begin "U: legacy form (no command field) still works"
 ns_send U 1000000000000000300 3 9
@@ -65,6 +74,11 @@ rows=$(q_rows 10)
 t_eq "2" "$(printf '%s\n' "$rows" | grep -c '^q')" "distinct only"
 t_begin "Q: newest occurrence first"
 t_eq "qalpha" "$(printf '%s\n' "$rows" | sed -n '1p')" "newest run first"
+t_begin "Q: metadata reflects the NEWEST occurrence"
+ns_send U 2000000000000000001 1 100
+sleep 0.3
+raw=$(q_raw 10 qalpha | grep 'qalpha')
+t_contains "✓" "$raw" "newest run succeeded, so the marker is ✓"
 
 # --- Q: prefix filter ---
 t_begin "Q: anchored prefix filter"
