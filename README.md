@@ -217,7 +217,9 @@ shell picker shift-delete → delete.sh ─────────────�
   a DEBUG trap; the precmd fire catches lines the trap can't see, e.g.
   function definitions). Messages are netstrings (`len:payload,`) over a
   Unix socket; `server.sh` (socat) hands each connection to
-  `processor.sh`.
+  `processor.sh` and drops connections that stay idle for 5s (every
+  legit client sends immediately — a silent one would otherwise park a
+  handler forever).
 - Each row stores the raw command (multi-line safe), cwd, exit code,
   duration, and a per-shell session token. The row id is ns-since-epoch:
   INTEGER PRIMARY KEY aliases the rowid, so the table is stored in time

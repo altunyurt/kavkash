@@ -67,6 +67,11 @@ trap 'kill -TERM "$KAV_SOCAT_PID" 2> /dev/null' TERM INT HUP
 # - EXEC: processor.sh sources includes.sh itself, so it knows the DB path
 #   with no argv/env handoff. stderr -> server.log (broken pipes from fzf
 #   exits are normal; real errors still land there).
-socat UNIX-LISTEN:"$KAV_SOCK_FILE",fork,mode=0600 EXEC:"$KAV_PROC_SCRIPT" 2>> "$KAV_RUNTIME_DIR/server.log" &
+# - -T 5: drop idle connections. Every legit client (hook.sh, query.sh,
+#   delete.sh) sends its request immediately on connect and reads the
+#   response; a connection that stays silent would otherwise park its
+#   handler forever (processor.sh blocks in head until 2 MB or EOF) —
+#   an easy fd/process exhaustion DoS against the user's own daemon.
+socat -T 5 UNIX-LISTEN:"$KAV_SOCK_FILE",fork,mode=0600 EXEC:"$KAV_PROC_SCRIPT" 2>> "$KAV_RUNTIME_DIR/server.log" &
 KAV_SOCAT_PID=$!
 wait "$KAV_SOCAT_PID"

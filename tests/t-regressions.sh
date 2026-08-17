@@ -73,6 +73,25 @@ sleep 0.5
 size=$(stat -c %s "$KAV_RUNTIME_DIR/server.log" 2> /dev/null || echo 999999999)
 [ "$size" -lt 1000000 ] && t_ok || t_fail "server.log still $size bytes"
 
+# --- idle connections: socat -T must drop them, not park a handler ---
+t_begin "regression: idle connection is parked while open (precondition)"
+# Client connects and sends nothing; stdin stays open for 30s, so the
+# client can only exit if the SERVER closes the connection.
+sleep 30 | socat - UNIX-CONNECT:"$KAV_SOCK_FILE" &
+IDLE_CLIENT=$!
+sleep 1
+kill -0 "$IDLE_CLIENT" 2> /dev/null && t_ok || t_fail "client exited before the idle timeout"
+
+t_begin "regression: daemon drops the idle connection after 5s"
+sleep 6   # past the socat -T 5 idle timeout
+kill -0 "$IDLE_CLIENT" 2> /dev/null && t_fail "idle connection still open" || t_ok
+wait "$IDLE_CLIENT" 2> /dev/null
+
+t_begin "regression: daemon still serves writes after the drop"
+ns_send W "idle-drop probe" "$PWD" 8000000000000000001 "s1"
+sleep 0.3
+t_eq "1" "$(kav_db "$KAV_DB_FILE" "SELECT count(*) FROM history WHERE command='idle-drop probe';")" "write after idle drop"
+
 # --- boot integrity check (last: the db is corrupt from here on) ---
 daemon_stop
 t_begin "regression: corrupt db at boot sets the marker and status warns"
