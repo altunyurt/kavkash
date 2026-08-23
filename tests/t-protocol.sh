@@ -92,6 +92,44 @@ sleep 0.3
 raw=$(q_raw 10 qalpha | grep 'qalpha')
 t_contains "✓" "$raw" "newest run succeeded, so the marker is ✓"
 
+# --- age units: adaptive ladder (s m h d w mo y) + visible separator ---
+# The row id IS the write timestamp (ns-since-epoch), so seeding ids in
+# the past pins each unit without sleeping. Values floor within wide
+# bands, so only the unit letter is asserted on the sub-minute rows;
+# the rollover rows (w/mo/y) are asserted exactly.
+age_token() { # age_token PREFIX — the age field of the newest matching row
+    q_raw 10 "$1" | tr '\035' '\n' | awk 'NR == 1 { print $NF }'
+}
+now=$(date +%s%N)
+ns_send W "age30s" "$PWD" $((now - 30 * 1000000000)) "s1"
+ns_send W "age30m" "$PWD" $((now - 1800 * 1000000000)) "s1"
+ns_send W "age3h" "$PWD" $((now - 10800 * 1000000000)) "s1"
+ns_send W "age3d" "$PWD" $((now - 259200 * 1000000000)) "s1"
+ns_send W "age20d" "$PWD" $((now - 20 * 86400 * 1000000000)) "s1"
+ns_send W "age100d" "$PWD" $((now - 100 * 86400 * 1000000000)) "s1"
+ns_send W "age360d" "$PWD" $((now - 360 * 86400 * 1000000000)) "s1"
+ns_send W "age400d" "$PWD" $((now - 400 * 86400 * 1000000000)) "s1"
+sleep 0.3
+t_begin "age: seconds unit"
+case "$(age_token age30s)" in *s) t_ok ;; *) t_fail "got [$(age_token age30s)]" ;; esac
+t_begin "age: minutes unit"
+case "$(age_token age30m)" in *m) t_ok ;; *) t_fail "got [$(age_token age30m)]" ;; esac
+t_begin "age: hours unit"
+case "$(age_token age3h)" in *h) t_ok ;; *) t_fail "got [$(age_token age3h)]" ;; esac
+t_begin "age: days unit"
+case "$(age_token age3d)" in *d) t_ok ;; *) t_fail "got [$(age_token age3d)]" ;; esac
+t_begin "age: weeks rollover"
+t_eq "2w" "$(age_token age20d)" "20 days floors to 2w"
+t_begin "age: months rollover"
+t_eq "3mo" "$(age_token age100d)" "100 days floors to 3mo"
+t_begin "age: years rollover"
+t_eq "1y" "$(age_token age400d)" "400 days floors to 1y"
+t_begin "age: a space separates the age from the command"
+# 360d -> "12mo": a 4-char age, so the %-4s padding is zero and the
+# separating space is the only gap before the invisible \x1d.
+sep=$(printf '\035')
+t_contains "12mo $sep" "$(q_raw 10 age360d)" "age, space, separator, command"
+
 # --- Q: prefix filter ---
 t_begin "Q: anchored prefix filter"
 t_eq "qalpha" "$(q_rows 10 qa)" "prefix qa matches qalpha only"

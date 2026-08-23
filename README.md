@@ -124,7 +124,8 @@ files are never touched — remove the `source` line yourself.
   hundreds of `ls` become a single entry) and filters them in-memory —
   full fzf syntax (`!`, `'exact'`, `a|b`), no per-keystroke DB hits.
   Multi-line commands display natively. Each row also shows its last
-  run as `dur ✓/✗ age` — e.g. `42ms ✗ 3d git push origin main`.
+  run as `dur ✓/✗ age` (compact units: s, m, h, d, w, mo, y) — e.g.
+  `42ms ✗ 3d git push origin main`.
 
 ## Command line
 

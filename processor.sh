@@ -228,12 +228,22 @@ case "$TYPE" in
             else if (dur < 3600000) d = int(dur / 60000) "m"
             else d = int(dur / 3600000) "h"
             age = int((NOW - f[2]) / 1000000000)
+            # Adaptive units (GitHub-style compact: s m h d w mo y) —
+            # bounded so old commands keep a short age field.
             if (age < 60) a = age "s"
             else if (age < 3600) a = int(age / 60) "m"
             else if (age < 86400) a = int(age / 3600) "h"
-            else a = int(age / 86400) "d"
+            else {
+                days = int(age / 86400)
+                if (days < 8) a = days "d"
+                else if (days < 30) a = int(days / 7) "w"
+                else if (days < 365) a = int(days / 30) "mo"
+                else a = int(days / 365) "y"
+            }
             mark = (f[3] == "0") ? "✓" : "✗"   # plain text: fzf strips item ANSI codes
-            meta = sprintf("%-6s %s %-4s", d, mark, a)
+            # Trailing space: the \x1d separator is invisible, so without
+            # it a 4-char age would run into the command text ("111dcmd").
+            meta = sprintf("%-6s %s %-4s ", d, mark, a)
             print meta "\035" f[1] "\037" f[2]   # print (not printf) so ORS\x1e frames the row
         }' | tr '\036' '\000'
         ;;
