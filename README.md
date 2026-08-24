@@ -29,7 +29,9 @@ docker stop kavkash-demo
 ```
 
 `demo.sh` is self-contained and also works piped from the repo:
-`curl -fsSL https://raw.githubusercontent.com/altunyurt/kavkash/main/demo.sh | dash`.
+
+`curl -fsSL https://raw.githubusercontent.com/altunyurt/kavkash/main/demo.sh | dash` 
+
 `PERSIST=1 ./demo.sh` keeps `history.db` across restarts.
 
 ## Run
