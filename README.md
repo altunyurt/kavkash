@@ -226,9 +226,13 @@ shell picker shift-delete → delete.sh ─────────────�
   duration, and a per-shell session token. The row id is ns-since-epoch:
   INTEGER PRIMARY KEY aliases the rowid, so the table is stored in time
   order and `ORDER BY id DESC` is a reverse leaf scan. The database runs
-  in WAL mode, so readers never block the daemon's writes.
+  in WAL mode (readers never block the daemon's writes) with
+  `synchronous=NORMAL` on every writing connection — a power cut can lose
+  the most recent commands (bounded by the WAL checkpoint, ~4MB); the
+  file can never corrupt.
 - Everything on disk is owner-only (0600): the socket, `history.db`
-  (re-tightened at boot), its WAL sidecars, and `backup.sh` snapshots.
+  and its WAL sidecars (re-tightened at boot, stale ones included), and
+  `backup.sh` snapshots.
 - The picker (`functions.*`) loads ALL distinct commands via `query.sh`
   (count=0 = no limit) and fzf filters them in-memory. The server
   deduplicates (newest occurrence per distinct command) and appends

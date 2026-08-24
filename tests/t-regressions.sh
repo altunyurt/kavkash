@@ -8,6 +8,14 @@ daemon_start
 t_begin "regression: WAL journal mode"
 t_eq "wal" "$(kav_db "$KAV_DB_FILE" 'PRAGMA journal_mode;')" "journal mode is wal"
 
+# --- writer connection: synchronous=NORMAL rides along, and the pragma
+# echo ("normal") must NOT leak into stdout — processor W/U parse
+# SELECT changes() from that same stream ---
+t_begin "regression: writer connection result stream stays clean"
+kav_db "$KAV_DB_FILE" "INSERT INTO history (id, command, cwd, exit_code, duration_ms) VALUES (1, 'sync probe', '/tmp', 0, 0);"
+t_eq "1" "$(kav_db_w "$KAV_DB_FILE" "UPDATE history SET exit_code=7 WHERE id=1; SELECT changes();")" "only the changes() row — no pragma echo"
+t_eq "7" "$(kav_db "$KAV_DB_FILE" 'SELECT exit_code FROM history WHERE id=1;')" "update applied"
+
 # --- PK collision: both commands stored, U pinned by command ---
 t_begin "regression: PK collision stores both commands"
 ns_send W "collide one" "$PWD" 4000000000000000001 "s1"

@@ -44,6 +44,21 @@ kav_new_id() {
 # which are created through the same helper.
 kav_db() { ( umask 077; sqlite3 -cmd '.timeout 5000' "$@" ); }
 
+# Writer variant of kav_db — every connection that COMMITS (processor W/U/D).
+# PRAGMA synchronous=NORMAL is the SQLite-blessed WAL setting: commits
+# skip the fsync (the WAL is synced at checkpoint instead), so concurrent
+# writers hold the lock for microseconds, not disk-latency. Unlike
+# journal_mode (persistent, set once in kav_ensure_history_schema)
+# synchronous is PER-CONNECTION, so it must ride on every writing call;
+# readers/backup don't sync and stay on kav_db. Trade-off: a power cut
+# (not a daemon crash — the WAL lives in the page cache) can lose the
+# most recent commands, bounded by the auto-checkpoint (~4MB WAL); the
+# file can never corrupt either way. The CLI echoes the pragma's result
+# row ("normal") to stdout, which would corrupt parsed streams
+# (processor W/U read SELECT changes()) — the .output round-trip
+# swallows it.
+kav_db_w() { ( umask 077; sqlite3 -cmd '.timeout 5000' -cmd '.output /dev/null' -cmd 'PRAGMA synchronous=NORMAL;' -cmd '.output stdout' "$@" ); }
+
 # SQL literal escaping — the single source of truth. The sqlite3 CLI
 # takes no bind parameters, so every value interpolated into a query
 # string (processor.sh W/U/Q) must have its quotes doubled here first;
@@ -99,8 +114,11 @@ kav_ensure_history_schema() {
     kav_db "$KAV_DB_FILE" "PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS history (id INTEGER PRIMARY KEY, command TEXT NOT NULL, cwd TEXT NOT NULL, exit_code INTEGER NOT NULL, duration_ms INTEGER NOT NULL, session TEXT);" > /dev/null
     # The db predates the umask guard in kav_db on upgraded installs:
     # tighten it here, at every boot/import, so an old 0644 db (lax
-    # umask) doesn't stay world-readable.
-    chmod 600 "$KAV_DB_FILE"
+    # umask) doesn't stay world-readable. Sidecars too: SQLite mode-copies the db at -wal/-shm
+    # CREATION, so a stale sidecar born in
+    # the 0644 era keeps 0644 forever otherwise. Missing sidecars are
+    # normal (WAL checkpoints away on the last close) — ignore them.
+    chmod 600 "$KAV_DB_FILE" "$KAV_DB_FILE"-wal "$KAV_DB_FILE"-shm 2> /dev/null || true
 }
 
 

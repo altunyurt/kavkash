@@ -111,10 +111,10 @@ case "$TYPE" in
         # exit/duration still pending the U) — instead of inserting a
         # duplicate. IS handles empty-session (NULL) matching. A shell
         # that dies mid-command leaves exit 0 / duration 0; ids are never
-        # reused; kav_db's .timeout makes concurrent writers (several
+        # reused; kav_db_w's .timeout makes concurrent writers (several
         # terminals at once) wait for the lock instead of failing with
         # SQLITE_BUSY.
-        changed=$(kav_db "$KAV_DB_FILE" "UPDATE history SET id=$id, exit_code=0, duration_ms=0, session=NULLIF('$safe_session','') WHERE id=(SELECT id FROM history ORDER BY id DESC LIMIT 1) AND command='$safe_cmd' AND cwd='$safe_cwd' AND session IS NULLIF('$safe_session',''); SELECT changes();" 2> /dev/null | tail -1)
+        changed=$(kav_db_w "$KAV_DB_FILE" "UPDATE history SET id=$id, exit_code=0, duration_ms=0, session=NULLIF('$safe_session','') WHERE id=(SELECT id FROM history ORDER BY id DESC LIMIT 1) AND command='$safe_cmd' AND cwd='$safe_cwd' AND session IS NULLIF('$safe_session',''); SELECT changes();" 2> /dev/null | tail -1)
         case "$changed" in
             *[1-9]*) : ;;   # collapsed the previous consecutive repeat
             *)
@@ -124,7 +124,7 @@ case "$TYPE" in
                 # silently fails. Bump to the next free id (the row's
                 # timestamp ends up a few ns off — irrelevant).
                 n=0
-                while ! kav_db "$KAV_DB_FILE" "INSERT INTO history (id, command, cwd, exit_code, duration_ms, session) VALUES ($id, '$safe_cmd', '$safe_cwd', 0, 0, NULLIF('$safe_session', ''));" 2> /dev/null; do
+                while ! kav_db_w "$KAV_DB_FILE" "INSERT INTO history (id, command, cwd, exit_code, duration_ms, session) VALUES ($id, '$safe_cmd', '$safe_cwd', 0, 0, NULLIF('$safe_session', ''));" 2> /dev/null; do
                     id=$((id + 1))
                     n=$((n + 1))
                     [ "$n" -lt 100 ] || break
@@ -158,7 +158,7 @@ case "$TYPE" in
         fi
         n=0
         while [ "$n" -lt 5 ]; do
-            changed=$(kav_db "$KAV_DB_FILE" "UPDATE history SET exit_code=$exit_code, duration_ms=$duration WHERE id='$safe_id'$cmd_match; SELECT changes();" 2> /dev/null | tail -1)
+            changed=$(kav_db_w "$KAV_DB_FILE" "UPDATE history SET exit_code=$exit_code, duration_ms=$duration WHERE id='$safe_id'$cmd_match; SELECT changes();" 2> /dev/null | tail -1)
             case "$changed" in *[1-9]*) break ;; esac
             n=$((n + 1))
             sleep 0.01 2> /dev/null || break
@@ -254,6 +254,6 @@ case "$TYPE" in
         # one found at that id. Unknown ids delete nothing.
         id="$1"
         case "$id" in '' | *[!0-9]*) exit 0 ;; esac
-        kav_db "$KAV_DB_FILE" "DELETE FROM history WHERE command = (SELECT command FROM history WHERE id=$id);"
+        kav_db_w "$KAV_DB_FILE" "DELETE FROM history WHERE command = (SELECT command FROM history WHERE id=$id);"
         ;;
 esac
