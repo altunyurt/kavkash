@@ -1,7 +1,7 @@
 #!/bin/sh
 # delete.sh ID — permanently delete a command (all its occurrences) via
-# the daemon. The picker's shift-delete binding feeds it {2} (the row id
-# the Q response carries). id is digits-only; unknown ids delete nothing.
+# the daemon. The picker's shift-delete binding feeds it the row id from
+# the Q response; unknown ids delete nothing.
 . "$(dirname -- "$(realpath -- "$0")")/includes.sh"
 
 id="$1"

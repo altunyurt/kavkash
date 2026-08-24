@@ -1,19 +1,10 @@
 #!/bin/sh
 # query.sh COUNT [QUERY [CWD [SESSION [OFFSET]]]] — history back-end.
-#
 # Asks the daemon for the newest COUNT DISTINCT commands starting at
-# OFFSET (COUNT=0 = all of them — the server sends no LIMIT). The server
-# returns one row per unique command, newest occurrence first.
-# The Ctrl+R picker loads the whole set (COUNT=0) and lets fzf filter
-# in-memory; the Up/Down stepper walks it in batches of 50, passing the
-# typed line as QUERY to restrict the walk to commands starting with it
-# (empty QUERY = no filter). CWD/SESSION scope the server-side query
-# (empty = global): cwd matches the dir + subtree, session a per-shell
-# token.
-#
-# Output: NUL-separated rows — "dur ✓/✗ age\x1d" metadata + the raw
-# command (multi-line commands pass through verbatim; fzf renders them
-# natively).
+# OFFSET (COUNT=0 = all — no LIMIT), one row per unique command, newest
+# first. QUERY = anchored prefix filter, CWD/SESSION = server-side scope
+# (cwd matches the dir + subtree; empty = global). Output: NUL-separated
+# rows, "dur ✓/✗ age\x1d" metadata + the raw command.
 
 . "$(dirname -- "$(realpath -- "$0")")/includes.sh"
 

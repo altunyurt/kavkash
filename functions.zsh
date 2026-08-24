@@ -7,9 +7,8 @@ _SCRIPT_DIR=${0:A:h} # kavkash root, where hook.sh/query.sh/picker.sh live
 typeset -g _hist_version=$(cat "$KAV_DATA_HOME/VERSION" 2> /dev/null || printf '?')
 
 # Daemon liveness: every client call guards on the socket first — a dead
-# daemon must never die silently (recording stops, Up/Ctrl+R do nothing).
-# Warn once per outage; the flag resets as soon as the daemon is reachable
-# again, so a restart mid-session re-arms the warning.
+# daemon must never die silently. Warn once per outage; the flag resets
+# as soon as the daemon is reachable again.
 typeset -g _hist_daemon_warned=0
 _hist_sock_up() {
     if [[ -S "$KAV_SOCK_FILE" ]]; then

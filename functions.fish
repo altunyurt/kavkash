@@ -20,9 +20,8 @@ if test -z "$_hist_version"
 end
 
 # Daemon liveness: every client call guards on the socket first — a dead
-# daemon must never die silently (recording stops, Up/Ctrl+R do nothing).
-# Warn once per outage; the flag resets as soon as the daemon is reachable
-# again, so a restart mid-session re-arms the warning.
+# daemon must never die silently. Warn once per outage; the flag resets
+# as soon as the daemon is reachable again.
 function _kav_sock_up
     test -S $_HIST_SOCK; or return 1
     set -q _kav_daemon_warned; and set -e _kav_daemon_warned

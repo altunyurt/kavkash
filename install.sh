@@ -5,38 +5,29 @@
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/altunyurt/kavkash/main/install.sh | sh
 #
-# Runs under any POSIX shell (dash, bash, ...). Overrides:
-#   KAVKASH_REPO=owner/repo   repository to install from (default: altunyurt/kavkash)
-#   KAVKASH_BRANCH=branch     fallback branch when no stable release exists
-#   KAVKASH_TARBALL_URL=url   skip release resolution, download this tarball
-#   KAVKASH_TARBALL_SHA256=x  expected sha256 of KAVKASH_TARBALL_URL (recommended
-#                             whenever KAVKASH_TARBALL_URL is set — see note below)
-#   KAVKASH_SKIP_VERIFY=1     proceed even if no checksum could be verified
-#   KAVKASH_NO_SYSTEMD=1      skip systemd --user unit creation/activation entirely
-#   KAVKASH_IMPORT=1|0        import existing shell/atuin history: 1 = yes,
-#                             0 = no (default: prompt interactively)
+# Overrides:
+#   KAVKASH_REPO=owner/repo     repository (default: altunyurt/kavkash)
+#   KAVKASH_BRANCH=branch       fallback branch when no stable release exists
+#   KAVKASH_TARBALL_URL=url     skip release resolution, download this tarball
+#   KAVKASH_TARBALL_SHA256=x    expected sha256 of KAVKASH_TARBALL_URL
+#   KAVKASH_SKIP_VERIFY=1       proceed even if no checksum could be verified
+#   KAVKASH_NO_SYSTEMD=1        skip systemd --user unit creation/activation
+#   KAVKASH_IMPORT=1|0          import existing shell/atuin history
+#                               (default: prompt interactively)
 #
-# Revision tracking:
-#   On success writes ${KAV_DATA_HOME}/INSTALLED_REVISION: repo, tag, commit
-#   SHA, tarball sha256, verification status, timestamp. Read it to know
-#   exactly what is on disk — do not trust a tag name alone (tags move).
+# Writes ${KAV_DATA_HOME}/INSTALLED_REVISION: repo, tag, commit SHA,
+# tarball sha256, verification status, timestamp — read it to know
+# exactly what is on disk (do not trust a tag name alone; tags move).
 #
-# systemd --user integration:
-#   On systems running systemd with a reachable user session, this script
-#   installs a `kavkash.service` user unit (Restart=on-abnormal, started at
-#   login via default.target) instead of asking you to background the
-#   daemon manually. Where systemd isn't usable — no systemd PID 1, no
-#   `systemctl`, or no active --user session/bus (e.g. a container without
-#   lingering enabled) — it falls back to printing manual start
-#   instructions. Local customizations belong in a
-#   drop-in (`systemctl --user edit kavkash.service`), since this script
-#   regenerates the base unit file on every run.
+# systemd --user integration: a `kavkash.service` unit (Restart=on-abnormal,
+# started at login) where systemd has a reachable user session; otherwise
+# manual start instructions. The unit file is regenerated on every run —
+# local customizations go in a drop-in (`systemctl --user edit`).
 #
 # Safety: all executable logic lives inside main(), invoked only on the
-# final line — a POSIX shell parses the whole file before running anything,
-# so a truncated `curl | sh` download exits at parse time without side
-# effects. Keep it that way: no top-level statements outside functions,
-# nothing after the final `main "$@"`.
+# final line — a POSIX shell parses the whole file before running
+# anything, so a truncated `curl | sh` download exits at parse time
+# without side effects. Keep it that way.
 
 set -eu
 
@@ -111,9 +102,7 @@ resolve_source() {
     resolved_sha=""
 
     if [ -n "$tag" ]; then
-        # Resolve the tag to an immutable commit SHA. Tags can be moved by
-        # a repo owner after the fact; a commit SHA cannot. We fetch the
-        # tag ref, then dereference annotated tags to their target commit.
+        # Resolve the tag to an immutable commit SHA (tags can be moved).
         ref_json=$(http_get "https://api.github.com/repos/$KAVKASH_REPO/git/refs/tags/$tag")
         obj_sha=$(printf '%s' "$ref_json" | json_field sha)
         obj_type=$(printf '%s' "$ref_json" | sed -n 's/.*"type"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)
@@ -127,9 +116,8 @@ resolve_source() {
     fi
 
     if [ -n "$tag" ]; then
-        # Prefer the published release asset (kavkash-<tag>.tar.gz) — it can
-        # be verified against the SHA256SUMS published alongside. Fall back
-        # to GitHub's auto-generated archive when the release has no asset.
+        # Prefer the published release asset (verifiable against
+        # SHA256SUMS); fall back to GitHub's auto-generated archive.
         asset_url=$(printf '%s' "$api_tag_json" \
             | tr ',' '\n' \
             | grep '"browser_download_url"' \
@@ -142,15 +130,15 @@ resolve_source() {
             url="https://github.com/$KAVKASH_REPO/archive/$resolved_sha.tar.gz"
             say "kavkash: fetching release '$tag' (commit $resolved_sha)"
         else
-            # got a tag name but couldn't resolve a SHA for it — fall back to
-            # the tag ref directly; less verifiable but still a named release
+            # got a tag name but couldn't resolve a SHA — install by tag
+            # name; less verifiable but still a named release
             url="https://github.com/$KAVKASH_REPO/archive/refs/tags/$tag.tar.gz"
             resolved_sha="(unresolved — GitHub API did not return a commit SHA for this tag)"
             warn "could not resolve tag '$tag' to a commit SHA; installing by tag name only"
             say "kavkash: fetching release '$tag'"
         fi
     else
-        # no stable release resolvable at all — fall back to branch HEAD
+        # No stable release — fall back to branch HEAD (a moving target).
         url="https://github.com/$KAVKASH_REPO/archive/refs/heads/$KAVKASH_BRANCH.tar.gz"
         tag="(none — no stable release found)"
         resolved_sha="(unresolved — installed from moving branch HEAD, not a pinned commit)"
@@ -161,8 +149,8 @@ resolve_source() {
         say "kavkash: fetching branch '$KAVKASH_BRANCH'"
     fi
 
-    # Best-effort: look for a published checksum asset on the release (GitHub
-    # doesn't generate these itself; they exist only if upstream publishes one).
+    # Best-effort: a published checksum asset (GitHub doesn't generate
+    # these itself).
     if [ -n "${api_tag_json:-}" ]; then
         for name in SHA256SUMS SHA256SUMS.txt checksums.txt sha256sums.txt; do
             asset_url=$(printf '%s' "$api_tag_json" \
@@ -256,13 +244,9 @@ _dep() {
 }
 
 check_deps() {
-    # Reports the RUNTIME dependencies after files are installed (what
-    # kavkash needs to run, not what the installer itself needed to
-    # download/unpack). Warnings only — install never blocks — but the
-    # messages make severity explicit: sqlite3/awk/base64/dash are required
-    # (nothing works without them), socat has an nc -U fallback, and fzf
-    # gates only the picker (the shell files re-check the fzf version when
-    # sourced; this is early feedback).
+    # Runtime deps (what kavkash needs to run, not the installer's own).
+    # Warnings only — install never blocks. sqlite3/awk/base64/dash are
+    # required; socat has an nc -U fallback; fzf gates only the picker.
     say "dependency check:"
     _dep sqlite3 "required — storage; the daemon cannot run without it"
     _dep awk "required — netstring/query parsing in the daemon"
@@ -295,11 +279,9 @@ check_deps() {
 # --- systemd --user integration --------------------------------------------
 
 systemd_usable() {
-    # True only if: systemd is PID 1 (or at least present as init), the
-    # systemctl binary exists, AND a --user bus is actually reachable. All
-    # three are required — having the binary installed doesn't mean a user
-    # session/bus exists (common in minimal containers, chroots, WSL1, or
-    # non-systemd distros that ship systemctl as a compat shim).
+    # systemd as PID 1, systemctl present, AND a reachable --user bus —
+    # the binary alone doesn't mean a user session exists (containers,
+    # chroots, WSL1, non-systemd distros with a systemctl shim).
     [ "${KAVKASH_NO_SYSTEMD:-0}" != "1" ] || return 1
     [ -d /run/systemd/system ] || return 1
     have systemctl || return 1
@@ -368,9 +350,8 @@ setup_systemd() {
 }
 
 import_history() {
-    # Opt in via KAVKASH_IMPORT=1/0; otherwise prompt. Under curl|sh stdin
-    # is the script pipe, not a terminal — read the answer from /dev/tty.
-    # Import writes straight to the DB and needs no running daemon.
+    # KAVKASH_IMPORT=1/0, else prompt. Under curl|sh, stdin is the script
+    # pipe, not a terminal — read the answer from /dev/tty.
     if [ "${KAVKASH_IMPORT:-}" = "1" ]; then
         answer="y"
     elif [ "${KAVKASH_IMPORT:-}" = "0" ]; then
@@ -489,9 +470,8 @@ main() {
     KAV_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/kavkash"
     SYSTEMD_USER_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 
-    # Local clone mode: when this installer runs from a git checkout of
-    # kavkash, install from the working tree instead of fetching the
-    # latest release from GitHub (set KAVKASH_FORCE_REMOTE=1 to override).
+    # Local clone mode: run from a git checkout → install from the
+    # working tree instead of GitHub (KAVKASH_FORCE_REMOTE=1 overrides).
     SCRIPT_DIR=$(cd "$(dirname -- "$0")" 2> /dev/null && pwd 2> /dev/null || true)
     if [ -z "${KAVKASH_FORCE_REMOTE:-}" ] && [ -n "$SCRIPT_DIR" ] && [ -d "$SCRIPT_DIR/.git" ]; then
         say "local git checkout detected — installing from $SCRIPT_DIR"
@@ -511,8 +491,8 @@ main() {
 
     install_files
 
-    # Put `kavkash` on PATH: ~/.local/bin/kavkash is a symlink to the
-    # install dir, so the dispatcher's realpath resolves its home.
+    # ~/.local/bin/kavkash is a symlink to the install dir, so the
+    # dispatcher's realpath resolves its home.
     if [ -n "${KAVKASH_NO_SYMLINK:-}" ]; then
         say "skipping ~/.local/bin/kavkash symlink (KAVKASH_NO_SYMLINK set)"
     else

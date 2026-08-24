@@ -279,11 +279,9 @@ kav_cmd_update() {
     url="https://raw.githubusercontent.com/$repo/main/install.sh"
     current=$(cat "$KAV_DATA_HOME/VERSION" 2> /dev/null || printf unknown)
     kav_have curl || kav_die 'update: curl is required (or run the installer manually: see README)'
-    # Short-circuit: if the installed version matches the latest release
-    # tag, there is nothing to do (the installer would just re-install
-    # the same release). Falls through when the check itself fails
-    # (offline, bad repo) — the installer fetch below then reports the
-    # real error.
+    # Short-circuit: installed version == latest release tag → nothing to
+    # do. Falls through when the check fails (offline, bad repo) — the
+    # installer fetch then reports the real error.
     latest=$(curl -fsSL "https://api.github.com/repos/$repo/releases/latest" 2> /dev/null \
         | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
         | head -n 1)
@@ -302,9 +300,9 @@ kav_cmd_update() {
         rm -f "$tmp"
         kav_die "update: failed to fetch $url (network down? repo wrong?) — nothing changed"
     fi
-    # The installer re-installs over KAV_DATA_HOME (same flow as the README's
-    # curl|sh one-liner): overwrites the scripts, offers the re-import, and
-    # prints the restart note for the daemon. Its exit code passes through.
+    # The installer re-installs over KAV_DATA_HOME: overwrites the
+    # scripts, offers the re-import, prints the restart note. Its exit
+    # code passes through.
     dash "$tmp"
     rc=$?
     rm -f "$tmp"
@@ -312,15 +310,12 @@ kav_cmd_update() {
 }
 
 # WHEN (duration like 30d / 12h / 8w / 2mo / 45min / 1y, or a strict
-# date) -> ns since epoch, matching the id timestamps (local time, like
-# kav_new_id). Durations are "N <unit> ago" — always past. There is no
-# bare "m": it's ambiguous between minutes and months (misreading 45m as
-# months would prune nearly everything) — minutes are 45min, months 2mo.
-# Dates are a STRICT whitelist (YYYY-MM-DD, YYYY-MM-DD HH:MM[:SS],
-# yesterday, today); nothing else reaches GNU date, whose magic words
-# ("next tuesday", "5pm", "1 week") can resolve to FUTURE times and make
-# --older-than delete everything. Future boundaries are refused for the
-# same reason.
+# date) -> ns since epoch, matching the id timestamps (local time).
+# Durations are "N <unit> ago" — always past. No bare "m": ambiguous
+# between minutes and months (misreading 45m as months would prune
+# nearly everything) — minutes are 45min, months 2mo. Dates are a STRICT
+# whitelist; nothing else reaches GNU date, whose magic words can
+# resolve to FUTURE times and make --older-than delete everything.
 _kav_prune_when_ns() {
     when=$1
     [ -n "$when" ] || kav_die 'prune: empty WHEN — use e.g. 30d, 12h, 8w, 2mo, 45min, 1y or a date'

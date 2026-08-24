@@ -1,23 +1,21 @@
 #!/usr/bin/dash
 # hook.sh - Called by shell hooks to record commands.
-#   W CMD CWD SESSION            mint an ns-since-epoch id, store the command
-#                                (+ the caller's session token), PRINT the id
-#                                (correlation key for the later U)
+#   W CMD CWD SESSION           mint an ns-since-epoch id, store the command
+#                               (+ the caller's session token), PRINT the id
+#                               (correlation key for the later U)
 #   U ID EXIT DURATION [CMD]    store the real exit code and duration
-#                                (the optional command pins the update to
-#                                the right row — a W that bumped its id
-#                                on a collision lives at a different id)
+#                               (the optional command pins the update to
+#                               the right row — a W that bumped its id
+#                               on a collision lives at a different id)
 # A 5th W argument "sync" delivers in the foreground (bash's `exit` would
 # kill the backgrounded socat before it connects).
-# The id is the row's primary key AND timestamp: ns since epoch.
 
 # Source includes.sh relative to THIS script, not CWD: hook.sh is launched
 # from interactive shells whose CWD is arbitrary.
 . "$(dirname -- "$(realpath -- "$0")")/includes.sh"
 
 # Netstrings are length-prefixed IN BYTES: ${#var} counts characters, which
-# diverges under UTF-8 locales. Use LC_ALL=C wc -c — the same byte-accurate
-# method the server's awk parser expects.
+# diverges under UTF-8 locales.
 _ns_len() {
     printf '%s' "$1" | LC_ALL=C wc -c | tr -d ' '
 }
@@ -28,26 +26,22 @@ case "$MODE" in
         CMD="$2"
         CWD="$3"
         SESSION="${4:-}"
-        # Skip empty commands (defensive — shouldn't happen but harmless).
         [ -z "$CMD" ] && exit 0
         # Shell convention: a command starting with whitespace is never
-        # saved (bash's HISTCONTROL=ignorespace, fish's built-in skip).
-        # Only the first character decides — indented continuation lines
-        # of a multi-line command are unaffected.
+        # saved. Only the first character decides — indented continuation
+        # lines of a multi-line command are unaffected.
         case "$CMD" in
             ' '* | '	'*) exit 0 ;;
         esac
         ID=$(kav_new_id)
-        # Wire: cmd, cwd, id, session.
         MSG=$(printf '1:W,%s:%s,%s:%s,%s:%s,%s:%s,' \
             "$(_ns_len "$CMD")" "$CMD" \
             "$(_ns_len "$CWD")" "$CWD" \
             "$(_ns_len "$ID")" "$ID" \
             "$(_ns_len "$SESSION")" "$SESSION")
         # Print the id before backgrounding delivery (the shell captures it
-        # for the U). The backgrounded socat's stdout is /dev/null, so it
-        # never holds this pipe. Only the 4-arg form prints — a 5th
-        # argument ("sync") means the caller isn't capturing stdout.
+        # for the U). Only the 4-arg form prints — a 5th argument ("sync")
+        # means the caller isn't capturing stdout.
         [ "$#" -eq 4 ] && printf '%s\n' "$ID"
         ;;
     U)

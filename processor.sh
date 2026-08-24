@@ -13,43 +13,37 @@ _SCRIPT_DIR=$(dirname -- "$(realpath -- "$0")")
 #                           bumped on a collision)
 #   Q search query count cwd session
 #                           query -> NUL-separated rows; cwd/session scope
-#                           BEFORE the LIMIT (filtering after the LIMIT
-#                           would miss matching rows). cwd matches the
-#                           dir + subtree; "/" is a no-op.
-# Rows carry raw command text — multi-line commands pass through intact
-# (fzf renders them natively); only 0x1E/0x1F (sqlite3 -ascii hazards)
-# and \r are stripped. NUL framing is safe: command text can never
-# contain NUL.
+#                           BEFORE the LIMIT. cwd matches the dir +
+#                           subtree; "/" is a no-op.
+# Rows carry raw command text — multi-line commands pass through intact;
+# only 0x1E/0x1F (sqlite3 -ascii hazards) and \r are stripped. NUL
+# framing is safe: command text can never contain NUL.
 
-# Bound input size: a client that never sends a valid netstring would
+# Bound input: a client that never sends a valid netstring would
 # otherwise buffer unboundedly in the awk parser.
 INPUT=$(head -c 2097152)
 [ -z "$INPUT" ] && exit 0
 
-# Netstring parser: decodes "length:payload," into base64 fields, one per
-# line — base64 is newline/NUL-free, so fields survive the $(...) round
-# trip intact. Max payload 1MB (OOM guard).
+# Netstring parser: decodes "length:payload," into base64 fields, one
+# per line — base64 is newline/NUL-free, so fields survive the $(...)
+# round trip intact. Max payload 1MB (OOM guard).
 FIELDS=$(printf '%s' "$INPUT" | LC_ALL=C awk '
 BEGIN { RS = "\0" }  # treat entire input as one record
 {
     data = $0; pos = 1; len = length(data)
     while (pos <= len) {
-        # find colon separating length from payload
-        colon = index(substr(data, pos), ":")
+        colon = index(substr(data, pos), ":")   # length:payload,
         if (colon == 0) break                     # no colon = malformed
-        colon += pos - 1                          # convert to absolute position
+        colon += pos - 1                          # absolute position
 
-        # extract and validate length prefix (digits, no leading zeros, max 1MB)
-        lenstr = substr(data, pos, colon - pos)
+        lenstr = substr(data, pos, colon - pos)   # digits, no leading zeros
         if (lenstr !~ /^(0|[1-9][0-9]*)$/) break
         if (lenstr + 0 > 1048576) break            # max 1MB payload
 
-        # read exactly N bytes of payload after the colon
         payload_len = lenstr + 0
         value = substr(data, colon + 1, payload_len)
         if (length(value) != payload_len) break   # truncated payload
 
-        # verify trailing comma delimiter
         term = colon + 1 + payload_len
         if (substr(data, term, 1) != ",") break    # missing comma
 
@@ -59,7 +53,7 @@ BEGIN { RS = "\0" }  # treat entire input as one record
         close(b64cmd)
         print ""
 
-        pos = term + 1                             # advance past this netstring
+        pos = term + 1                             # advance
     }
 }')
 [ -z "$FIELDS" ] && exit 0
@@ -85,35 +79,28 @@ case "$TYPE" in
         # duration are unknown until the precmd hook sends a U for id.
         cmd="$1"
         # Trailing whitespace off the stored command — "ls " and "ls<TAB>"
-        # must be "ls": otherwise the picker's GROUP BY and dedup keep
-        # each variant as its own row (they'd survive dedup forever).
-        # A command that is only whitespace is nothing — drop it.
+        # must be "ls": otherwise the picker's GROUP BY keeps each variant
+        # as its own row. A command that is only whitespace is nothing.
         cmd=$(printf '%s' "$cmd" | sed 's/[ \t\r]*$//')
         [ -n "$cmd" ] || exit 0
-        # Daily snapshot on the first command of a day (fire-and-forget:
-        # the response id must not be delayed, and stdout is the response
-        # channel — silenced; stderr still reaches the server log).
+        # Daily snapshot on the first command of a day — fire-and-forget
+        # (stdout is the response channel; stderr reaches the server log).
         ( kav_maybe_backup "$_SCRIPT_DIR/backup.sh" > /dev/null ) &
-        kav_rotate_log   # cap server.log (raw handler stderr also lands there)
+        kav_rotate_log
         cwd="$2"
         id="$3"
         session="$4"
-        # id must be an integer (INTEGER PRIMARY KEY); drop anything else
-        # (garbage on the wire).
-        case "$id" in '' | *[!0-9]*) exit 0 ;; esac
+        case "$id" in '' | *[!0-9]*) exit 0 ;; esac   # INTEGER PRIMARY KEY
 
         safe_cmd=$(kav_sql_quote "$cmd")
         safe_cwd=$(kav_sql_quote "$cwd")
         safe_session=$(kav_sql_quote "$session")
-        # Consecutive-repeat collapse: a W whose (command, cwd, session)
-        # matches the latest row updates that row in place — the row
-        # becomes the newest occurrence (id = this command's timestamp;
-        # exit/duration still pending the U) — instead of inserting a
-        # duplicate. IS handles empty-session (NULL) matching. A shell
-        # that dies mid-command leaves exit 0 / duration 0; ids are never
-        # reused; kav_db_w's .timeout makes concurrent writers (several
-        # terminals at once) wait for the lock instead of failing with
-        # SQLITE_BUSY.
+        # Consecutive-repeat collapse: a W matching the latest row
+        # (command, cwd, session) updates that row in place instead of
+        # inserting a duplicate — the row becomes the newest occurrence.
+        # IS handles empty-session (NULL) matching; a shell that dies
+        # mid-command leaves exit 0 / duration 0; kav_db_w's .timeout
+        # makes concurrent writers wait for the lock (no SQLITE_BUSY).
         changed=$(kav_db_w "$KAV_DB_FILE" "UPDATE history SET id=$id, exit_code=0, duration_ms=0, session=NULLIF('$safe_session','') WHERE id=(SELECT id FROM history ORDER BY id DESC LIMIT 1) AND command='$safe_cmd' AND cwd='$safe_cwd' AND session IS NULLIF('$safe_session',''); SELECT changes();" 2> /dev/null | tail -1)
         case "$changed" in
             *[1-9]*) : ;;   # collapsed the previous consecutive repeat
@@ -121,8 +108,7 @@ case "$TYPE" in
                 # Insert with a PK-collision retry: ids are client-minted
                 # ns timestamps; on ms-resolution fallback clocks two
                 # commands in the same ms collide and the plain INSERT
-                # silently fails. Bump to the next free id (the row's
-                # timestamp ends up a few ns off — irrelevant).
+                # silently fails. Bump to the next free id.
                 n=0
                 while ! kav_db_w "$KAV_DB_FILE" "INSERT INTO history (id, command, cwd, exit_code, duration_ms, session) VALUES ($id, '$safe_cmd', '$safe_cwd', 0, 0, NULLIF('$safe_session', ''));" 2> /dev/null; do
                     id=$((id + 1))
@@ -137,11 +123,11 @@ case "$TYPE" in
         # Update: precmd reports $? and shell-measured duration for the id.
         # Bash fires W and U back-to-back in separate fire-and-forget
         # connections (zsh/fish run a whole command between them), so the U
-        # can win the race and find no row yet — retry briefly. An
-        # optional 4th field (the command, trimmed like W) pins the update
-        # to the right row: a W that bumped its id on a collision lives at
-        # a different id than the shell holds, and a plain id update would
-        # overwrite the row that took the original id.
+        # can win the race and find no row yet — retry briefly. The
+        # optional 4th field (the command, trimmed like W) pins the update:
+        # a W that bumped its id on a collision lives at a different id
+        # than the shell holds, and a plain id update would overwrite the
+        # row that took the original id.
         id="$1"
         exit_code="$2"
         duration="$3"
@@ -167,9 +153,8 @@ case "$TYPE" in
     Q)
         # Query: newest `count` DISTINCT commands matching the scope at
         # `offset`, NUL-framed rows. QUERY is an anchored prefix filter
-        # (the stepper passes the typed line; empty = no filter — the
-        # picker sends an empty query and fzf filters client-side).
-        # cwd/session scope applies BEFORE the LIMIT.
+        # (empty = no filter — the picker sends an empty query and fzf
+        # filters client-side). cwd/session scope applies BEFORE the LIMIT.
         action="$1"
         query="$2"
         count="$3"
@@ -201,19 +186,16 @@ case "$TYPE" in
         fi
         # Dedup: the self-join picks each distinct command's newest row
         # (MAX(id)) within the scope, so the payload carries that last
-        # run's exit code and duration alongside the id — the picker
-        # shows them as "dur ✓/✗ age" metadata (formatted in the awk
-        # below). Consecutive repeats were already collapsed at save
-        # time (W).
+        # run's exit code and duration — formatted as metadata in the awk
+        # below. Consecutive repeats were already collapsed at save time.
         sql="SELECT REPLACE(REPLACE(REPLACE(h.command, char(30), ''), char(31), ''), char(13), '') || char(31) || h.id || char(31) || h.exit_code || char(31) || h.duration_ms FROM history h JOIN (SELECT command, MAX(id) AS mid FROM history${where:+ WHERE $where} GROUP BY command) m ON h.id = m.mid ORDER BY h.id DESC LIMIT $count OFFSET $offset;"
 
-        # sqlite3 -ascii (0x1E rows / 0x1F cols); the SELECT already stripped
-        # those hazards, so no embedded separator can tear a row. Rows are
-        # rejoined with 0x1E via ORS and one tr converts to NUL (mawk printf
-        # eats a literal \0 in formats).
+        # sqlite3 -ascii (0x1E rows / 0x1F cols); the SELECT already
+        # stripped those hazards. Rows are rejoined with 0x1E via ORS and
+        # one tr converts to NUL (mawk printf eats a literal \0).
         # Field 1 = "dur ✓/✗ age\x1dcommand": \x1d (GS) marks the metadata
-        # boundary — untypable, invisible in the display, stripped by the
-        # shells on accept; the \x1e/\x1f framing is untouched.
+        # boundary — untypable, invisible, stripped by the shells on
+        # accept.
         kav_db -ascii "$KAV_DB_FILE" "$sql" | LC_ALL=C awk -v NOW="$(date +%s%N 2> /dev/null || echo 0)" '
         BEGIN { RS = "\036"; ORS = "\036" }
         {
@@ -228,8 +210,8 @@ case "$TYPE" in
             else if (dur < 3600000) d = int(dur / 60000) "m"
             else d = int(dur / 3600000) "h"
             age = int((NOW - f[2]) / 1000000000)
-            # Adaptive units (GitHub-style compact: s m h d w mo y) —
-            # bounded so old commands keep a short age field.
+            # Adaptive units (s m h d w mo y), bounded so old commands
+            # keep a short age field.
             if (age < 60) a = age "s"
             else if (age < 3600) a = int(age / 60) "m"
             else if (age < 86400) a = int(age / 3600) "h"
@@ -250,8 +232,8 @@ case "$TYPE" in
     D)
         # Delete: D id — permanently remove a command (all its rows, so
         # the deduplicated picker entry disappears). The id anchors the
-        # command: the delete targets every row whose command matches the
-        # one found at that id. Unknown ids delete nothing.
+        # command: delete every row whose command matches the one at id.
+        # Unknown ids delete nothing.
         id="$1"
         case "$id" in '' | *[!0-9]*) exit 0 ;; esac
         kav_db_w "$KAV_DB_FILE" "DELETE FROM history WHERE command = (SELECT command FROM history WHERE id=$id);"

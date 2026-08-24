@@ -5,33 +5,28 @@
 _SCRIPT_DIR="$(dirname -- "$(realpath -- "$0")")"
 . "$_SCRIPT_DIR/includes.sh"
 
-# Refuse to start when a live daemon is already running, but tolerate a
-# stale pid file (crashed daemon): a dead pid is a leftover, not a lock.
+# Refuse to start when a live daemon is already running; a dead pid is
+# a leftover, not a lock.
 if [ -f "$KAV_PID_FILE" ]; then
     old_pid=$(cat "$KAV_PID_FILE" 2> /dev/null || true)
     if [ -n "$old_pid" ] && kill -0 "$old_pid" 2> /dev/null; then
         kav_log "a daemon is already running (pid $old_pid) — leaving it as is"
-        # Exit 0 ("success"): the service is satisfied — another instance is
-        # live. An exit 1 here would make systemd's Restart=on-abnormal unit
-        # retry every RestartSec until the foreign daemon dies (a hot
-        # restart loop when an old daemon outlives its session).
+        # Exit 0: the service is satisfied — another instance is live.
+        # Exit 1 would make systemd's Restart=on-abnormal retry until
+        # the foreign daemon dies (a hot restart loop).
         exit 0
     fi
     # stale pid: process is gone — drop it and start fresh
     rm -f "$KAV_PID_FILE"
 fi
 
-# Path to processor.sh (resolved here, relative to this script)
 KAV_PROC_SCRIPT="${_SCRIPT_DIR}/processor.sh"
 
-# Schema: id is ns-since-epoch (INTEGER PRIMARY KEY = rowid alias, so the
-# table is stored in time order); created by includes.sh.
 kav_ensure_history_schema
 
-# Boot integrity check: never write into a database silently beyond
-# repair. WAL recovery handles crashes; if the file still fails, warn
-# loudly (server.log + a marker that `kavkash status` surfaces) and keep
-# recording rather than going dark.
+# Boot integrity check: never write into a database beyond repair. WAL
+# recovery handles crashes; if the file still fails, warn loudly and
+# keep recording rather than going dark.
 if kav_db "$KAV_DB_FILE" 'PRAGMA integrity_check;' 2> /dev/null | grep -qx ok; then
     rm -f "$KAV_RUNTIME_DIR/integrity_failed"
 else
@@ -40,21 +35,14 @@ else
     : > "$KAV_RUNTIME_DIR/integrity_failed"
 fi
 
-# Daily snapshot at boot (the per-command trigger covers days without a
-# restart).
 kav_maybe_backup "$_SCRIPT_DIR/backup.sh"
-# Cap server.log at boot (the per-W call covers the rest of the day).
 kav_rotate_log
 
-# Remove stale socket file from a previous crash
+# Stale socket from a previous crash
 rm -f "$KAV_SOCK_FILE"
 
-# Write PID file for external ops (status check, graceful kill)
 echo $$ > "$KAV_PID_FILE"
 
-# On exit: remove socket + pid files (stale ones block the next start).
-# socat is a background child; TERM/INT/HUP kill it first, then EXIT
-# cleans up.
 cleanup() {
     rm -f "$KAV_SOCK_FILE" "$KAV_PID_FILE"
 }
@@ -62,16 +50,11 @@ trap cleanup EXIT
 trap 'kill -TERM "$KAV_SOCAT_PID" 2> /dev/null' TERM INT HUP
 
 # - fork: one process per connection (isolates requests)
-# - mode=0600: socket owner-only
+# - mode=0600: owner-only socket
 # - Bidirectional (no -u): query responses must reach the client
-# - EXEC: processor.sh sources includes.sh itself, so it knows the DB path
-#   with no argv/env handoff. stderr -> server.log (broken pipes from fzf
-#   exits are normal; real errors still land there).
-# - -T 5: drop idle connections. Every legit client (hook.sh, query.sh,
-#   delete.sh) sends its request immediately on connect and reads the
-#   response; a connection that stays silent would otherwise park its
-#   handler forever (processor.sh blocks in head until 2 MB or EOF) —
-#   an easy fd/process exhaustion DoS against the user's own daemon.
+# - EXEC: processor.sh sources includes.sh itself — no argv/env handoff
+# - -T 5: drop idle connections (a silent client would otherwise park a
+#   handler forever — an fd/process exhaustion DoS against the daemon)
 socat -T 5 UNIX-LISTEN:"$KAV_SOCK_FILE",fork,mode=0600 EXEC:"$KAV_PROC_SCRIPT" 2>> "$KAV_RUNTIME_DIR/server.log" &
 KAV_SOCAT_PID=$!
 wait "$KAV_SOCAT_PID"

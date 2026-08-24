@@ -9,14 +9,13 @@ _SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 _hist_version=$(cat "$KAV_DATA_HOME/VERSION" 2> /dev/null || printf '?')
 
 # Interactive tty settings at shell start (before readline engages). fzf
-# leaves readline's raw mode behind; an eval'd command that reads the tty
-# needs echo/line editing/signals back — restore this before running it.
+# leaves readline's raw mode behind; restore before running a command
+# that reads the tty.
 _hist_stty=$(stty -g 2> /dev/null || true)
 
 # Daemon liveness: every client call guards on the socket first — a dead
-# daemon must never die silently (recording stops, Up/Ctrl+R do nothing).
-# Warn once per outage; the flag resets as soon as the daemon is reachable
-# again, so a restart mid-session re-arms the warning.
+# daemon must never die silently. Warn once per outage; the flag resets
+# as soon as the daemon is reachable again.
 _hist_daemon_warned=0
 _hist_sock_up() {
     if [[ -S "$KAV_SOCK_FILE" ]]; then
@@ -38,16 +37,13 @@ _hist_warn_daemon_widget() {            # bind -x widgets — leading newline so
 
 # --- atuin-borrowed: readline macro-chain for native accept-line ---
 # bind -x widgets can't call accept-line, so the user key queues a
-# two-step macro chain (\C-r -> "\C-x\C-_A1\a\C-x\C-_A0\a"): the head is
-# bind -x'd to the widget, and on Enter the widget swaps the tail between
-# its default no-op "" and accept-line. Readline then accepts the line
-# natively — history, prompt, $?, the DEBUG-trap preexec and
-# PROMPT_COMMAND precmd all fire exactly as for a typed command (real
-# exit code + duration). Tab/cancel leave the tail "" and the line on the
-# buffer. All three standard keymaps are rebound — the sentinel chain is
-# never typed by humans, so a stale accept-line binding is unreachable.
-# bash >= 4.3 (multi-byte bind -x keyseqs) and non-ble.sh required; both
-# fall back to print+eval in _hist_picker.
+# two-step macro chain: the head is bind -x'd to the widget, and on
+# Enter the widget swaps the tail between its no-op "" and
+# accept-line. Readline then accepts the line natively — history,
+# prompt, $?, preexec/precmd all fire exactly as for a typed command
+# (real exit code + duration). Tab/cancel leave the tail "" and the
+# line on the buffer. Requires bash >= 4.3 and non-ble.sh; both fall
+# back to print+eval in _hist_picker.
 _hist_macro_bash=0
 if ((BASH_VERSINFO[0] >= 5 || BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 3)) \
     && [[ -z ${BLE_ATTACHED-} ]]; then

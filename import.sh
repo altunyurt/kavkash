@@ -1,18 +1,15 @@
 #!/bin/sh
 # import.sh — import shell/atuin history into the kavkash DB.
-# Idempotent: re-running imports nothing new — rows deduplicate on
-# (command, cwd, timestamp), while the same command at different times
-# keeps every occurrence. Each row's id is the ns-since-epoch timestamp
-# (INTEGER PRIMARY KEY, so the table itself is stored in time order).
+# Idempotent: rows deduplicate on (command, cwd, timestamp); the same
+# command at different times keeps every occurrence. Each row's id is
+# the ns-since-epoch timestamp.
 #
 # Sources:
-#   bash  ~/.bash_history             plain lines, or "#<epoch>" pairs (HISTTIMEFORMAT)
+#   bash  ~/.bash_history             plain lines, or "#<epoch>" pairs
 #   zsh   ${HISTFILE:-~/.zsh_history} plain lines, or ": <epoch>:<dur>;<cmd>"
 #   fish  ${XDG_DATA_HOME}/fish/fish_history  YAML entries
-#   atuin                            read via the atuin CLI, which decrypts
-#                                    v18+ PASETO stores; the store layout
-#                                    varies by version, so the CLI is the
-#                                    only stable reader
+#   atuin  via the atuin CLI (decrypts v18+ PASETO stores; the store
+#          layout varies by version, so the CLI is the only stable reader)
 
 set -eu
 
@@ -38,7 +35,7 @@ BEGIN {
     RS = "\n"
     if (OFFMAP != "") {
         # per-day local-UTC offsets ("YYYY-MM-DD +HHMM"); missing -> 0.
-        # Parse "+HHMM" as minutes: +0300 = 180, not 300.
+        # "+HHMM" as minutes: +0300 = 180, not 300.
         while ((getline l < OFFMAP) > 0) {
             split(l, m, " ")
             offmap[m[1]] = off_min(m[2])
@@ -64,11 +61,9 @@ function flush(   ts) {
 }
 
 # wall-clock "YYYY-MM-DD HH:MM:SS" -> epoch ms, pure arithmetic
-# (proleptic Gregorian). atuin {time} is LOCAL wall-clock: the caller
-# passes per-day UTC offsets, which are subtracted here, so the result
-# is the real epoch on any host (constant offsets, and ±1h for a few
-# hours on the two DST-transition days per year). The caller appends
-# "000000" to make the ns id.
+# (proleptic Gregorian). atuin {time} is LOCAL wall-clock: per-day UTC
+# offsets are subtracted here, so the result is the real epoch on any
+# host. The caller appends "000000" to make the ns id.
 function epoch_ms(s,   y, mo, d, hh, mi, se, era, yoe, mp, doy, doe, days) {
     y  = substr(s, 1, 4) + 0
     mo = substr(s, 6, 2) + 0
@@ -100,8 +95,8 @@ function dur_ms(d,   u, x) {
 }
 
 # atuin CLI record: "YYYY-MM-DD HH:MM:SS|cwd|duration|exit|command" —
-# the command is everything after the 4th '|' and may contain '|'. Other
-# lines continue the previous record (multiline commands).
+# the command is everything after the 4th '|' and may contain '|'.
+# Other lines continue the previous record (multiline commands).
 $0 ~ /^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}/ {
     flush()
     nf = split($0, F, "|")
@@ -128,11 +123,10 @@ EOF
 
 # emit <ts_ns> <cmd> [<cwd> [<dur_ms> <exit> <src>]]
 # ts is the ns-since-epoch id (= timestamp). Invalid timestamps get a
-# per-parser pseudo-ts, scaled to ns: bash 0, zsh 3e9, fish 1e9, atuin
-# 2e9 — disjoint bases, so equal counters across parsers can't collide
-# on the PK.
-# ENTRIES framing: 0x1E record / 0x1F field — commands can't contain those
-# bytes, so parsing needs no per-line subprocesses.
+# per-parser pseudo-ts scaled to ns (bash 0, fish 1e9, atuin 2e9,
+# zsh 3e9 — disjoint bases, so equal counters can't collide on the PK).
+# ENTRIES framing: 0x1E record / 0x1F field — commands can't contain
+# those bytes, so parsing needs no per-line subprocesses.
 counter=0
 PSEUDO_BASE=0
 
@@ -146,9 +140,7 @@ emit() {
     exit=${5:-}
     src=${6:-}
     [ -n "$cmd" ] || return 0
-    # Shell convention: a command starting with whitespace is never saved
-    # (see hook.sh W). Only the first character decides — indented
-    # continuation lines of a multi-line command are unaffected.
+    # Leading whitespace = never saved (shell convention, see hook.sh W).
     case "$cmd" in
         ' '* | '	'*) return 0 ;;
     esac
@@ -243,15 +235,14 @@ import_atuin() {
     fi
     echo "reading atuin history" >&2
     ATUINOUT=$(mktemp "$tmpdir/kavkash-atuin.XXXXXX")
-    # The CLI is the only stable reader: the store layout varies by version
-    # (plaintext history table, PASETO-encrypted rows, sync-v2 records.db),
-    # and the CLI resolves the real db path and key from its own config.
+    # The CLI is the only stable reader: the store layout varies by
+    # version (plaintext table, PASETO-encrypted rows, sync-v2
+    # records.db) and the CLI resolves the real db path and key itself.
     if atuin history list -r false -f '{time}|{directory}|{duration}|{exit}|{command}' --print0 > "$ATUINOUT" 2> /dev/null; then
-        [ -s "$ATUINOUT" ] || return 0   # empty store — nothing to import
-        # atuin {time} is LOCAL wall-clock; subtract the local UTC
-        # offset from the UTC-interpreted epoch (per unique day, one
-        # date call — exact except a few hours on DST-transition
-        # days). Without GNU date, fall back to one constant offset.
+        [ -s "$ATUINOUT" ] || return 0   # empty store
+        # atuin {time} is LOCAL wall-clock; subtract the per-day local
+        # UTC offset from the UTC-interpreted epoch. Without GNU date,
+        # fall back to one constant offset.
         DAYS=$(mktemp "$tmpdir/kavkash-atuin-days.XXXXXX")
         OFFS=$(mktemp "$tmpdir/kavkash-atuin-offs.XXXXXX")
         tr '\0' '\n' < "$ATUINOUT" | grep -oE '^[0-9]{4}-[0-9]{2}-[0-9]{2}' | sort -u > "$DAYS"
@@ -326,14 +317,12 @@ done
 total=$(tr -cd '\036' < "$ENTRIES" | wc -c)
 echo "parsed $total commands" >&2
 
-# Existing (id, command) rows → the awk's id-ownership map (see AWKPROG):
-# a re-import that gained a new same-second entry must not land on an id
-# the DB already holds for a different command. The command is SQL-escaped
-# and newlines folded to SOH so multi-line commands stay on one map line
-# (the awk mirrors both transforms). cwd is excluded: the atuin
-# enrichment in the awk rewrites cwd, so it can't be part of the
-# id-ownership match. sqlite3 -separator with the 0x1F field separator
-# (a plain control char, no quoting worries).
+# Existing (id, command) rows → the awk's id-ownership map (see
+# AWKPROG): a re-import that gained a new same-second entry must not
+# land on an id the DB already holds for a different command. The
+# command is SQL-escaped and newlines folded to SOH so multi-line
+# commands stay on one map line (the awk mirrors both transforms). cwd
+# is excluded: the atuin enrichment in the awk rewrites it.
 sep=$(printf '\037')
 kav_db -noheader -separator "$sep" "$DB" "SELECT id, replace(replace(command, char(39), char(39)||char(39)), char(10), char(1)) FROM history;" > "$DBMAP" 2> /dev/null || true
 
@@ -341,15 +330,14 @@ kav_db -noheader -separator "$sep" "$DB" "SELECT id, replace(replace(command, ch
 # atuin rows (src=A) first enrich any existing cwd-less row. Rows dedup
 # on (command, cwd, id) — id IS the ns timestamp, so re-runs insert
 # nothing while the same command at different times keeps every
-# occurrence. ORDER BY id DESC == time order (INTEGER PRIMARY KEY = the
-# table's rowid).
+# occurrence. ORDER BY id DESC == time order.
 AWKPROG=$(mktemp "$tmpdir/kavkash-awk.XXXXXX")
 trap 'rm -f "$ENTRIES" "$SQLOUT" "$AWKPROG" "$ATUINPARSE" "$DBMAP" "$DAYS" "$OFFS"; [ -n "${KAV_TMP_IDX:-}" ] && kav_db "$DB" "DROP INDEX IF EXISTS idx_import_cmd;"' EXIT
 cat > "$AWKPROG" <<'EOF'
 BEGIN {
-    RS = "\n"     # map lines: "id\x1fcommand" — command is SQL-escaped
-                  # and newlines folded to SOH (see the dump), so a
-                  # multi-line command stays on one line
+    RS = "\n"     # map lines: "id\x1fcommand" — SQL-escaped, newlines
+                  # folded to SOH (see the dump), so a multi-line
+                  # command stays on one line
     if (DBMAP != "") {
         while ((getline l < DBMAP) > 0) {
             split(l, m, "\037")
@@ -362,12 +350,11 @@ BEGIN {
 }
 
 # SQL-escape a command/cwd field (doubled quotes) — same rule as
-# kav_sql_quote() in includes.sh; this awk runs in its own process and
-# can't call the shell helper, so keep the two in sync.
+# kav_sql_quote() in includes.sh; runs in its own process, keep in sync.
 function esc(s) { gsub(/'/, "''", s); return s }
 
-# +1 on a decimal string (19-digit ns exceeds awk's double precision, so
-# the bump is done as text; digits-only input, carry handled).
+# +1 on a decimal string (19-digit ns exceeds awk's double precision,
+# so the bump is done as text; digits-only input, carry handled).
 function inc(s,   i, d, c, out) {
     c = 1
     out = ""
@@ -388,15 +375,13 @@ function inc(s,   i, d, c, out) {
     dur = $4 + 0
     exitc = $5 + 0
     # The id is the row's timestamp; same-second entries (all sources are
-    # second-granular) would collide on the integer PK. Walk up from the
-    # timestamp to an id that is free — "occupied" means the DB already
-    # holds a DIFFERENT command there, or this stream already used it
-    # (keeps same-second duplicates distinct). An id the DB holds for the
-    # SAME command is kept: the NOT EXISTS below skips it — so a re-import
-    # that gained a new same-second entry shifts the group without
-    # disturbing the old placements. Ownership is by command alone: the
-    # atuin enrichment below rewrites cwd, and newlines are folded to SOH
-    # exactly as the map dump did.
+    # second-granular) would collide on the integer PK. Walk up to a free
+    # id — "occupied" = the DB holds a DIFFERENT command there, or this
+    # stream already used it. An id the DB holds for the SAME command is
+    # kept: the NOT EXISTS below skips it — a re-import that gained a new
+    # same-second entry shifts the group without disturbing old
+    # placements. Ownership is by command alone (the atuin enrichment
+    # rewrites cwd; newlines folded to SOH like the map dump).
     key = cmd
     gsub(/\n/, "\001", key)
     id = ts
@@ -407,11 +392,9 @@ function inc(s,   i, d, c, out) {
         printf "UPDATE history SET cwd='%s', duration_ms=%s, exit_code=%s WHERE command='%s' AND cwd='';\n", cwd, dur, exitc, cmd
     # Idempotent: skip when the id already exists — id IS the timestamp,
     # so this is the (command, cwd, ts) dedup. Checking the id alone also
-    # keeps the re-import stable when the atuin enrichment above changed a
-    # row's cwd — an (id, command, cwd) key would stop matching and
-    # re-insert the row. INSERT OR IGNORE: belt for a pathological map
-    # collision (e.g. a command containing the field separator) — silently
-    # skips instead of failing the import.
+    # keeps the re-import stable when the atuin enrichment changed a
+    # row's cwd. INSERT OR IGNORE: belt for a pathological map collision
+    # (e.g. a command containing the field separator).
     printf "INSERT OR IGNORE INTO history (id, command, cwd, exit_code, duration_ms) SELECT %s, '%s', '%s', %s, %s WHERE NOT EXISTS (SELECT 1 FROM history WHERE id=%s);\n", ts, cmd, cwd, dur, exitc, ts
 }
 EOF
@@ -427,11 +410,10 @@ else
 fi
 
 echo "inserting $total commands" >&2
-# Index hygiene: drop the unused idx_import_dedup (every INSERT would
-# maintain it). The atuin enrichment UPDATE probes WHERE
-# command='...' — a plain command index turns that from a full scan per
-# row into a lookup; dropped after the load so the live daemon pays no
-# maintenance, built only when atuin rows are present.
+# Drop the unused idx_import_dedup (every INSERT would maintain it);
+# build idx_import_cmd only for the atuin enrichment UPDATE's
+# WHERE command='...' probe, then drop it so the live daemon pays no
+# maintenance.
 kav_db "$DB" "DROP INDEX IF EXISTS idx_import_dedup;"
 if grep -q '^UPDATE history SET' "$SQLOUT"; then
     kav_db "$DB" "CREATE INDEX IF NOT EXISTS idx_import_cmd ON history(command);"

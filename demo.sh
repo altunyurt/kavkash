@@ -1,20 +1,11 @@
 #!/bin/sh
 # demo.sh — build and run a kavkash demo container with YOUR shell
 # histories COPIED into the image (nothing installed on the host); the
-# atuin store and key are mounted read-only instead (see below).
+# atuin store and key are mounted read-only instead.
 #
-# Single self-contained file: the base Dockerfile and the container
-# entrypoint are embedded below and generated into a temp build context
-# at run time, so it works from anywhere — including piped straight
-# from the repo, exactly like install.sh:
-#
-#   curl -fsSL https://raw.githubusercontent.com/altunyurt/kavkash/main/demo.sh | dash
-#
-# Existing history files (bash/zsh/fish) are copied into the image
-# (missing ones skipped) and imported at container start (idempotent);
-# the atuin store and key are mounted read-only, and the exact version of
-# your atuin binary is baked in (see below). On build failure the context
-# is left in place for debugging.
+# Single self-contained file: the Dockerfile and entrypoint are embedded
+# below and generated into a temp build context at run time, so it works
+# from anywhere — including piped straight from the repo, like install.sh.
 #
 # Usage:
 #   ./demo.sh                 build + run the demo daemon container
