@@ -53,10 +53,10 @@ kav_db() { ( umask 077; sqlite3 -cmd '.timeout 5000' "$@" ); }
 # readers/backup don't sync and stay on kav_db. Trade-off: a power cut
 # (not a daemon crash — the WAL lives in the page cache) can lose the
 # most recent commands, bounded by the auto-checkpoint (~4MB WAL); the
-# file can never corrupt either way. The CLI echoes the pragma's result
-# row ("normal") to stdout, which would corrupt parsed streams
-# (processor W/U read SELECT changes()) — the .output round-trip
-# swallows it.
+# file can never corrupt either way. The sqlite3 CLI prints a result row
+# for some pragma forms (journal_mode echoes "wal") — silence them
+# defensively with the .output round-trip, so the parsed stream
+# (processor W/U read SELECT changes()) can never be polluted.
 kav_db_w() { ( umask 077; sqlite3 -cmd '.timeout 5000' -cmd '.output /dev/null' -cmd 'PRAGMA synchronous=NORMAL;' -cmd '.output stdout' "$@" ); }
 
 # SQL literal escaping — the single source of truth. The sqlite3 CLI

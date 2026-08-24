@@ -16,6 +16,14 @@ kav_db "$KAV_DB_FILE" "INSERT INTO history (id, command, cwd, exit_code, duratio
 t_eq "1" "$(kav_db_w "$KAV_DB_FILE" "UPDATE history SET exit_code=7 WHERE id=1; SELECT changes();")" "only the changes() row — no pragma echo"
 t_eq "7" "$(kav_db "$KAV_DB_FILE" 'SELECT exit_code FROM history WHERE id=1;')" "update applied"
 
+# The setting itself: PRAGMA synchronous reports the CURRENT connection's
+# value (numeric: 1=NORMAL, 2=FULL), so the split is observable —
+# writers run NORMAL, readers stay on the default FULL (nothing to sync
+# there).
+t_begin "regression: writer connections run synchronous=NORMAL"
+t_eq "1" "$(kav_db_w "$KAV_DB_FILE" 'PRAGMA synchronous;')" "writer helper applies NORMAL"
+t_eq "2" "$(kav_db "$KAV_DB_FILE" 'PRAGMA synchronous;')" "reader helper keeps the default"
+
 # --- PK collision: both commands stored, U pinned by command ---
 t_begin "regression: PK collision stores both commands"
 ns_send W "collide one" "$PWD" 4000000000000000001 "s1"
