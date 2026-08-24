@@ -302,6 +302,12 @@ After=default.target
 [Service]
 Type=simple
 ExecStart=$KAV_DATA_HOME/server.sh
+# KillMode=mixed: TERM goes to server.sh only, so its shutdown drain
+# (in-flight preexec writes before the socat listener dies) gets a
+# chance; remaining processes are KILLed after TimeoutStopSec. The
+# default control-group mode TERMs socat in the same instant and loses
+# the very command that stopped the daemon.
+KillMode=mixed
 # Restart=on-abnormal: retry on crashes (signals), never on clean exits —
 # server.sh exits 0 when a daemon is already running, so a foreign/stale
 # daemon must not drive a restart loop.

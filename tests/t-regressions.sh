@@ -108,6 +108,21 @@ ns_send W "idle-drop probe" "$PWD" 8000000000000000001 "s1"
 sleep 0.3
 t_eq "1" "$(kav_db "$KAV_DB_FILE" "SELECT count(*) FROM history WHERE command='idle-drop probe';")" "write after idle drop"
 
+# --- restart race: a command that stops the daemon fires its preexec W
+# right before the SIGTERM; the TERM handler must drain in-flight writes
+# instead of killing socat instantly (systemctl restart / kavkash update
+# lose the row otherwise) ---
+t_begin "regression: W survives a daemon restart (TERM drain)"
+sandbox_new
+daemon_start
+"$KAVKASH_DIR/hook.sh" W "restart race" "$PWD" s1 &
+kill "$DAEMON_PID" 2> /dev/null
+wait "$DAEMON_PID" 2> /dev/null
+daemon_start
+sleep 0.2
+t_eq "1" "$(kav_db "$KAV_DB_FILE" "SELECT count(*) FROM history WHERE command='restart race';")" "preexec write drained before shutdown"
+daemon_stop
+
 # --- boot integrity check (last: the db is corrupt from here on) ---
 daemon_stop
 t_begin "regression: corrupt db at boot sets the marker and status warns"

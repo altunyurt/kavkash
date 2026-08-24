@@ -47,7 +47,11 @@ cleanup() {
     rm -f "$KAV_SOCK_FILE" "$KAV_PID_FILE"
 }
 trap cleanup EXIT
-trap 'kill -TERM "$KAV_SOCAT_PID" 2> /dev/null' TERM INT HUP
+# Drain in-flight writes before killing socat: a command that stops the
+# daemon (systemctl restart, kavkash update) fires its preexec W right
+# before this SIGTERM — killing socat instantly drops the connection
+# and loses the row. 0.5s covers the backgrounded delivery + commit.
+trap 'sleep 0.5; kill -TERM "$KAV_SOCAT_PID" 2> /dev/null' TERM INT HUP
 
 # - fork: one process per connection (isolates requests)
 # - mode=0600: owner-only socket
