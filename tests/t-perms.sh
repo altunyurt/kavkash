@@ -1,8 +1,10 @@
 #!/bin/sh
-# t-perms.sh — history.db and the socket must be owner-only. The db
-# holds every command verbatim; a lax umask (default 022) would leave
-# it world-readable. The socket is already 0600 (socat mode=0600) —
-# kept here as a regression guard.
+# t-perms.sh — history.db, its WAL sidecars, and the socket must be
+# owner-only. The db holds every command verbatim; a lax umask (default
+# 022) would leave it world-readable. Sidecars inherit the db's mode
+# only at creation, so stale ones from the 0644 era need boot-time
+# tightening. The socket is already 0600 (socat mode=0600) — kept here
+# as a regression guard.
 . "$(dirname "$0")/lib.sh"
 
 t_begin "db and socket are 0600 after daemon boot"
