@@ -95,9 +95,11 @@ line yourself.
 - **Shift+Delete** — permanently delete the highlighted command (all
   occurrences, no undo).
 - The picker loads ALL distinct commands and filters in-memory (full
-  fzf syntax, no per-keystroke DB hits). Multi-line commands display
-  natively. Each row shows its last run as `dur ✓/✗ age` (compact
-  units: s, m, h, d, w, mo, y) — e.g. `42ms ✗ 3d git push origin main`.
+  fzf syntax: `^curl` anchors at the command start, `!`, `'exact'`,
+  `a|b`, no per-keystroke DB hits). Multi-line commands display
+  natively. Each row shows its last run as `dur ✓/✗ age` after the
+  command (compact units: s, m, h, d, w, mo, y) — e.g.
+  `git push origin main  42ms ✗ 3d`.
 
 ## Command line
 

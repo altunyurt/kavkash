@@ -98,7 +98,8 @@ t_contains "✓" "$raw" "newest run succeeded, so the marker is ✓"
 # bands, so only the unit letter is asserted on the sub-minute rows;
 # the rollover rows (w/mo/y) are asserted exactly.
 age_token() { # age_token PREFIX — the age field of the newest matching row
-    q_raw 10 "$1" | tr '\035' '\n' | awk 'NR == 1 { print $NF }'
+    # row = "command\x1d meta\x1fid" — the metadata is the line after \x1d
+    q_raw 10 "$1" | tr '\035' '\n' | awk 'NR == 2 { sub(/\x1f.*/, ""); print $NF }'
 }
 now=$(date +%s%N)
 ns_send W "age30s" "$PWD" $((now - 30 * 1000000000)) "s1"
@@ -124,11 +125,11 @@ t_begin "age: months rollover"
 t_eq "3mo" "$(age_token age100d)" "100 days floors to 3mo"
 t_begin "age: years rollover"
 t_eq "1y" "$(age_token age400d)" "400 days floors to 1y"
-t_begin "age: a space separates the age from the command"
+t_begin "age: a space separates the metadata from the command"
 # 360d -> "12mo": a 4-char age, so the %-4s padding is zero and the
-# separating space is the only gap before the invisible \x1d.
+# leading space after the invisible \x1d is the only gap before it.
 sep=$(printf '\035')
-t_contains "12mo $sep" "$(q_raw 10 age360d)" "age, space, separator, command"
+t_contains "age360d$sep 0ms    ✓ 12mo" "$(q_raw 10 age360d)" "command, separator, space, full metadata"
 
 # --- Q: prefix filter ---
 t_begin "Q: anchored prefix filter"
