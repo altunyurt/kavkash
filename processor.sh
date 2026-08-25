@@ -193,9 +193,10 @@ case "$TYPE" in
         # sqlite3 -ascii (0x1E rows / 0x1F cols); the SELECT already
         # stripped those hazards. Rows are rejoined with 0x1E via ORS and
         # one tr converts to NUL (mawk printf eats a literal \0).
-        # Field 1 = "command\x1d dur ✓/✗ age": \x1d (GS) marks the metadata
-        # boundary — untypable, invisible, stripped by the shells on
-        # accept. Command first: fzf's ^ anchors at the command start.
+        # Field 1 = "command\x1f dur ✓/✗ age\x1f id": one separator byte
+        # for every field — fzf's --delimiter/--nth split on it, so
+        # matching (--nth 1,2) sees only the command, and the shells cut
+        # at it. Commands never contain \x1f (stripped in the SELECT).
         kav_db -ascii "$KAV_DB_FILE" "$sql" | LC_ALL=C awk -v NOW="$(date +%s%N 2> /dev/null || echo 0)" '
         BEGIN { RS = "\036"; ORS = "\036" }
         {
@@ -223,10 +224,10 @@ case "$TYPE" in
                 else a = int(days / 365) "y"
             }
             mark = (f[3] == "0") ? "✓" : "✗"   # plain text: fzf strips item ANSI codes
-            # Metadata trails the command after the invisible \x1d; the
+            # Metadata trails the command as its own \x1f field; the
             # leading space keeps it off the command text.
             meta = sprintf(" %-6s %s %-4s", d, mark, a)
-            print f[1] "\035" meta "\037" f[2]   # print (not printf) so ORS\x1e frames the row
+            print f[1] "\037" meta "\037" f[2]   # print (not printf) so ORS\x1e frames the row
         }' | tr '\036' '\000'
         ;;
     D)

@@ -54,18 +54,19 @@ _hist_picker() {
     # list; fzf filters the search text in-memory; F6-F8 re-query the
     # scope server-side via picker.sh switch. print()+accept NUL-frames
     # "key\0<cmd>\0"; awk turns that into "key\n<cmd>". Items are
-    # "display\x1f full command \x1f id" (see picker.sh) — --with-nth 1
-    # shows the padded/truncated command + metadata, --accept-nth 2
-    # returns the FULL command. The \x1f cut below is the fallback for
-    # fzf builds without field splitting.
+    # "display\x1f full \x1f meta \x1f id" (see picker.sh) — --with-nth
+    # 1,3 shows the padded/truncated command + metadata, --nth 1,2
+    # matches only the command (display + full), --accept-nth 2 returns
+    # the FULL command. The \x1f cut below is the fallback for fzf
+    # builds without field splitting.
     picked=$(fzf --height 15 --no-sort --track --sync --highlight-line \
         --prompt "$prompt" --query "$init_q" --read0 --print0 \
-        --delimiter $'\x1f' --with-nth 1 --accept-nth 2 \
+        --delimiter $'\x1f' --nth 1,2 --with-nth 1,3 --accept-nth 2 \
         --header "$header" \
         --border \
         --border-label "kavkash v$_hist_version" \
         --bind "start:reload-sync:$picker load $count $scope_file $COLUMNS" \
-        --bind "shift-delete:execute-silent($_SCRIPT_DIR/delete.sh {3})+reload-sync:$picker load $count $scope_file $COLUMNS" \
+        --bind "shift-delete:execute-silent($_SCRIPT_DIR/delete.sh {4})+reload-sync:$picker load $count $scope_file $COLUMNS" \
         --bind "f6:transform:$picker switch $scope_file '' '' all $count $COLUMNS" \
         --bind "f7:transform:$picker switch $scope_file '$PWD' '' dir $count $COLUMNS" \
         --bind "f8:transform:$picker switch $scope_file '' '$_hist_sess' sess $count $COLUMNS" \
@@ -132,7 +133,7 @@ _hist_step_up() {
         local -a _hist_batch
         _hist_batch=()
         while IFS= read -r -d '' _hist_item; do
-            _hist_item=${_hist_item%%$'\x1d'*}   # cut the trailing metadata at \x1d
+            _hist_item=${_hist_item%%$'\x1f'*}   # cut the trailing meta\x1fid at \x1f
             _hist_batch+=("$_hist_item")
         done < <("$_SCRIPT_DIR/query.sh" "$_hist_step_batch" "$_hist_step_prefix" "" "" "$_hist_step_idx")
         if ((${#_hist_batch[@]} == 0)); then

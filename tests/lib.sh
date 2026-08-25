@@ -85,9 +85,9 @@ ns_send() { # ns_send TYPE FIELD...
 }
 
 # Q helpers: rows as lines, payload stripped to the bare command
-# (metadata + id trail the \x1d boundary).
+# (meta and id trail the first \x1f).
 q_rows() { # q_rows COUNT [QUERY [CWD [SESSION [OFFSET]]]]
-    "$KAVKASH_DIR/query.sh" "$@" | tr '\0' '\n' | sed 's/\x1d.*//'
+    "$KAVKASH_DIR/query.sh" "$@" | tr '\0' '\n' | sed 's/\x1f.*//'
 }
 q_raw() { # q_raw COUNT [QUERY [...]] — unstripped rows for payload asserts
     "$KAVKASH_DIR/query.sh" "$@" | tr '\0' '\n'

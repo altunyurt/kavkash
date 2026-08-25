@@ -4,7 +4,8 @@
 # OFFSET (COUNT=0 = all — no LIMIT), one row per unique command, newest
 # first. QUERY = anchored prefix filter, CWD/SESSION = server-side scope
 # (cwd matches the dir + subtree; empty = global). Output: NUL-separated
-# rows: the raw command + "\x1d dur ✓/✗ age\x1f" hidden id.
+# rows: the raw command + "\x1f dur ✓/✗ age\x1f" hidden id (uniform
+# \x1f field separator).
 
 . "$(dirname -- "$(realpath -- "$0")")/includes.sh"
 

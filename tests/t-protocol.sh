@@ -98,8 +98,8 @@ t_contains "✓" "$raw" "newest run succeeded, so the marker is ✓"
 # bands, so only the unit letter is asserted on the sub-minute rows;
 # the rollover rows (w/mo/y) are asserted exactly.
 age_token() { # age_token PREFIX — the age field of the newest matching row
-    # row = "command\x1d meta\x1fid" — the metadata is the line after \x1d
-    q_raw 10 "$1" | tr '\035' '\n' | awk 'NR == 2 { sub(/\x1f.*/, ""); print $NF }'
+    # row = "command\x1f meta\x1fid" — the metadata is the middle field
+    q_raw 10 "$1" | tr '\037' '\n' | awk 'NR == 2 { print $NF }'
 }
 now=$(date +%s%N)
 ns_send W "age30s" "$PWD" $((now - 30 * 1000000000)) "s1"
@@ -127,8 +127,8 @@ t_begin "age: years rollover"
 t_eq "1y" "$(age_token age400d)" "400 days floors to 1y"
 t_begin "age: a space separates the metadata from the command"
 # 360d -> "12mo": a 4-char age, so the %-4s padding is zero and the
-# leading space after the invisible \x1d is the only gap before it.
-sep=$(printf '\035')
+# meta's leading space after the \x1f is the only gap.
+sep=$(printf '\037')
 t_contains "age360d$sep 0ms    ✓ 12mo" "$(q_raw 10 age360d)" "command, separator, space, full metadata"
 
 # --- picker tabular transform: display padded/truncated to WIDTH, the
@@ -142,14 +142,14 @@ ns_send W "$long" "$PWD" 9000000000000000001 "s1"
 sleep 0.2
 rows=$("$KAVKASH_DIR/picker.sh" load 100 "$scope" 40 | tr '\0' '\n')
 row=$(printf '%s\n' "$rows" | grep -F 'exceeds the display column')
-disp=$(printf '%s' "$row" | tr '\035' '\n' | sed -n '1p')
+disp=$(printf '%s' "$row" | tr '\037' '\n' | sed -n '1p')
 # char-based length (gawk under a UTF-8 locale; the suite requires gawk)
 t_eq "40" "$(printf '%s' "$disp" | LC_ALL=C.utf8 gawk '{ print length }')" "display column is exactly WIDTH"
 t_contains "…" "$disp" "truncation marked with an ellipsis"
 t_eq "$long" "$(printf '%s' "$row" | tr '\037' '\n' | sed -n '2p')" "full command preserved in field 2"
-t_eq "9000000000000000001" "$(printf '%s' "$row" | tr '\037' '\n' | sed -n '3p')" "id preserved in field 3"
+t_eq "9000000000000000001" "$(printf '%s' "$row" | tr '\037' '\n' | sed -n '4p')" "id preserved in field 4"
 short=$(printf '%s\n' "$rows" | grep -F 'age30s')
-t_eq "40" "$(printf '%s' "$short" | tr '\035' '\n' | sed -n '1p' | LC_ALL=C.utf8 gawk '{ print length }')" "short command padded to WIDTH"
+t_eq "40" "$(printf '%s' "$short" | tr '\037' '\n' | sed -n '1p' | LC_ALL=C.utf8 gawk '{ print length }')" "short command padded to WIDTH"
 
 # --- Q: prefix filter ---
 t_begin "Q: anchored prefix filter"
