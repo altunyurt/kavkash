@@ -1,5 +1,5 @@
 #!/usr/bin/dash
-# kavkash — user-facing command dispatcher (see docs/cli.md).
+# kavkash — user-facing command dispatcher.
 #
 # One entry point for the ops commands, atuin/git-style. The internal
 # scripts (hook.sh, processor.sh, query.sh, picker.sh, delete.sh,

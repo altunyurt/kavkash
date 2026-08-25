@@ -32,7 +32,7 @@ docker stop kavkash-demo
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/altunyurt/kavkash/main/demo.sh | dash
-``` 
+```
 
 `PERSIST=1 ./demo.sh` keeps `history.db` across restarts.
 
