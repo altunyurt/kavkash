@@ -131,6 +131,26 @@ t_begin "age: a space separates the metadata from the command"
 sep=$(printf '\035')
 t_contains "age360d$sep 0ms    ✓ 12mo" "$(q_raw 10 age360d)" "command, separator, space, full metadata"
 
+# --- picker tabular transform: display padded/truncated to WIDTH, the
+# FULL command rides in field 2 (fzf accepts what it displays, so the
+# truncated text must not be what gets accepted), id in field 3 ---
+t_begin "picker: display column pads and truncates to WIDTH"
+scope="$SANDBOX/scope"
+printf '\n' > "$scope"
+long="a very long command that definitely exceeds the display column width 1234567890"
+ns_send W "$long" "$PWD" 9000000000000000001 "s1"
+sleep 0.2
+rows=$("$KAVKASH_DIR/picker.sh" load 100 "$scope" 40 | tr '\0' '\n')
+row=$(printf '%s\n' "$rows" | grep -F 'exceeds the display column')
+disp=$(printf '%s' "$row" | tr '\035' '\n' | sed -n '1p')
+# char-based length (gawk under a UTF-8 locale; the suite requires gawk)
+t_eq "40" "$(printf '%s' "$disp" | LC_ALL=C.utf8 gawk '{ print length }')" "display column is exactly WIDTH"
+t_contains "…" "$disp" "truncation marked with an ellipsis"
+t_eq "$long" "$(printf '%s' "$row" | tr '\037' '\n' | sed -n '2p')" "full command preserved in field 2"
+t_eq "9000000000000000001" "$(printf '%s' "$row" | tr '\037' '\n' | sed -n '3p')" "id preserved in field 3"
+short=$(printf '%s\n' "$rows" | grep -F 'age30s')
+t_eq "40" "$(printf '%s' "$short" | tr '\035' '\n' | sed -n '1p' | LC_ALL=C.utf8 gawk '{ print length }')" "short command padded to WIDTH"
+
 # --- Q: prefix filter ---
 t_begin "Q: anchored prefix filter"
 t_eq "qalpha" "$(q_rows 10 qa)" "prefix qa matches qalpha only"

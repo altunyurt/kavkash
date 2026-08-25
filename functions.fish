@@ -62,23 +62,26 @@ function _hist_picker
     # scope server-side via picker.sh switch. read -z: NUL-delimited
     # capture (fish variables can't hold NUL, so no command substitution).
     # print()+accept NUL-frames "key\0<cmd>\0"; the awk turns that into
-    # "key\n<cmd>".
+    # "key\n<cmd>". Items are "display\x1f full command \x1f id" (see
+    # picker.sh) — --with-nth 1 shows the padded/truncated command +
+    # metadata, --accept-nth 2 returns the FULL command. The \x1f cut
+    # below is the fallback for fzf builds without field splitting.
     set -l picked
     fzf --height 15 --no-sort --track --sync --highlight-line \
         --prompt "$prompt" --query "$init_q" --read0 --print0 \
-        --delimiter "\x1f" --with-nth 1 --accept-nth 1 \
+        --delimiter "\x1f" --with-nth 1 --accept-nth 2 \
         --header "$header" \
         --border \
         --border-label "kavkash v$_hist_version" \
-        --bind "start:reload-sync:$picker load $count $scope_file" \
-        --bind "shift-delete:execute-silent($_HIST_SCRIPT_DIR/delete.sh {2})+reload-sync:$picker load $count $scope_file" \
-        --bind "f6:transform:$picker switch $scope_file '' '' all $count" \
-        --bind "f7:transform:$picker switch $scope_file '$PWD' '' dir $count" \
-        --bind "f8:transform:$picker switch $scope_file '' '$_hist_sess' sess $count" \
+        --bind "start:reload-sync:$picker load $count $scope_file $COLUMNS" \
+        --bind "shift-delete:execute-silent($_HIST_SCRIPT_DIR/delete.sh {3})+reload-sync:$picker load $count $scope_file $COLUMNS" \
+        --bind "f6:transform:$picker switch $scope_file '' '' all $count $COLUMNS" \
+        --bind "f7:transform:$picker switch $scope_file '$PWD' '' dir $count $COLUMNS" \
+        --bind "f8:transform:$picker switch $scope_file '' '$_hist_sess' sess $count $COLUMNS" \
         --bind 'enter:print()+accept,tab:print(tab)+accept' </dev/null \
         | awk 'BEGIN { RS = "\0" }
             NR == 1 { key = $0; next }
-            NR == 2 { i = index($0, "\035"); if (i) $0 = substr($0, 1, i - 1)  # cut the trailing metadata at \x1d
+            NR == 2 { i = index($0, "\037"); if (i) $0 = substr($0, i + 1); i = index($0, "\037"); if (i) $0 = substr($0, 1, i - 1)  # strip display\x1f, cut at \x1f → full command
             printf "%s\n%s", key, $0 }' | read -z picked
     rm -f "$scope_file"
 
