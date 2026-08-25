@@ -130,7 +130,9 @@ function _hist_step_up
     # what the stepper last displayed, the previous walk is abandoned and
     # the line becomes the new prefix — clearing the line mid-walk thus
     # resets the offset. Untouched lines continue the same walk.
-    set -l buf (commandline -b)[1]
+    # (commandline -b) splits multi-line buffers per line — join them
+    # back so a multi-line command compares whole.
+    set -l buf (string join "\n" (commandline -b))
     if test "$buf" != "$_kav_step_last"
         set -g _kav_step_prefix $buf
         set -g _kav_step_orig $buf
@@ -161,7 +163,8 @@ function _hist_step_up
     end
     set -g _kav_step_idx (math $_kav_step_idx + 1)
     commandline -r $_kav_step_cache[$_kav_step_idx]
-    set -g _kav_step_last $_kav_step_cache[$_kav_step_idx]
+    # read back the buffer: identical by construction to the next check
+    set -g _kav_step_last (string join "\n" (commandline -b))
 end
 
 function _hist_step_down
@@ -174,7 +177,8 @@ function _hist_step_down
     set -q _kav_step_last; or set -g _kav_step_last ""
     # An edited line abandons the walk: Down on a dirty line only resets
     # the offset (the user's text is kept; the next Up starts fresh).
-    set -l buf (commandline -b)[1]
+    # (commandline -b) splits multi-line buffers per line — join them.
+    set -l buf (string join "\n" (commandline -b))
     if test "$buf" != "$_kav_step_last"
         set -g _kav_step_idx 0
         return 0
@@ -184,18 +188,18 @@ function _hist_step_down
         # the walk had no prefix).
         set -g _kav_step_idx 0
         commandline -r $_kav_step_orig
-        set -g _kav_step_last $_kav_step_orig
+        set -g _kav_step_last (string join "\n" (commandline -b))
         return
     end
     set -g _kav_step_idx (math $_kav_step_idx - 1)
     # No query here: Down only re-treads ground Up already fetched.
     if set -q _kav_step_cache[$_kav_step_idx]
         commandline -r $_kav_step_cache[$_kav_step_idx]
-        set -g _kav_step_last $_kav_step_cache[$_kav_step_idx]
+        set -g _kav_step_last (string join "\n" (commandline -b))
     else
         set -g _kav_step_idx 0 # defensive: the cache was cleared mid-walk
         commandline -r $_kav_step_orig
-        set -g _kav_step_last $_kav_step_orig
+        set -g _kav_step_last (string join "\n" (commandline -b))
     end
 end
 

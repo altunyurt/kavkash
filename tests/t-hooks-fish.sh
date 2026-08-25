@@ -21,5 +21,15 @@ t_begin "fish: stepper fills the cache under a pty"
 out=$(script -qec "fish -i -c 'source $KAVKASH_DIR/functions.fish; _hist_step_up; echo CACHE_(count \$_kav_step_cache)'" /dev/null 2> /dev/null)
 t_contains "CACHE_2" "$out" "cache holds the two seeded rows"
 
+# A multi-line command as the newest row: (commandline -b) splits the
+# buffer per line, so a first-line-only comparison used to reset the
+# walk on every press — the stepper re-showed the same command forever.
+t_begin "fish: stepper walks past a multi-line command"
+ml=$(printf 'function greet\n    echo hi\nend')
+ns_send W "$ml" "$PWD" 9999999999999999990 "s1"
+sleep 0.2
+out=$(script -qec "fish -i -c 'source $KAVKASH_DIR/functions.fish; _hist_step_up; _hist_step_up; echo IDX_\$_kav_step_idx'" /dev/null 2> /dev/null)
+t_contains "IDX_2" "$out" "two presses advance past the multi-line row (no reset loop)"
+
 daemon_stop
 t_summary
