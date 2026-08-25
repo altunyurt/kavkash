@@ -123,22 +123,21 @@ _hist_picker() {
     # SCOPE_FILE; F6/F7/F8 switch it via picker.sh switch, which rewrites
     # the file and prints change-prompt + reload-sync for transform.
     # print()+accept NUL-frames "key\0<cmd>\0"; awk turns that into
-    # "key\n<cmd>". Items are "display\x1f full \x1f meta \x1f id" (see
-    # picker.sh) — --with-nth 1,3 shows the padded/truncated command +
-    # metadata, --nth 1,2 matches only the command (display + full),
-    # --accept-nth 2 returns the FULL command. The \x1f cut below is
-    # the fallback for fzf builds without field splitting.
+    # "key\n<cmd>". Items are "dur ✓/✗ age\x1fcommand\x1fid" (see
+    # picker.sh) — --with-nth 1,2 shows the metadata + command, --nth 2
+    # matches only the command, --accept-nth 2 returns it. The \x1f cut
+    # below is the fallback for fzf builds without field splitting.
     picked=$(fzf --height 15 --no-sort --track --sync --highlight-line \
         --prompt "$prompt" --query "$init_q" --read0 --print0 \
-        --delimiter $'\x1f' --nth 1,2 --with-nth 1,3 --accept-nth 2 \
+        --delimiter $'\x1f' --nth 2 --with-nth 1,2 --accept-nth 2 \
         --header "$header" \
         --border \
         --border-label "kavkash v$_hist_version" \
-        --bind "start:reload-sync:$picker load $count $scope_file $COLUMNS" \
-        --bind "shift-delete:execute-silent($_SCRIPT_DIR/delete.sh {4})+reload-sync:$picker load $count $scope_file $COLUMNS" \
-        --bind "f6:transform:$picker switch $scope_file '' '' all $count $COLUMNS" \
-        --bind "f7:transform:$picker switch $scope_file '$PWD' '' dir $count $COLUMNS" \
-        --bind "f8:transform:$picker switch $scope_file '' '$_hist_sess' sess $count $COLUMNS" \
+        --bind "start:reload-sync:$picker load $count $scope_file" \
+        --bind "shift-delete:execute-silent($_SCRIPT_DIR/delete.sh {3})+reload-sync:$picker load $count $scope_file" \
+        --bind "f6:transform:$picker switch $scope_file '' '' all $count" \
+        --bind "f7:transform:$picker switch $scope_file '$PWD' '' dir $count" \
+        --bind "f8:transform:$picker switch $scope_file '' '$_hist_sess' sess $count" \
         --bind 'enter:print()+accept,tab:print(tab)+accept' \
         < /dev/null \
         | awk 'BEGIN { RS = "\0" }
@@ -259,7 +258,8 @@ _hist_step_up() {
         local -a _hist_batch=()
         local _hist_item
         while IFS= read -r -d '' _hist_item; do
-            _hist_item=${_hist_item%%$'\x1f'*}   # cut the trailing meta\x1fid at \x1f
+            _hist_item=${_hist_item#*$'\x1f'}    # drop the "dur ✓/✗ age" lead field
+            _hist_item=${_hist_item%%$'\x1f'*}   # cut the trailing \x1fid
             _hist_batch+=("$_hist_item")
         done < <("$_SCRIPT_DIR/query.sh" "$_hist_step_batch" "$_hist_step_prefix" "" "" "$_hist_step_idx")
         if ((${#_hist_batch[@]} == 0)); then

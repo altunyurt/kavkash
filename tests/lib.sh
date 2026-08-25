@@ -85,9 +85,9 @@ ns_send() { # ns_send TYPE FIELD...
 }
 
 # Q helpers: rows as lines, payload stripped to the bare command
-# (meta and id trail the first \x1f).
+# (lead "dur ✓/✗ age" field and trailing id cut at \x1f).
 q_rows() { # q_rows COUNT [QUERY [CWD [SESSION [OFFSET]]]]
-    "$KAVKASH_DIR/query.sh" "$@" | tr '\0' '\n' | sed 's/\x1f.*//'
+    "$KAVKASH_DIR/query.sh" "$@" | tr '\0' '\n' | sed 's/^[^\x1f]*\x1f//; s/\x1f.*//'
 }
 q_raw() { # q_raw COUNT [QUERY [...]] — unstripped rows for payload asserts
     "$KAVKASH_DIR/query.sh" "$@" | tr '\0' '\n'

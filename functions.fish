@@ -62,23 +62,22 @@ function _hist_picker
     # scope server-side via picker.sh switch. read -z: NUL-delimited
     # capture (fish variables can't hold NUL, so no command substitution).
     # print()+accept NUL-frames "key\0<cmd>\0"; the awk turns that into
-    # "key\n<cmd>". Items are "display\x1f full \x1f meta \x1f id" (see
-    # picker.sh) — --with-nth 1,3 shows the padded/truncated command +
-    # metadata, --nth 1,2 matches only the command (display + full),
-    # --accept-nth 2 returns the FULL command. The \x1f cut below is
-    # the fallback for fzf builds without field splitting.
+    # "key\n<cmd>". Items are "dur ✓/✗ age\x1fcommand\x1fid" (see
+    # picker.sh) — --with-nth 1,2 shows the metadata + command, --nth 2
+    # matches only the command, --accept-nth 2 returns it. The \x1f cut
+    # below is the fallback for fzf builds without field splitting.
     set -l picked
     fzf --height 15 --no-sort --track --sync --highlight-line \
         --prompt "$prompt" --query "$init_q" --read0 --print0 \
-        --delimiter "\x1f" --nth 1,2 --with-nth 1,3 --accept-nth 2 \
+        --delimiter "\x1f" --nth 2 --with-nth 1,2 --accept-nth 2 \
         --header "$header" \
         --border \
         --border-label "kavkash v$_hist_version" \
-        --bind "start:reload-sync:$picker load $count $scope_file $COLUMNS" \
-        --bind "shift-delete:execute-silent($_HIST_SCRIPT_DIR/delete.sh {4})+reload-sync:$picker load $count $scope_file $COLUMNS" \
-        --bind "f6:transform:$picker switch $scope_file '' '' all $count $COLUMNS" \
-        --bind "f7:transform:$picker switch $scope_file '$PWD' '' dir $count $COLUMNS" \
-        --bind "f8:transform:$picker switch $scope_file '' '$_hist_sess' sess $count $COLUMNS" \
+        --bind "start:reload-sync:$picker load $count $scope_file" \
+        --bind "shift-delete:execute-silent($_HIST_SCRIPT_DIR/delete.sh {3})+reload-sync:$picker load $count $scope_file" \
+        --bind "f6:transform:$picker switch $scope_file '' '' all $count" \
+        --bind "f7:transform:$picker switch $scope_file '$PWD' '' dir $count" \
+        --bind "f8:transform:$picker switch $scope_file '' '$_hist_sess' sess $count" \
         --bind 'enter:print()+accept,tab:print(tab)+accept' </dev/null \
         | awk 'BEGIN { RS = "\0" }
             NR == 1 { key = $0; next }
@@ -147,7 +146,7 @@ function _hist_step_up
         test $_kav_step_eof -eq 1; and return 0
         set -l _kav_tmp (mktemp)
         "$_HIST_SCRIPT_DIR/query.sh" 50 "$_kav_step_prefix" "" "" $_kav_step_idx \
-            | awk 'BEGIN { RS = ORS = "\0" } { i = index($0, "\037"); if (i) $0 = substr($0, 1, i - 1); print }' >$_kav_tmp
+            | awk 'BEGIN { RS = ORS = "\0" } { i = index($0, "\037"); if (i) $0 = substr($0, i + 1); i = index($0, "\037"); if (i) $0 = substr($0, 1, i - 1); print }' >$_kav_tmp
         set -l _kav_have (count $_kav_step_cache)
         while read -z _kav_item
             set -a _kav_step_cache $_kav_item

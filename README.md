@@ -97,11 +97,9 @@ line yourself.
 - The picker loads ALL distinct commands and filters in-memory (full
   fzf syntax: `^curl` anchors at the command start, `!`, `'exact'`,
   `a|b`, no per-keystroke DB hits). Multi-line commands display
-  natively. Each row shows its last run as `dur ✓/✗ age` after the
-  command (compact units: s, m, h, d, w, mo, y) — e.g.
-  `git push origin main  42ms ✗ 3d`. Commands are padded/truncated to a
-  fixed column (`…` marks truncation) so the metadata stays aligned on
-  one line; the accepted command is always the full one.
+  natively. Each row leads with its last run as `dur ✓/✗ age` (compact
+  units: s, m, h, d, w, mo, y) — e.g. `42ms ✗ 3d git push origin main`.
+  The metadata never matches — search hits the command only.
 
 ## Command line
 
