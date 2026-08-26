@@ -140,9 +140,10 @@ emit() {
     exit=${5:-}
     src=${6:-}
     [ -n "$cmd" ] || return 0
-    # Leading whitespace = never saved (shell convention, see hook.sh W).
+    # Leading whitespace or '#' = never saved (shell convention, see
+    # hook.sh W).
     case "$cmd" in
-        ' '* | '	'*) return 0 ;;
+        ' '* | '	'* | '#'*) return 0 ;;
     esac
     case "$ts" in '' | *[!0-9]*) ts=$(((PSEUDO_BASE + counter) * 1000000)) ;; esac
     printf '%s\037%s\037%s\037%s\037%s\037%s\036' "$ts" "$cmd" "$cwd" "$dur" "$exit" "$src" >&3

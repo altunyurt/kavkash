@@ -127,7 +127,8 @@ line yourself.
 - `history import [ARGS]` — re-import shell/atuin history (idempotent)
 
 Trailing whitespace is trimmed on save; a command starting with
-whitespace is never saved (shell convention, live and imports alike).
+whitespace or `#` is never saved (shell convention, live and imports
+alike).
 
 `rm -f ~/.local/share/kavkash/history.db` wipes everything; the daemon
 recreates the schema on its next start.

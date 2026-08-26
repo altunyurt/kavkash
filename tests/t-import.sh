@@ -25,10 +25,11 @@ t_eq "0" "$(kav_db "$KAV_DB_FILE" "SELECT count(*) FROM history WHERE command='e
 
 # fish fixture: fish_history YAML.
 mkdir -p "$XDG_DATA_HOME/fish"
-printf -- '- cmd: echo fish one\n  when: 1700000000\n- cmd: " echo fish hidden"\n  when: 1700000001\n' > "$XDG_DATA_HOME/fish/fish_history"
-t_begin "import: fish fixture imports, skips leading space"
+printf -- '- cmd: echo fish one\n  when: 1700000000\n- cmd: " echo fish hidden"\n  when: 1700000001\n- cmd: # fish comment\n  when: 1700000002\n' > "$XDG_DATA_HOME/fish/fish_history"
+t_begin "import: fish fixture imports, skips leading space and # comments"
 t_rc 0 "import -f" "$KAVKASH_DIR/import.sh" -f
 t_eq "1" "$(kav_db "$KAV_DB_FILE" "SELECT count(*) FROM history WHERE command='echo fish one';")" "fish command imported"
 t_eq "0" "$(kav_db "$KAV_DB_FILE" "SELECT count(*) FROM history WHERE command='echo fish hidden';")" "leading space skipped"
+t_eq "0" "$(kav_db "$KAV_DB_FILE" "SELECT count(*) FROM history WHERE command='# fish comment';")" "# comment skipped"
 
 t_summary

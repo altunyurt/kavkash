@@ -10,12 +10,16 @@ ns_send W "echo hello   " "$PWD" 1000000000000000001 "s1"
 sleep 0.2
 t_eq "echo hello" "$(kav_db "$KAV_DB_FILE" "SELECT command FROM history WHERE id=1000000000000000001;")" "trailing whitespace trimmed"
 
-# --- W: leading whitespace skipped (the gate is hook.sh, not the wire) ---
-t_begin "W: leading whitespace skipped (hook.sh)"
+# --- W: leading whitespace / # comments skipped (the gate is hook.sh, not the wire) ---
+t_begin "W: leading whitespace and # comments skipped (hook.sh)"
 out=$("$KAVKASH_DIR/hook.sh" W " secret" "$PWD" s1)
 sleep 0.3
 t_eq "" "$out" "no id minted for a leading-space command"
 t_eq "0" "$(kav_db "$KAV_DB_FILE" "SELECT count(*) FROM history WHERE command LIKE ' secret';")" "command not stored"
+out=$("$KAVKASH_DIR/hook.sh" W "# comment" "$PWD" s1)
+sleep 0.3
+t_eq "" "$out" "no id minted for a # command"
+t_eq "0" "$(kav_db "$KAV_DB_FILE" "SELECT count(*) FROM history WHERE command='# comment';")" "comment not stored"
 
 # --- W: multiline + UTF-8 + quotes survive ---
 t_begin "W: multiline + UTF-8 + quotes survive"

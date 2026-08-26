@@ -27,11 +27,12 @@ case "$MODE" in
         CWD="$3"
         SESSION="${4:-}"
         [ -z "$CMD" ] && exit 0
-        # Shell convention: a command starting with whitespace is never
-        # saved. Only the first character decides — indented continuation
-        # lines of a multi-line command are unaffected.
+        # Shell convention: a command starting with whitespace or a '#'
+        # comment is never saved. Only the first character decides —
+        # indented continuation lines of a multi-line command are
+        # unaffected.
         case "$CMD" in
-            ' '* | '	'*) exit 0 ;;
+            ' '* | '	'* | '#'*) exit 0 ;;
         esac
         ID=$(kav_new_id)
         MSG=$(printf '1:W,%s:%s,%s:%s,%s:%s,%s:%s,' \
