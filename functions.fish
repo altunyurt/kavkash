@@ -67,7 +67,7 @@ function _hist_picker
     # matches only the command, --accept-nth 2 returns it. The \x1f cut
     # below is the fallback for fzf builds without field splitting.
     set -l picked
-    fzf --height 15 --no-sort --track --sync --highlight-line \
+    fzf --height 15 --no-sort --sync --highlight-line \
         --prompt "$prompt" --query "$init_q" --read0 --print0 \
         --delimiter "\x1f" --nth 2 --with-nth 1,2 --accept-nth 2 \
         --header "$header" \
