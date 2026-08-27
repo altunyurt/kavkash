@@ -126,12 +126,16 @@ _hist_picker() {
     # "key\n<cmd>". Items are "dur ✓/✗ age\x1fcommand\x1fid" (see
     # picker.sh) — --with-nth 1,2 shows the metadata + command, --nth 2
     # matches only the command, --accept-nth 2 returns it verbatim.
+    # change:first — typing resets the highlight to the topmost (newest)
+    # match; without it fzf keeps the cursor index where Up/Down left it,
+    # so a new query silently skips the matches above that line.
     picked=$(fzf --height 15 --no-sort --sync --highlight-line \
         --prompt "$prompt" --query "$init_q" --read0 --print0 \
         --delimiter $'\x1f' --nth 2 --with-nth 1,2 --accept-nth 2 \
         --header "$header" \
         --border \
         --border-label "kavkash v$_hist_version" \
+        --bind 'change:first' \
         --bind "start:reload-sync:$picker load $count $scope_file" \
         --bind "shift-delete:execute-silent($_SCRIPT_DIR/delete.sh {3})+reload-sync:$picker load $count $scope_file" \
         --bind "f6:transform:$picker switch $scope_file '' '' all $count" \
