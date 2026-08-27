@@ -16,7 +16,8 @@ fi
 diverged=""
 for f in includes.sh hook.sh server.sh processor.sh query.sh picker.sh \
     delete.sh import.sh backup.sh kavkash \
-    functions.bash functions.zsh functions.fish; do
+    functions.bash functions.zsh functions.fish \
+    VERSION README.md LICENSE; do
     if ! cmp -s "$KAVKASH_DIR/$f" "$install_dir/$f"; then
         diverged="$diverged $f"
     fi

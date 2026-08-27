@@ -11,6 +11,8 @@
 #   KAVKASH_TARBALL_URL=url     skip release resolution, download this tarball
 #   KAVKASH_TARBALL_SHA256=x    expected sha256 of KAVKASH_TARBALL_URL
 #   KAVKASH_SKIP_VERIFY=1       proceed even if no checksum could be verified
+#   KAVKASH_FORCE_REMOTE=1       install from GitHub even from a git checkout
+#   KAVKASH_NO_SYMLINK=1         skip the ~/.local/bin/kavkash symlink
 #   KAVKASH_NO_SYSTEMD=1        skip systemd --user unit creation/activation
 #   KAVKASH_IMPORT=1|0          import existing shell/atuin history
 #                               (default: prompt interactively)

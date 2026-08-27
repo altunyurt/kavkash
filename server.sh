@@ -38,9 +38,7 @@ fi
 kav_maybe_backup "$_SCRIPT_DIR/backup.sh"
 kav_rotate_log
 
-# The transport is socat-only: the nc -U client fallback was removed
-# because it could never deliver (the daemon itself needs socat — no
-# nc listener path exists), so it only masked a missing dependency.
+# socat is the transport; without it the daemon can neither listen nor serve.
 command -v socat > /dev/null 2>&1 || { kav_log 'socat is required (install socat)'; exit 1; }
 
 # Stale socket from a previous crash

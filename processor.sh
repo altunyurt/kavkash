@@ -195,8 +195,9 @@ case "$TYPE" in
         # one tr converts to NUL (mawk printf eats a literal \0).
         # Field 1 = "dur ✓/✗ age\x1fcommand\x1fid": one separator byte
         # for every field — fzf's --delimiter/--nth split on it, so
-        # matching (--nth 2) sees only the command, and the shells cut
-        # at it. Commands never contain \x1f (stripped in the SELECT).
+        # matching (--nth 2) sees only the command; the stepper strips
+        # the meta and id off query rows at it. Commands never contain
+        # \x1f (stripped in the SELECT).
         kav_db -ascii "$KAV_DB_FILE" "$sql" | LC_ALL=C awk -v NOW="$(date +%s%N 2> /dev/null || echo 0)" '
         BEGIN { RS = "\036"; ORS = "\036" }
         {
