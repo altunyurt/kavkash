@@ -64,8 +64,7 @@ function _hist_picker
     # print()+accept NUL-frames "key\0<cmd>\0"; the awk turns that into
     # "key\n<cmd>". Items are "dur ✓/✗ age\x1fcommand\x1fid" (see
     # picker.sh) — --with-nth 1,2 shows the metadata + command, --nth 2
-    # matches only the command, --accept-nth 2 returns it. The \x1f cut
-    # below is the fallback for fzf builds without field splitting.
+    # matches only the command, --accept-nth 2 returns it verbatim.
     set -l picked
     fzf --height 15 --no-sort --sync --highlight-line \
         --prompt "$prompt" --query "$init_q" --read0 --print0 \
@@ -81,8 +80,7 @@ function _hist_picker
         --bind 'enter:print()+accept,tab:print(tab)+accept' </dev/null \
         | awk 'BEGIN { RS = "\0" }
             NR == 1 { key = $0; next }
-            NR == 2 { i = index($0, "\037"); if (i) $0 = substr($0, i + 1); i = index($0, "\037"); if (i) $0 = substr($0, 1, i - 1)  # strip display\x1f, cut at \x1f → full command
-            printf "%s\n%s", key, $0 }' | read -z picked
+            NR == 2 { printf "%s\n%s", key, $0 }' | read -z picked
     rm -f "$scope_file"
 
     # fzf ran as a full-screen app inside this binding; fish's deferred

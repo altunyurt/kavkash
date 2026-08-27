@@ -411,11 +411,9 @@ else
 fi
 
 echo "inserting $total commands" >&2
-# Drop the unused idx_import_dedup (every INSERT would maintain it);
-# build idx_import_cmd only for the atuin enrichment UPDATE's
+# Build idx_import_cmd only for the atuin enrichment UPDATE's
 # WHERE command='...' probe, then drop it so the live daemon pays no
 # maintenance.
-kav_db "$DB" "DROP INDEX IF EXISTS idx_import_dedup;"
 if grep -q '^UPDATE history SET' "$SQLOUT"; then
     kav_db "$DB" "CREATE INDEX IF NOT EXISTS idx_import_cmd ON history(command);"
     KAV_TMP_IDX=1

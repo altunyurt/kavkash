@@ -245,8 +245,8 @@ _dep() {
 
 check_deps() {
     # Runtime deps (what kavkash needs to run, not the installer's own).
-    # Warnings only — install never blocks. sqlite3/awk/base64/dash are
-    # required; socat has an nc -U fallback; fzf gates only the picker.
+    # Warnings only — install never blocks. sqlite3/awk/base64/dash/socat
+    # are required; fzf gates only the picker.
     say "dependency check:"
     _dep sqlite3 "required — storage; the daemon cannot run without it"
     _dep awk "required — netstring/query parsing in the daemon"
@@ -254,12 +254,9 @@ check_deps() {
     _dep dash "required — all helper scripts run under #!/usr/bin/dash"
     if have socat; then
         printf '  %-9s %s\n' socat "OK"
-    elif have nc; then
-        printf '  %-9s %s\n' socat "OK (nc fallback)"
-        warn "socat not found — falling back to nc -U; install socat for the full transport"
     else
         printf '  %-9s %s\n' socat "MISSING"
-        warn "missing dependency: socat (and no nc fallback) — the daemon cannot receive commands or serve history"
+        warn "missing dependency: socat — the daemon cannot receive commands or serve history (required; install socat)"
     fi
     if have fzf; then
         fzf_ver=$(fzf --version 2> /dev/null | awk 'NR == 1 { print $1 }')

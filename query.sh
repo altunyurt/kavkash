@@ -4,8 +4,9 @@
 # OFFSET (COUNT=0 = all — no LIMIT), one row per unique command, newest
 # first. QUERY = anchored prefix filter, CWD/SESSION = server-side scope
 # (cwd matches the dir + subtree; empty = global). Output: NUL-separated
-# rows: the raw command + "\x1f dur ✓/✗ age\x1f" hidden id (uniform
-# \x1f field separator).
+# rows: "dur ✓/✗ age\x1fcommand\x1fid" — uniform \x1f field separator,
+# metadata first (fzf shows fields 1+2, matches field 2, the id feeds
+# shift-delete).
 
 . "$(dirname -- "$(realpath -- "$0")")/includes.sh"
 
@@ -30,8 +31,4 @@ payload=$(printf '1:Q,%s%s%s%s%s%s%s%s%s' "$(_ns search)" "$(_ns "$query")" "$(_
 # Stream straight to stdout: command substitution would drop NUL bytes.
 if command -v socat > /dev/null 2>&1; then
     printf '%s' "$payload" | socat - UNIX-CONNECT:"$KAV_SOCK_FILE" 2> /dev/null
-elif command -v nc > /dev/null 2>&1; then
-    printf '%s' "$payload" | nc -U "$KAV_SOCK_FILE" 2> /dev/null
-else
-    exit 0
 fi

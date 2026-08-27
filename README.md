@@ -137,8 +137,8 @@ recreates the schema on its next start.
 
 - **fzf ≥ 0.54** — older versions disable the picker and Up/Down
   stepping (warning printed, history still records)
-- **socat** (Unix-socket transport; `nc -U` works as fallback),
-  **sqlite3**, **awk** — everything else is plain POSIX sh
+- **socat** (Unix-socket transport), **sqlite3**, **awk** — everything
+  else is plain POSIX sh
 
 ## Testing
 

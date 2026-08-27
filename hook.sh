@@ -80,10 +80,4 @@ if command -v socat > /dev/null 2>&1; then
     else
         printf '%s' "$MSG" | socat - UNIX-CONNECT:"$KAV_SOCK_FILE" > /dev/null 2>&1 &
     fi
-elif command -v nc > /dev/null 2>&1; then
-    if [ "$5" = sync ]; then
-        printf '%s' "$MSG" | nc -U "$KAV_SOCK_FILE" > /dev/null 2>&1
-    else
-        printf '%s' "$MSG" | nc -U "$KAV_SOCK_FILE" > /dev/null 2>&1 &
-    fi
 fi

@@ -7,8 +7,9 @@
 # ~/.local/bin/kavkash via a symlink (so realpath resolves the install
 # dir regardless of the caller's CWD).
 #
-# Subcommands: status · info · backup [dir] · restore FILE · import ·
-# prune [N] · compact · stats · log [N] · version · help
+# Subcommands: status · info · backup [dir] · restore FILE · update ·
+# history (prune · dedup · stats · compact · import) · log [N] ·
+# version · help
 
 . "$(dirname -- "$(realpath -- "$0")")/includes.sh"
 _SCRIPT_DIR=$(dirname -- "$(realpath -- "$0")")

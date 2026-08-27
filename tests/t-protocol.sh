@@ -40,6 +40,20 @@ t_eq "5|100" "$(kav_db "$KAV_DB_FILE" "SELECT exit_code||'|'||duration_ms FROM h
 t_begin "escaping: Q prefix containing a quote matches"
 t_eq "it's 'quoted'" "$(q_rows 10 "it's")" "quoted prefix matches"
 
+# --- \x1f in a stored command: stripped in the Q payload ---
+# The picker depends on this: --accept-nth 2 returns the command field
+# verbatim, so a command can never smuggle a raw separator into the
+# accept stream (the shells' old \x1f-cut was only ever a no-op because
+# of this strip).
+t_begin "Q: stored \\x1f is stripped from the command in the payload"
+sep=$(printf '\037')
+ns_send W "echo a${sep}b" "$PWD" 1000000000000000009 "s1"
+sleep 0.2
+t_eq "echo a${sep}b" "$(kav_db "$KAV_DB_FILE" "SELECT command FROM history WHERE id=1000000000000000009;")" "stored with the byte intact"
+row=$(q_raw 10 "echo a" | grep 'echo a')
+t_eq "3" "$(printf '%s' "$row" | tr '\037' '\n' | grep -c .)" "payload row keeps exactly three fields"
+t_contains "echo ab" "$row" "command field is the byte-stripped command"
+
 # --- W: invalid id dropped ---
 t_begin "W: non-numeric id dropped"
 ns_send W "bogus id" "$PWD" "notanumber" "s1"

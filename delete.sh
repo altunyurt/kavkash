@@ -12,6 +12,4 @@ payload=$(printf '1:D,%s:%s,' "$(printf '%s' "$id" | LC_ALL=C wc -c | tr -d ' ')
 
 if command -v socat > /dev/null 2>&1; then
     printf '%s' "$payload" | socat - UNIX-CONNECT:"$KAV_SOCK_FILE" > /dev/null 2>&1
-elif command -v nc > /dev/null 2>&1; then
-    printf '%s' "$payload" | nc -U "$KAV_SOCK_FILE" > /dev/null 2>&1
 fi
