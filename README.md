@@ -163,30 +163,26 @@ shell Ctrl+R/F6-F8 picker ← picker.sh → query.sh ─────────
 shell picker shift-delete → delete.sh ──────────────────────────────────┘
 ```
 
-- Shells call `hook.sh` on preexec/precmd (bash synthesizes preexec
-  with a DEBUG trap). Messages are netstrings over a Unix socket;
-  `server.sh` (socat) hands each connection to `processor.sh` and drops
-  connections idle for 5s.
-- Rows store the raw command, cwd, exit code, duration, session token.
-  The id is ns-since-epoch: INTEGER PRIMARY KEY stores the table in
-  time order, so `ORDER BY id DESC` is a reverse leaf scan. WAL mode +
-  `synchronous=NORMAL` on writes — a power cut can lose the most recent
-  commands (bounded by the ~4MB WAL checkpoint); the file can never
-  corrupt.
-- Everything on disk is owner-only (0600): the socket, `history.db`
-  and its WAL sidecars, `backup.sh` snapshots.
-- The picker loads ALL distinct commands via `query.sh` (count=0 = no
-  limit) and fzf filters in-memory; the server deduplicates (newest
-  occurrence per distinct command) and appends each row's id + last-run
-  metadata. Dir/session scope is applied server-side; the scope lives
-  in a temp file because fzf transforms run in a subshell.
-- Up/Down step through history from an in-shell cache: the first press
-  queries a batch of 50 (increasing `OFFSET` over the deduplicated
-  set), later presses read from memory. Down never queries.
-- `import.sh` — idempotent import from bash/zsh/fish history files and
-  atuin (read via the `atuin` CLI — the store layout varies by version
-  and v18+ stores are PASETO-encrypted, so the CLI is the only stable
-  reader).
+- **Recording** — your shell calls `hook.sh` automatically before and
+  after every command. The command travels over a Unix socket to the
+  daemon (`server.sh` → `processor.sh`), which writes it to the SQLite
+  database `history.db`. Each row stores the raw command, its working
+  directory, exit code, duration, and session. The database runs in
+  WAL mode: a power cut can lose the most recent commands, but the
+  file never corrupts.
+- **Searching** — the Up/Down stepper and the picker read the database
+  through `query.sh`. The picker loads the full list of distinct
+  commands (newest occurrence of each), and fzf filters it in-memory;
+  F6–F8 scope is applied by the server before the list is sent. Up/Down
+  keeps a shell-side cache of 50 commands, refilled from `query.sh`
+  only as you step past it.
+- **Deleting** — Shift+Delete in the picker sends the row's id to
+  `delete.sh`, which removes it from the database.
+- **Importing** — `import.sh` merges bash/zsh/fish history files and
+  atuin, idempotently. atuin is read via its own CLI — its store is
+  encrypted since v18, so the CLI is the only stable reader.
+- **Permissions** — everything on disk is owner-only (0600): the
+  socket, `history.db` and its WAL sidecars, and `backup.sh` snapshots.
 
 ## License
 
